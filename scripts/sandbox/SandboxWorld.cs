@@ -30,6 +30,7 @@ public partial class SandboxWorld : Node3D
 
     private float _perturb; // --perturb=x 灵敏度自检：初始位置微扰 → 哈希必须变
     private Vector3 _spawn = new(0f, 2f, 0f); // --spawn=x,y,z 覆盖出生点（坡上/墙边测试用）
+    private long _yankTick = -1; // --yank=T：T 起 5 tick 给头部上抛冲量（复现「拎起再摔」，回归步态恢复）
 
     /// <summary>确定性模式的巡走路点（XZ 平面）。平地带 = x ∈ (-2, 1.15)：
     /// 缓坡从 x≈1.15 起、台阶在 x∈[-4,-2]，方框必须整体落在两者之间。</summary>
@@ -91,6 +92,11 @@ public partial class SandboxWorld : Node3D
         else
         {
             SteerAlongWaypoints();
+        }
+
+        if (_yankTick >= 0 && _tick >= _yankTick && _tick < _yankTick + 5)
+        {
+            _walker.Head.Vel += new Vector3(0.02f, 0.08f, 0.03f);
         }
 
         var ctx = new TickContext(_gravityPerTick, _terrain, _tick);
@@ -190,7 +196,8 @@ public partial class SandboxWorld : Node3D
         {
             Limb l = _walker.Limbs[i];
             GD.Print($"[FINAL] limb={i} pos=({l.Pos.X:F4},{l.Pos.Y:F4},{l.Pos.Z:F4}) " +
-                     $"grip={l.GripCounter} reaching={l.ReachingForTerrain} contact={l.TerrainContact}");
+                     $"grip={l.GripCounter} reaching={l.ReachingForTerrain} " +
+                     $"extra={l.ExtraLongStep} contact={l.TerrainContact}");
         }
     }
 
@@ -214,6 +221,10 @@ public partial class SandboxWorld : Node3D
                 int tps = int.Parse(arg["--tps=".Length..]);
                 Engine.PhysicsTicksPerSecond = tps;
                 Engine.MaxPhysicsStepsPerFrame = 100;
+            }
+            else if (arg.StartsWith("--yank="))
+            {
+                _yankTick = long.Parse(arg["--yank=".Length..]);
             }
             else if (arg.StartsWith("--perturb="))
             {

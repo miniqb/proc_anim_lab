@@ -72,7 +72,9 @@
 > GODOT=/Applications/Godot_mono.app/Contents/MacOS/Godot
 > $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- --determinism=400 --tps=400 | grep '\[DET\]'
 > # 双跑 diff 必须为空；40Hz（去掉 --tps=400）与 400Hz 哈希必须一致；--perturb=0.001 哈希必须变。
-> # 另有 --spawn=x,y,z 覆盖出生点（坡上/陷地板压力测试）。
+> # 另有 --spawn=x,y,z 覆盖出生点（坡上/陷地板压力测试）；
+> # --yank=T 在 T tick 给头部脚本化上抛冲量（「拎起再摔」回归：落地后步态必须恢复，
+> #   曾有成对腿 extraLongStep 互相死等导致四腿永久冻结的 bug，靠确定性超时打破）。
 > ```
 
 ## 6. 环境

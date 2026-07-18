@@ -46,6 +46,19 @@ public sealed class Limb
     /// <summary>成对腿还没抓稳时本腿延长摆动期（≙ extraLongStep，错开步态）。</summary>
     private bool _extraLongStep;
 
+    /// <summary>延长摆动已持续的 tick 数（超时保险的计时）。</summary>
+    private int _extraLongStepTicks;
+
+    /// <summary>延长摆动的只读观测（探针/调试用）。</summary>
+    public bool ExtraLongStep => _extraLongStep;
+
+    /// <summary>
+    /// 延长摆动的超时上限（tick）。身体被拎到空中时一对腿可能同 tick 双双释放、
+    /// 都置 extraLongStep 而互相死等（RW 靠腿随机失能打破，确定性内核没有随机逃生口）；
+    /// 正常等待约 5~15 tick，超过即视为死等强制恢复迈步。
+    /// </summary>
+    private const int ExtraLongStepLimit = 40;
+
     // —— 参数（≙ LizardBreedParams 子集；M4 收拢成 breed 参数对象）——
     /// <summary>腿长：脚被钳制在锚点这个半径内（≙ jointDist）。</summary>
     public float JointDist = 0.55f;
@@ -112,9 +125,14 @@ public sealed class Limb
         {
             // 摆动期：目标 = 脚向髋收拢 LiftFeet 后再往前 JointDist——脚一路漂向最大前伸位。
             HuntPos = Pos.Lerp(Anchor.Pos, LiftFeet) + stepDir * (JointDist + OverlapPad);
-            if (_extraLongStep && Pair is not null && Pair.GripCounter > GripDelay)
+            if (_extraLongStep)
             {
-                _extraLongStep = false;
+                _extraLongStepTicks++;
+                if ((Pair is not null && Pair.GripCounter > GripDelay)
+                    || _extraLongStepTicks > ExtraLongStepLimit)
+                {
+                    _extraLongStep = false;
+                }
             }
             if (!_extraLongStep && advance > JointDist * stepThreshold)
             {
@@ -135,6 +153,7 @@ public sealed class Limb
                     && (HuntPos - Anchor.Pos).Length() >= JointDist)
                 {
                     _extraLongStep = smoothGait && Pair is not null && Pair.GripCounter < 1;
+                    _extraLongStepTicks = 0;
                     ReachingForTerrain = false;
                 }
 
