@@ -5,16 +5,23 @@ using ProcAnimLab.Physics;
 namespace ProcAnimLab.Sandbox;
 
 /// <summary>
-/// 白盒渲染：每 chunk 一个球 MeshInstance3D，连接线用 ImmediateMesh 每帧重画。
+/// 白盒渲染：每 chunk 一个球 MeshInstance3D，连接线/腿线用 ImmediateMesh 每帧重画。
+/// 脚球按步态状态换色：绿=抓稳（正推进身体）、橙=迈步找落点、灰蓝=摆动期。
 /// Draw(t) 用物理插值分数在 LastPos→Pos 之间取位——渲染永远比物理"晚"不到一个 tick。
 /// </summary>
 public sealed class BodyRenderer
 {
     private readonly List<(BodyChunk Chunk, MeshInstance3D Node)> _spheres = new();
+    private readonly List<(Limb Limb, MeshInstance3D Node)> _feet = new();
     private readonly List<ChunkConnection> _connections = new();
+    private readonly List<Limb> _limbs = new();
     private ImmediateMesh? _lineMesh;
 
-    public void Build(Node3D parent, IReadOnlyList<Body> bodies)
+    private StandardMaterial3D _footGrip = null!;
+    private StandardMaterial3D _footReach = null!;
+    private StandardMaterial3D _footSwing = null!;
+
+    public void Build(Node3D parent, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null)
     {
         var chunkMat = new StandardMaterial3D { AlbedoColor = new Color(0.85f, 0.35f, 0.3f) };
         foreach (Body body in bodies)
@@ -30,6 +37,24 @@ public sealed class BodyRenderer
                 _spheres.Add((chunk, node));
             }
             _connections.AddRange(body.Connections);
+        }
+
+        if (limbs is not null)
+        {
+            _footGrip = new StandardMaterial3D { AlbedoColor = new Color(0.3f, 0.8f, 0.35f) };
+            _footReach = new StandardMaterial3D { AlbedoColor = new Color(0.95f, 0.6f, 0.2f) };
+            _footSwing = new StandardMaterial3D { AlbedoColor = new Color(0.5f, 0.6f, 0.75f) };
+            foreach (Limb limb in limbs)
+            {
+                var node = new MeshInstance3D
+                {
+                    Mesh = new SphereMesh { Radius = limb.Radius, Height = limb.Radius * 2f },
+                    MaterialOverride = _footSwing,
+                };
+                parent.AddChild(node);
+                _feet.Add((limb, node));
+                _limbs.Add(limb);
+            }
         }
 
         _lineMesh = new ImmediateMesh();
@@ -51,13 +76,20 @@ public sealed class BodyRenderer
         {
             node.Position = chunk.LerpPos(t);
         }
+        foreach ((Limb limb, MeshInstance3D node) in _feet)
+        {
+            node.Position = limb.LerpPos(t);
+            node.MaterialOverride = limb.Gripping ? _footGrip
+                : limb.ReachingForTerrain ? _footReach
+                : _footSwing;
+        }
 
         if (_lineMesh is null)
         {
             return;
         }
         _lineMesh.ClearSurfaces();
-        if (_connections.Count == 0)
+        if (_connections.Count == 0 && _limbs.Count == 0)
         {
             return;
         }
@@ -66,6 +98,11 @@ public sealed class BodyRenderer
         {
             _lineMesh.SurfaceAddVertex(conn.A.LerpPos(t));
             _lineMesh.SurfaceAddVertex(conn.B.LerpPos(t));
+        }
+        foreach (Limb limb in _limbs)
+        {
+            _lineMesh.SurfaceAddVertex(limb.Anchor.LerpPos(t));
+            _lineMesh.SurfaceAddVertex(limb.LerpPos(t));
         }
         _lineMesh.SurfaceEnd();
     }

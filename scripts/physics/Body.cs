@@ -144,31 +144,13 @@ public sealed class Body
     /// </summary>
     private void Resolve(BodyChunk c, in TerrainHit hit)
     {
-        // HitFromInside：起点已陷入 collider，Godot 返回零法线——归一化会 NaN，必须特判。
-        if (hit.Normal.LengthSquared() < 1e-12f)
+        if (SphereTerrain.Resolve(hit, c.Radius, SurfaceFriction, ref c.Pos, ref c.Vel, c.LastPos, out Vector3 n))
         {
-            c.Pos = c.LastPos;
-            c.Vel = Vector3.Zero;
             c.TerrainContact = true;
-            return;
+            if (n != Vector3.Zero)
+            {
+                c.ContactNormal = n;
+            }
         }
-
-        Vector3 n = hit.Normal;
-        float depth = c.Radius - (c.Pos - hit.Point).Dot(n);
-        if (depth <= 0f)
-        {
-            return;
-        }
-
-        c.Pos += n * depth;
-        float vn = c.Vel.Dot(n);
-        if (vn < 0f)
-        {
-            c.Vel -= n * vn;
-        }
-        Vector3 vt = c.Vel - n * c.Vel.Dot(n);
-        c.Vel -= vt * (1f - SurfaceFriction);
-        c.TerrainContact = true;
-        c.ContactNormal = n;
     }
 }

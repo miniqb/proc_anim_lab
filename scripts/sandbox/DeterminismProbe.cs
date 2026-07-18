@@ -26,7 +26,7 @@ public sealed class DeterminismProbe
         _checkpointInterval = checkpointInterval;
     }
 
-    public void Record(long tick, IReadOnlyList<Body> bodies)
+    public void Record(long tick, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null)
     {
         if (Finished)
         {
@@ -39,6 +39,14 @@ public sealed class DeterminismProbe
             {
                 Fold(c.Pos);
                 Fold(c.Vel);
+            }
+        }
+        if (limbs is not null)
+        {
+            foreach (Limb limb in limbs)
+            {
+                Fold(limb.Pos);
+                Fold(limb.Vel);
             }
         }
 
