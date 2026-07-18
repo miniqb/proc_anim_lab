@@ -1,0 +1,18 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format documentation:
+; https://docs.godotengine.org/en/stable/tutorials/io/data_paths.html
+
+config_version=5
+
+[application]
+
+config/name="proc_anim_lab"
+config/description="3D 程序化生物动画实验室（雨世界式）。详见 CLAUDE.md。"
+config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+
+[dotnet]
+
+project/assembly_name="proc_anim_lab"
