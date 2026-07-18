@@ -12,8 +12,14 @@ config_version=5
 
 config/name="proc_anim_lab"
 config/description="3D 程序化生物动画实验室（雨世界式）。详见 CLAUDE.md。"
+run/main_scene="res://scenes/sandbox.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 
 [dotnet]
 
 project/assembly_name="proc_anim_lab"
+
+[physics]
+
+common/physics_ticks_per_second=40
+3d/physics_engine="Jolt Physics"

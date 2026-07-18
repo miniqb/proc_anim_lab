@@ -1,0 +1,95 @@
+[gd_scene load_steps=13 format=3 uid="uid://sandbox0proclab"]
+
+[ext_resource type="Script" path="res://scripts/sandbox/SandboxWorld.cs" id="1_world"]
+
+[sub_resource type="BoxShape3D" id="shape_floor"]
+size = Vector3(20, 1, 20)
+
+[sub_resource type="BoxMesh" id="mesh_floor"]
+size = Vector3(20, 1, 20)
+
+[sub_resource type="BoxShape3D" id="shape_ramp"]
+size = Vector3(6, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="mesh_ramp"]
+size = Vector3(6, 0.4, 3)
+
+[sub_resource type="BoxShape3D" id="shape_step"]
+size = Vector3(2, 0.3, 2)
+
+[sub_resource type="BoxMesh" id="mesh_step"]
+size = Vector3(2, 0.3, 2)
+
+[sub_resource type="BoxShape3D" id="shape_wall"]
+size = Vector3(0.4, 3, 6)
+
+[sub_resource type="BoxMesh" id="mesh_wall"]
+size = Vector3(0.4, 3, 6)
+
+[sub_resource type="StandardMaterial3D" id="mat_ground"]
+albedo_color = Color(0.55, 0.57, 0.6, 1)
+
+[sub_resource type="StandardMaterial3D" id="mat_obstacle"]
+albedo_color = Color(0.72, 0.68, 0.6, 1)
+
+[sub_resource type="Environment" id="env_default"]
+ambient_light_source = 2
+ambient_light_color = Color(0.8, 0.85, 0.9, 1)
+ambient_light_energy = 0.6
+
+[node name="SandboxWorld" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, -0.5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+shape = SubResource("shape_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+mesh = SubResource("mesh_floor")
+surface_material_override/0 = SubResource("mat_ground")
+
+[node name="Ramp" type="StaticBody3D" parent="Terrain"]
+position = Vector3(4, 0.75, 0)
+rotation = Vector3(0, 0, 0.314159)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Ramp"]
+shape = SubResource("shape_ramp")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Ramp"]
+mesh = SubResource("mesh_ramp")
+surface_material_override/0 = SubResource("mat_obstacle")
+
+[node name="Step" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-3, 0.15, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step"]
+shape = SubResource("shape_step")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step"]
+mesh = SubResource("mesh_step")
+surface_material_override/0 = SubResource("mat_obstacle")
+
+[node name="Wall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-6, 1.5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Wall"]
+shape = SubResource("shape_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Wall"]
+mesh = SubResource("mesh_wall")
+surface_material_override/0 = SubResource("mat_obstacle")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(0, 3, 8)
+rotation = Vector3(-0.36, 0, 0)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+rotation = Vector3(-0.9, 0.6, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env_default")

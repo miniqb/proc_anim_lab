@@ -2,7 +2,7 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M0 项目章程**（Godot/C# 项目骨架 + 目标 + 参考文档就位，尚未写任何系统代码）。
+> 当前状态：**M1 物理地基完成**（固定 40 tick/s + Verlet 身体沙盒 + 确定性回归就位），进入 M2。
 
 ---
 
@@ -54,14 +54,24 @@
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
-| **M0** | 项目章程：目标 + 文档就位，清晰起点 | ← **当前** |
-| **M1** | 物理地基：固定步长循环 + 点/弹簧 Verlet 身体沙盒（可拖动、能滚，验证软体手感与确定性） | 待办 |
-| **M2** | 会走路：plant-and-trail 腿 + 射线落脚，平地行走；可拖动身体看腿自适应 | 待办 |
+| **M0** | 项目章程：目标 + 文档就位，清晰起点 | ✅ 完成 |
+| **M1** | 物理地基：固定步长循环 + 点/弹簧 Verlet 身体沙盒（可拖动、能滚，验证软体手感与确定性） | ✅ 完成 |
+| **M2** | 会走路：plant-and-trail 腿 + 射线落脚，平地行走；可拖动身体看腿自适应 | ← **当前** |
 | **M3** | 地形涌现：斜坡 / 墙 → 走、爬两态自然涌现（重力开关 + 射线方向切换） | 待办 |
 | **M4** | 多样化与调参：多足 / 尾巴 / 多种体型，参数化手感（对标 `LizardBreedParams`） | 待办 |
 | **M5** | 移植接口：抽出与引擎解耦的模块，定义回迁 `random-room-runtime` 的边界 | 待办 |
 
-> Godot 4.7 / C# 项目骨架（`project.godot` / `.csproj` / `.sln`）已建好并 `dotnet build` 通过；尚无场景与系统脚本。M1 开工时补第一个白盒测试场景。
+> **M1 产物**：`scripts/physics/`（纯 C# 内核：BodyChunk / ChunkConnection / Body / ITerrainQuery，零场景树依赖，M5 回迁边界）、`scripts/terrain/RaycastTerrainQuery.cs`（内核与 Godot 物理的唯一接缝）、`scripts/sandbox/`（驱动/渲染/拖拽/确定性探针）、`scenes/sandbox.tscn`（白盒：地板+缓坡+台阶+墙）。
+>
+> **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
+>
+> **确定性回归**（改物理内核后必跑）：
+> ```bash
+> GODOT=/Applications/Godot_mono.app/Contents/MacOS/Godot
+> $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- --determinism=400 --tps=400 | grep '\[DET\]'
+> # 双跑 diff 必须为空；40Hz（去掉 --tps=400）与 400Hz 哈希必须一致；--perturb=0.001 哈希必须变。
+> # 另有 --spawn=x,y,z 覆盖出生点（坡上/陷地板压力测试）。
+> ```
 
 ## 6. 环境
 
