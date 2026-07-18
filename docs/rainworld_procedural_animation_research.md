@@ -319,8 +319,8 @@ BodyPart（图形层受力点：pos/lastPos/vel/rad/surfaceFric/airFriction/terr
 若 elasticMovement>0: vel += 朝pnt方向 * (距离 * elasticMovement)   // 弹性拉拽
 vel += hostVel * exaggerateVel
 若 push 或 距离>connectionRad:                                       // 硬距离约束
-    修正 = 朝pnt方向 * (connectionRad - 距离)
-    pos -= 修正 ; vel -= 修正
+	修正 = 朝pnt方向 * (connectionRad - 距离)
+	pos -= 修正 ; vel -= 修正
 vel = (vel - hostVel) * (1-adaptVel) + hostVel                      // 向宿主速度靠拢
 ```
 
@@ -342,7 +342,7 @@ absoluteHuntPos = connection.pos + RotateAroundOrigo(relativeHuntPos, 身体朝�
 
 if (够近 huntSpeed) { vel = absoluteHuntPos - pos; reachedSnapPosition = true; }   // 吸附
 else { vel = Lerp(vel, DirVec(pos, absoluteHuntPos) * huntSpeed, quickness);      // 追
-       reachedSnapPosition = false; }
+	   reachedSnapPosition = false; }
 pos += vel; vel *= airFriction;
 if (pushOutOfTerrain) PushOutOfTerrain(room, connection.pos);
 ```
@@ -414,20 +414,20 @@ normal   = 该线段的垂线   // 返回地表朝向
 
 ```csharp
 if (applyGravity) {                 // 该掉的时候
-    base.gravity = 0.9f;
-    base.airFriction = 0.999f; surfaceFriction = 0.3f;
+	base.gravity = 0.9f;
+	base.airFriction = 0.999f; surfaceFriction = 0.3f;
 } else {                            // 抓着可达地形的时候
-    base.gravity = 0f;             // ← 重力直接关成 0！
-    base.airFriction = 0.8f;  surfaceFriction = 0.5f;
-    base.GoThroughFloors = true;
+	base.gravity = 0f;             // ← 重力直接关成 0！
+	base.airFriction = 0.8f;  surfaceFriction = 0.5f;
+	base.GoThroughFloors = true;
 }
 ```
 
 开关条件（约 1778 行）：
 ```csharp
 applyGravity = inAllowedTerrainCounter < lizardParams.regainFootingCounter   // 最近没待在"能待的地形"里
-             || NoGripCounter > 10                                            // 连续 >10 tick 没有腿抓住
-             || commitedToDropConnection != default;                          // 主动决定要往下掉
+			 || NoGripCounter > 10                                            // 连续 >10 tick 没有腿抓住
+			 || commitedToDropConnection != default;                          // 主动决定要往下掉
 ```
 
 翻译：**只要它在"能待的地形"上、且有腿抓着（`NoGripCounter<=10`），重力就被关成 0**——所以它不会从墙上/天花板上掉下来，**因为此刻根本没有重力在拽它**。一旦失去抓握（>10 tick 没腿抓地）、离开可达地形、或主动要掉，`applyGravity` 变真，重力恢复 0.9，它就正常坠落。
@@ -454,9 +454,9 @@ base.bodyChunks[1].vel  -= moveDir * (2f * LegsGripping);
 尾巴 = 一串 `TailSegment`，每段把自己拉回前一段 `connectionRad` 距离内：
 ```
 若 距离>connectionRad:
-    修正 = 朝前段方向 * (connectionRad-距离)
-    本段.pos -= 修正*(1-affectPrevious) ; 前段.pos += 修正*affectPrevious   // 双向约束
-    stretched = clamp(...)   // 拉直程度 → 渲染时尾巴视觉拉伸/变细
+	修正 = 朝前段方向 * (connectionRad-距离)
+	本段.pos -= 修正*(1-affectPrevious) ; 前段.pos += 修正*affectPrevious   // 双向约束
+	stretched = clamp(...)   // 拉直程度 → 渲染时尾巴视觉拉伸/变细
 PushOutOfTerrain(...)
 ```
 参数：`tailSegments`（节数）、`tailStiffness` / `tailStiffnessDecline`（刚度沿尾递减）、`tailLengthFactor`。
@@ -487,7 +487,7 @@ PushOutOfTerrain(...)
   1) 计算落后度 num = 脚相对髋部的有符号纵深
   2) 若未迈步且 num < -jointDist*stepLength → 进入"迈步"
   3) 迈步中：raycast/格搜（对标 FindGrip）在前方地形找落点 target，
-     否则 target = 髋前方静止姿势位
+	 否则 target = 髋前方静止姿势位
   4) IK：vel = Lerp(vel, dir(pos→target)*limbSpeed, limbQuickness)；够近则吸附
   5) pos += vel; vel *= airFriction
   6) 距离约束：把脚拉回 hip 的 jointDist 半径内（对标 ConnectToPoint）
@@ -531,7 +531,7 @@ RW 里这两层恰好都是 20px，只是因为游戏尺度小；本质是**两�
 1. 算脚"想去"的目标点（髋部前方一点，body-relative）
 2. 从目标点朝下(或朝墙面法线方向)打一根短射线 PhysicsRayQueryParameters3D
 3. 命中 collider → 取 position + normal；在腿长 jointDist 内 → 踩这, terrainContact=true
-              → 打空 → 这只脚这步没得踩(对应 RW 抓空)
+			  → 打空 → 这只脚这步没得踩(对应 RW 抓空)
 4. 腿长约束 + IK 收敛(§11.5/§11.9)
 ```
 - **爬墙 = 把射线方向从"朝下"换成"朝墙面"，逻辑一模一样**（呼应 §11.4/§11.6b：走爬无分支）。
