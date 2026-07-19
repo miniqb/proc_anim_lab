@@ -2,7 +2,7 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M3 地形涌现完成**（重力开关 + 支撑系射线换向：斜坡行走、爬墙、翻越墙顶全部无模式分支涌现，确定性回归覆盖全程），进入 M4。
+> 当前状态：**M4 多样化与调参完成**（BreedParams 品种参数表 + 四预设含多脊柱/六足/参数化尾巴 + 闲置休息姿态，全品种确定性回归），进入 M5。
 
 ---
 
@@ -58,8 +58,8 @@
 | **M1** | 物理地基：固定步长循环 + 点/弹簧 Verlet 身体沙盒（可拖动、能滚，验证软体手感与确定性） | ✅ 完成 |
 | **M2** | 会走路：plant-and-trail 腿 + 射线落脚，平地行走；可拖动身体看腿自适应 | ✅ 完成 |
 | **M3** | 地形涌现：斜坡 / 墙 → 走、爬两态自然涌现（重力开关 + 射线方向切换） | ✅ 完成 |
-| **M4** | 多样化与调参：多足 / 尾巴 / 多种体型，参数化手感（对标 `LizardBreedParams`） | ← **当前** |
-| **M5** | 移植接口：抽出与引擎解耦的模块，定义回迁 `random-room-runtime` 的边界 | 待办 |
+| **M4** | 多样化与调参：多足 / 尾巴 / 多种体型，参数化手感（对标 `LizardBreedParams`） | ✅ 完成 |
+| **M5** | 移植接口：抽出与引擎解耦的模块，定义回迁 `random-room-runtime` 的边界 | ← **当前** |
 
 > **M1 产物**：`scripts/physics/`（纯 C# 内核：BodyChunk / ChunkConnection / Body / ITerrainQuery，零场景树依赖，M5 回迁边界）、`scripts/terrain/RaycastTerrainQuery.cs`（内核与 Godot 物理的唯一接缝）、`scripts/sandbox/`（驱动/渲染/拖拽/确定性探针）、`scenes/sandbox.tscn`（白盒：地板+缓坡+台阶+墙）。
 >
@@ -74,8 +74,11 @@
 >
 > 确定性路线：上坡→下坡→撞墙→爬墙→翻越 3m 薄墙→落地续走循环（2000 tick：waypointsReached=12、gravityOff≈80%）；另有 `--route=wall`（配 `--spawn=-4,0.5,0`）做正面推墙翻越测试：2000 tick 翻越 10 次，微扰扫描 9~11 次全成功。身体按重力开关换色（红=坠落、青=抓稳/攀爬）。落地冲击的单 tick 约束拉伸通常 ~3%、偶发硬着陆 ~16%（软体压扁回弹，下 tick 即被松弛修正）。
 >
-> **M4 待办（实测积累）**：
-> - **闲置姿态**（≙ RW `Limb.Mode.HuntRelativePosition`）：目前只移植了追世界落点的 HuntAbsolutePosition，脚找不到落点且 RunSpeed≈0 时会橙色悬在空中最大前伸位不动（翻墙登顶后无输入时可复现；无害——HasGrip=false 不计抓地不骗重力开关，纯视觉）。修法：连续若干 tick 找不到落点且无移动意图 → 追逐目标切「锚点朝支撑方向收拢的休息位」，脚自然垂回身边；有输入即恢复迈步。
+> **M4 产物**：手感全部收拢到一张品种参数表。
+> - `scripts/physics/BreedParams.cs`（≙ `LizardBreedParams` 运动子集）：字段名镜像 RW（`BodySizeFac`/`LimbSpeed`/`LimbQuickness`/`StepLength`/`LiftFeet`/`FeetDown`/`LegPairDisplacement`/`LimbGripDelay`/`SmoothenLegMovement`/`NoGripSpeed`/`TailSegments`/`TailStiffness`+`TailTipStiffness`（tailStiffnessDecline 的端点式）/`TailLengthFactor`），单位全部本项目制；`SpineSegments`/`LegPairs` 为 3D 扩展（RW 蜥蜴固定 2 锚 4 腿）。纯出生配置——工厂读表装配，内核运行时不回读、零行为分支。
+> - `BodyFactory`（≙ `LizardBreeds`）重写为通用装配器：脊柱 = N chunk 的 Rigid 链（头…中段…髋，`Walker` 构造改显式 head/hips 引用 + `SpineLength`）、腿对沿脊柱均匀分布锚定（相邻对出生错位相反 = 对角步态相位种子）、尾巴 = 渐细 PullOnly 链（WeightA 沿链递减）。四预设：**default**（M2~M3 调教的基线四腿，取值与旧硬编码逐位一致）、**heavy**（绿蜥系：3 节脊柱×1.2 体格、宽站距、硬长尾、`SmoothenLegMovement=false`）、**sprinter**（黄蜥系：0.85 体格快腿短尾）、**hexapod**（3 脊柱 3 腿对，RW 无对照）。沙盒数字键 1~4 现场换品种、`--breed=` 供无头回归。
+> - **闲置休息姿态**（≙ RW `Limb.Mode.HuntRelativePosition`，清偿 M3 遗留）：连续 `IdleAfterTicks` 找不到落点且 RunSpeed≈0 → `IdlePose`，追逐目标每 tick 切「锚点沿支撑方向垂下、向本侧微撇」的休息位，脚垂回身侧；有输入立即恢复迈步。`HasGrip` 恒 false 不骗重力开关；有移动意图时整套逻辑休眠（默认路线哈希不变）。回归：`--route=stand --spawn=-6,3.7,0` 空降墙顶站桩，悬空侧双脚应 `idle=True` 收拢。
+> - **调参教训（heavy 第一版近瘫的根因）**：腿慢（LimbSpeed 0.10）+ 步幅大（StepLength 0.85）+ 外撇远（0.7）三者叠加会让脚永远追不上身体，平均抓地 0.6/4 → 重力开关长期打开。腿参数必须留在可行域（速度 ≥0.12、步幅 ≤0.75）附近，「笨重感」交给脊柱节数/体格缩放/站距/尾巴刚度表达——它们不碰抓地循环。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
 >
@@ -86,6 +89,9 @@
 > # 双跑 diff 必须为空；40Hz（去掉 --tps=400）与 400Hz 哈希必须一致；--perturb=0.001 哈希必须变。
 > # M3 路线全程进哈希：上坡→下坡→撞墙→爬墙→翻顶循环（[METRIC] 2000 tick waypointsReached≥12、maxHeadY≈3.8 = 稳定翻墙）。
 > # --route=wall --spawn=-4,0.5,0：正面推墙翻越测试（每 waypoint = 一次翻越，2000 tick 应 ≥9）。
+> # --route=stand --spawn=-6,3.7,0：零输入站桩（闲置姿态回归：悬空侧脚 [FINAL] idle=True）。
+> # --breed=heavy|sprinter|hexapod：新品种各双跑哈希必须一致，且能走完路线
+> #   （2000 tick 参考值：heavy 5 路点/抓地 1.48、sprinter 18 路点、hexapod 8 路点/抓地 2.51/6）。
 > # 另有 --spawn=x,y,z 覆盖出生点（坡上/墙边空降压力测试）；
 > # --yank=T 在 T tick 给头部脚本化上抛冲量（「拎起再摔」回归：落地后步态必须恢复，
 > #   曾有成对腿 extraLongStep 互相死等导致四腿永久冻结的 bug，靠确定性超时打破）。
