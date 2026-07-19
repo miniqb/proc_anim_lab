@@ -48,7 +48,7 @@ public sealed class Body
         Integrate();
         RelaxConstraints();
         Collide(ctx);
-        ReleaseSnags();
+        ReleaseSnags(ctx);
     }
 
     private void ApplyForces(in TickContext ctx)
@@ -211,7 +211,7 @@ public sealed class Body
     /// 长链逐节释放：一次只解最靠身体的断裂环，其余环下个 tick 起依次接力（0.25s 一节）。
     /// 固定阈值 + 固定计数，无随机——确定性版的「RW 图形件离太远就 Reset」。
     /// </summary>
-    private void ReleaseSnags()
+    private void ReleaseSnags(in TickContext ctx)
     {
         foreach (ChunkConnection conn in Connections)
         {
@@ -244,7 +244,15 @@ public sealed class Body
             BodyChunk mover = anchorIsA ? conn.B : conn.A;
             Vector3 delta = mover.Pos - anchor.Pos;
             Vector3 dir = delta.LengthSquared() < 1e-12f ? Vector3.Up : delta.Normalized();
-            mover.Pos = anchor.Pos + dir * conn.RestLength;
+            Vector3 target = anchor.Pos + dir * conn.RestLength;
+            // 落点校验（终审 C3）：RestLength 大于「锚到墙面距离 + 半墙厚」时目标点可能已在
+            // 地形内——MTD 会把它弹回墙的另一侧，卡链原样重建，形成 0.25s 周期的传送震荡。
+            // 此时直接叠到锚点（≙ RW Reset 的 pos=connectedPos），下 tick 约束+碰撞自然铺开。
+            if (ctx.Terrain.SpherePenetration(target, mover.Radius, out _, out _))
+            {
+                target = anchor.Pos;
+            }
+            mover.Pos = target;
             mover.LastPos = mover.Pos; // 清运动扫掠：下 tick 不把「传送」当成穿墙位移
             mover.Vel = anchor.Vel;
         }

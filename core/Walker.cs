@@ -131,9 +131,10 @@ public sealed class Walker
 		Hips = hips;
 	}
 
-	/// <summary>宿主 tether 契约的 rebase/teleport 入口：身体、腿、腿的追逐目标整体平移，
-	/// 速度/抓握/站稳状态原样保留。权威根瞬移或复位时调用——没有它，视觉身体只能以
-	/// MaxMoveSpeed 横穿场景慢慢追根，或继续抓在原地（评审 P1-7）。</summary>
+	/// <summary>rebase：身体、腿、腿的追逐目标整体平移，速度/抓握/站稳状态**原样保留**。
+	/// 只适用于「地形随你一起平移」的场景（浮点原点重置、整个世界搬家）——地形不动的
+	/// 瞬移要用 <see cref="Teleport"/>：保留的抓握点会留在旧位置的空气里，身体悬空关重力
+	/// 永久漂浮（终审 C8）。</summary>
 	public void Shift(Vector3 delta)
 	{
 		Body.Shift(delta);
@@ -141,6 +142,20 @@ public sealed class Walker
 		{
 			limb.Shift(delta);
 		}
+	}
+
+	/// <summary>teleport：平移到新位置并作废一切位置态记忆——全腿强制松手（旧抓握点
+	/// 对新位置无效）、站稳计数清零，落地后按常规 plant-and-trail 重建步态。
+	/// 权威根瞬移/复位/换房用这个（评审 P1-7 + 终审 C8 的区分）。</summary>
+	public void Teleport(Vector3 delta)
+	{
+		Shift(delta);
+		foreach (Limb limb in Limbs)
+		{
+			limb.ForceRelease();
+		}
+		FootingCounter = 0;
+		NoGripCounter = LoseGripTicks + 1;
 	}
 
 	/// <summary>宿主冲量注入（跳跃/击飞/弹射，≙ RW 被抛掷）：全 chunk 加同一速度增量

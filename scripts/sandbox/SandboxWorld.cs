@@ -29,7 +29,7 @@ public partial class SandboxWorld : Node3D
 
     private float _perturb; // --perturb=x 灵敏度自检：初始位置微扰 → 哈希必须变
     private Vector3 _spawn = new(0f, 2f, 0f); // --spawn=x,y,z 覆盖出生点（坡上/墙边测试用）
-    private long _yankTick = -1; // --yank=T：T 起 5 tick 给头部上抛冲量（复现「拎起再摔」，回归步态恢复）
+    private long _yankTick = -1; // --yank=T：T tick 调 Walker.Launch 抛掷（「拎起再摔」+击飞 API 的实际覆盖）
     private ulong? _expectHash; // --expect-hash=X16：终值哈希对基线断言（回归脚本传文档基线，防「确定但错误」）
     private bool _fatal; // CLI 畸形等致命错：停帧防 NRE 无限刷屏，退出码 2
 
@@ -74,6 +74,13 @@ public partial class SandboxWorld : Node3D
 
     public override void _Ready()
     {
+        // 输出与解析统一不变文化：矩阵脚本按「小数点 + 逗号分隔」解析 [FINAL]/[METRIC]，
+        // 逗号小数 locale（de_DE 等）会让 embed/wallside 位置断言静默退化为恒 PASS（终审 C0）。
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture =
+            System.Globalization.CultureInfo.InvariantCulture;
+        System.Threading.Thread.CurrentThread.CurrentCulture =
+            System.Globalization.CultureInfo.InvariantCulture;
+
         _camera = GetNode<Camera3D>("Camera3D");
         _gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         _drag.Spring = DragSpring;
@@ -132,9 +139,10 @@ public partial class SandboxWorld : Node3D
             SteerAlongWaypoints();
         }
 
-        if (_yankTick >= 0 && _tick >= _yankTick && _tick < _yankTick + 5)
+        if (_yankTick >= 0 && _tick == _yankTick)
         {
-            _walker.Head.Vel += new Vector3(0.02f, 0.08f, 0.03f);
+            // 走正式击飞 API（曾直接抠 Head.Vel 五个 tick——Launch 因此零回归覆盖，终审 C11）。
+            _walker.Launch(new Vector3(0.1f, 0.4f, 0.15f));
         }
 
         // 地形查询经 _rayDebug 转发（纯观测装饰器）：F3 可视化打出的所有射线。
@@ -349,7 +357,12 @@ public partial class SandboxWorld : Node3D
         }
         if (_expectHash is ulong expect && _probe!.Hash != expect)
         {
-            reasons.Add($"哈希 {_probe.Hash:X16} ≠ 基线 {expect:X16}（有意改内核请同步 CLAUDE.md §5 与矩阵脚本）");
+            reasons.Add($"哈希 {_probe.Hash:X16} ≠ 基线 {expect:X16}（有意改内核请同步两处真相源：矩阵脚本 + smoke ExpectedHash）");
+        }
+        if (_bodies[0].SnagReleases > 60)
+        {
+            // maxDeepRun 检不出这种 churn：释放每 10 tick 把深违反清零，慢性传送震荡照样全绿（终审 C5）。
+            reasons.Add($"卡链释放 {_bodies[0].SnagReleases} 次（>60）——传送震荡/慢性卡死");
         }
         bool pass = reasons.Count == 0;
         GD.Print(pass ? "[RESULT] PASS" : $"[RESULT] FAIL: {string.Join("; ", reasons)}");
@@ -476,6 +489,12 @@ public partial class SandboxWorld : Node3D
                 GD.PrintErr($"[SANDBOX] 参数畸形: {arg}（{e.Message}）");
                 return false;
             }
+        }
+        if (_expectHash is not null && _probe is null)
+        {
+            // 断言只在探针结束时执行——没有探针它静默蒸发且进程永不退出（终审 C6）。
+            GD.PrintErr("[SANDBOX] --expect-hash 需要配合 --determinism");
+            return false;
         }
         return true;
     }

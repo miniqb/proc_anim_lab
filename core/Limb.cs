@@ -266,13 +266,16 @@ public sealed class Limb
 		HuntPos += delta;
 	}
 
-	/// <summary>强制松开重迈步（Walker 顶死解锁用，≙ RW timeSpentTryingThisMove 的升级动作）。</summary>
+	/// <summary>强制松开重迈步（Walker 顶死解锁 / Launch 击飞用，≙ RW timeSpentTryingThisMove
+	/// 的升级动作）。GripCounter 必须当场清零：Launch 在两个 tick 之间调用，下个 tick 的
+	/// UpdateFooting 先于腿更新读 Gripping——残留旧计数会把刚写好的站稳清零又冲掉（终审 C10）。</summary>
 	public void ForceRelease()
 	{
 		ReachingForTerrain = false;
 		HasGrip = false;
 		IdlePose = false;
 		_extraLongStep = false;
+		GripCounter = 0;
 	}
 
 	/// <summary>休息位（≙ relativeHuntPos 的支撑系版）：锚点沿支撑方向垂下、向本侧微撇。</summary>

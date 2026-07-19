@@ -102,9 +102,21 @@ public sealed class RaycastTerrainQuery : ITerrainQuery
         Vector3 normal = (Vector3)rest["normal"];
         if (normal.LengthSquared() < 1e-12f)
         {
-            // 深嵌入时引擎可能给不出法线：用「接触点→球心」兜底，保证总有确定性的脱离方向。
+            // 引擎给不出法线的退化路径。「接触点→球心」只在球心在 collider 外侧时是脱离方向；
+            // 球心已在内部时它恰好指向体内——盲用会把 chunk 越推越深（终审 C2）。
+            // 用一根 HitFromInside 射线消歧：从球心射向表面接触点，零法线命中 = 球心在内部。
             Vector3 away = center - point;
-            normal = away.LengthSquared() < 1e-12f ? Vector3.Up : away.Normalized();
+            float awayLen = away.Length();
+            bool centerInside = Raycast(center, point, out TerrainHit probe)
+                && probe.Normal.LengthSquared() < 1e-12f;
+            if (centerInside)
+            {
+                // 球心在内部：沿「球心→表面点」推出，深度 = 到表面的距离 + 半径。
+                pushDir = awayLen < 1e-12f ? Vector3.Up : -away / awayLen;
+                depth = awayLen + radius;
+                return true;
+            }
+            normal = awayLen < 1e-12f ? Vector3.Up : away / awayLen;
         }
 
         depth = radius - (center - point).Dot(normal);

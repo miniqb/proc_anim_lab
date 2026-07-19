@@ -2,7 +2,7 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M5 移植接口完成 + 外部评审修复轮（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`（TypeRef 边界扫描 + 无引擎冒烟双重解耦实证），回迁契约就位（[`docs/porting_contract.md`](docs/porting_contract.md)）。评审修复轮补齐：球体穿透碰撞语义（接缝第二原语）、卡链释放、输入死区/抓握/限速语义统一、宿主 Shift/Launch 接线 API、断言化回归矩阵（`tools/run_matrix.sh`）。准确状态：**内核抽离完成 + 集成契约就位**；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
+> 当前状态：**M5 移植接口完成 + 外部评审修复轮（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`（TypeRef 边界扫描 + 无引擎冒烟双重解耦实证），回迁契约就位（[`docs/porting_contract.md`](docs/porting_contract.md)）。评审修复轮补齐：球体穿透碰撞语义（接缝第二原语）、卡链释放、输入死区/抓握/限速语义统一、宿主 Shift/Teleport/Launch 接线 API、断言化回归矩阵（`tools/run_matrix.sh`）。准确状态：**内核抽离完成 + 集成契约就位**；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 
 ---
 

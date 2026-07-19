@@ -11,7 +11,7 @@
 
 1. **拷 `core/` 一个文件夹**进主项目（两条路线见 §8.2；命名空间归化 = 一次 sed）。
 2. **按主项目射线规范实现 `ITerrainQuery`**（§6 有对照模板；`core/godot/RaycastTerrainQuery.cs`
-   是最小参考实现，40 行）。
+   是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
 3. **宿主 tick 里装 0.025s 累加器**驱动 `Walker.Tick`，渲染读 `LerpPos(插值分数)`（§3）；
    回归先跑 `core/smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
@@ -127,11 +127,15 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 ### 3.4 出生 / 传送 / 冲量
 
 - 出生 = `CreateWalker(origin, p)`（沙盒热切换品种即整体替换）。
-- **传送/rebase = `Walker.Shift(delta)`**：身体、腿、腿的追逐目标整体平移，速度/抓握/
-  站稳状态原样保留——动力学无缝续走（浮点原点重置同用此入口）。不要手写逐字段
-  平移：漏掉 `LastPos` 会让运动扫掠射线扫过整张地图，漏掉 `HuntPos` 会让脚飞回旧落点。
+- **rebase = `Walker.Shift(delta)`**：整体平移，速度/抓握/站稳状态**原样保留**——
+  只适用于「地形随你一起平移」的场景（浮点原点重置、整个世界搬家）。不要手写逐字段
+  平移：漏掉 `LastPos` 会让运动扫掠射线扫过整张地图，漏掉 `HuntPos` 会让脚飞回旧落点
+  （smoke 的 [CORE-SHIFT] 逐字段精确断言钉死了这份完备性）。
+- **瞬移/复位/换房 = `Walker.Teleport(delta)`**：Shift + 全腿强制松手 + 站稳清零——
+  地形不动时旧抓握点在新位置是空气，保留它们会悬空关重力永久漂浮。落地后步态自动重建。
 - **跳跃/击飞 = `Walker.Launch(velPerTick)`**：全 chunk 加同一速度增量，全腿强制松手、
-  站稳计数清零——重力当 tick 回归，身体进入弹道，落地后 plant-and-trail 自动恢复。
+  站稳计数清零——重力当 tick 回归，身体进入弹道，落地后 plant-and-trail 自动恢复
+  （smoke 的 [CORE-LAUNCH] 断言覆盖；沙盒 `--yank` 是它的场景版）。
 - 想「删掉重来」（长途瞬移后不在乎连续性）：整体重建仍然最简单。
 
 ## 4. 输入契约（AI 只有两个旋钮）
@@ -140,7 +144,8 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 |------|---------|------|
 | `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时）。 |
 | `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。 |
-| `Walker.Shift(delta)` | 方法 | 传送/rebase（§3.4）。 |
+| `Walker.Shift(delta)` | 方法 | rebase：地形随体平移时用（§3.4）。 |
+| `Walker.Teleport(delta)` | 方法 | 瞬移：地形不动时用（Shift + 松手 + 站稳清零，§3.4）。 |
 | `Walker.Launch(velPerTick)` | 方法 | 跳跃/击飞冲量（§3.4）。 |
 
 - 每 tick 写入（不写则保持上次值——AI 决策频率可以低于 tick 频率）。
@@ -158,12 +163,19 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 | 根的行为 | 判据（建议值） | 内核动作 |
 |---|---|---|
 | 常规移动 | 偏离 ≤ `MaxTether`（建议 1.5m） | `MoveDir = 朝 (rootPos + rootVel·k)`，`RunSpeed` 按距离饱和——身体像追路径点一样拖行 |
-| 被甩开（追不上/卡地形） | 偏离 > `MaxTether` | `Shift(rootPos − Hips.Pos)` 的超出量（或全量）——硬拽回签约距离内 |
-| 瞬移/复位/换房 | 单 tick 根位移 > 传送阈（建议 2m） | `Shift(rootDelta)` 全量 |
+| 被甩开（追不上/卡地形） | 偏离 > `MaxTether` | `Teleport(超出量)`——硬拽回签约距离内（用 Teleport 不用 Shift：旧抓握点已无意义） |
+| 瞬移/复位/换房 | 单 tick 根位移 > 传送阈（建议 2m） | `Teleport(rootDelta)` 全量 |
 | 跳跃/击飞 | 事件驱动 | `Launch(rootImpulse × dt/tick 换算)` 后照常给意图 |
 
 `MaxTether` 是**宿主侧参数**（内核不知道根的存在）；把它连同阈值写进主项目的
-snapshot→内核映射层，即姿态 1 的完整接线面。
+snapshot→内核映射层。两个**接线时必须调的已知张力**（终审 C9）：
+
+- **爬墙涌现 vs 贴地导航根**：根绕墙走时，内核的意图重定向可能让身体就地爬墙——
+  与根的分歧会被第二档 `Teleport` 拽回，但表现是「爬两步被拽走」。若品种不该爬墙，
+  宿主侧把 `MoveDir` 压平（去掉指向墙内的分量）即可关掉这条涌现；要爬墙怪就接受分歧。
+- **纠偏落点的地形安全**：`Teleport` 的落点应基于根的位置（`CharacterBody3D` 保证
+  非嵌入），不要落在内核身体的几何附近乱推——嵌入虽会被 S4 MTD 解出，但可能与
+  根方向形成来回拉锯。落点取「根位置 + 品种站高」最稳。
 
 ## 5. 输出契约（渲染与 AI 的观测面）
 
@@ -313,7 +325,7 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 | `LookDirection` | 不进内核（头部朝向属渲染层修饰） |
 | `Grounded=false`（走空/坠落） | 放空输入即可（重力开关自然坠落，落地自恢复） |
 | 跳跃/击飞/弹射事件 | `Walker.Launch(冲量)`——只放空输入不会给向上冲量（§4.1） |
-| 根瞬移/复位/换房 | `Walker.Shift(rootDelta)`（§4.1） |
+| 根瞬移/复位/换房 | `Walker.Teleport(rootDelta)`（§4.1；Shift 仅用于地形随体平移的 rebase） |
 | `VariantSeed` | 出生时微调 `BreedParams`（纯装配期，运行时仍零随机） |
 | `Mode`/`Alertness`/`Health01` | 映射到品种/`RunSpeed` 上限等出生或输入参数 |
 

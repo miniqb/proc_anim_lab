@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -28,11 +29,15 @@ internal static class Program
 
     private static int Main()
     {
+        // 输出统一不变文化：逗号小数 locale 会破坏下游脚本对数值行的解析（与沙盒同一约定）。
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) a = Run();
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) b = Run();
         bool boundaryOk = CheckEngineBoundary(out string boundaryMsg);
         bool embedOk = CheckEmbedRecovery(out string embedMsg);
         bool shiftOk = CheckShiftContinuity(out string shiftMsg);
+        bool launchOk = CheckLaunchRecovery(out string launchMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -40,6 +45,7 @@ internal static class Program
         Console.WriteLine($"[CORE-BOUNDARY] {boundaryMsg}");
         Console.WriteLine($"[CORE-EMBED] {embedMsg}");
         Console.WriteLine($"[CORE-SHIFT] {shiftMsg}");
+        Console.WriteLine($"[CORE-LAUNCH] {launchMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -72,7 +78,11 @@ internal static class Program
         }
         if (!shiftOk)
         {
-            reasons.Add("Shift 后步态中断（rebase 契约被破坏）");
+            reasons.Add("Shift 后步态中断或平移不完备（rebase 契约被破坏）");
+        }
+        if (!launchOk)
+        {
+            reasons.Add("Launch 后未进坠落态或未恢复步态（击飞契约被破坏）");
         }
 
         bool pass = reasons.Count == 0;
@@ -149,9 +159,10 @@ internal static class Program
     }
 
     /// <summary>
-    /// rebase 连续性：行走中整体 Shift(+512,0,+512)（宿主 teleport/浮点原点重置的契约入口），
-    /// 步态必须无缝续走。坐标进入不同浮点尾数区间，bit-exact 不可期待——断言的是
-    /// 「平移不打断动力学」：续走里程过阈、无 NaN、约束收敛。
+    /// rebase 完备性 + 连续性：行走中整体 Shift(+512,0,+512)（浮点原点重置的契约入口）。
+    /// ① 逐字段精确断言：每个带世界坐标的量（chunk Pos/LastPos、limb Pos/LastPos/HuntPos）
+    /// 必须恰好移动 delta——漏平移 LastPos/HuntPos 在无限平面上不会立刻炸，光靠续走
+    /// 断言测不出（终审 C12）。② 续走里程过阈、无 NaN、约束收敛（平移不打断动力学）。
     /// </summary>
     private static bool CheckShiftContinuity(out string message)
     {
@@ -166,7 +177,32 @@ internal static class Program
             walker.RunSpeed = 1f;
             walker.Tick(new TickContext(gravityPerTick, terrain, t));
         }
-        walker.Shift(new Vector3(512f, 0f, 512f));
+
+        var delta = new Vector3(512f, 0f, 512f);
+        var prevChunks = new (Vector3 Pos, Vector3 LastPos)[walker.Body.Chunks.Count];
+        for (int i = 0; i < prevChunks.Length; i++)
+        {
+            prevChunks[i] = (walker.Body.Chunks[i].Pos, walker.Body.Chunks[i].LastPos);
+        }
+        var prevLimbs = new (Vector3 Pos, Vector3 LastPos, Vector3 HuntPos)[walker.Limbs.Count];
+        for (int i = 0; i < prevLimbs.Length; i++)
+        {
+            prevLimbs[i] = (walker.Limbs[i].Pos, walker.Limbs[i].LastPos, walker.Limbs[i].HuntPos);
+        }
+        walker.Shift(delta);
+        bool exact = true;
+        for (int i = 0; i < prevChunks.Length; i++)
+        {
+            exact &= walker.Body.Chunks[i].Pos == prevChunks[i].Pos + delta
+                && walker.Body.Chunks[i].LastPos == prevChunks[i].LastPos + delta;
+        }
+        for (int i = 0; i < prevLimbs.Length; i++)
+        {
+            exact &= walker.Limbs[i].Pos == prevLimbs[i].Pos + delta
+                && walker.Limbs[i].LastPos == prevLimbs[i].LastPos + delta
+                && walker.Limbs[i].HuntPos == prevLimbs[i].HuntPos + delta;
+        }
+
         Vector3 start = walker.Head.Pos;
         for (int i = 0; i < 300; i++)
         {
@@ -179,8 +215,45 @@ internal static class Program
         d.Y = 0f;
         bool nan = !walker.Head.Pos.IsFinite();
         float dev = walker.Body.CurrentMaxDeviation();
-        message = $"Shift(+512,0,+512) 后 300 tick 续走 {d.Length():F2}m，endDev={dev:F4}m（须 >15m 且收敛）";
-        return d.Length() > 15f && !nan && dev < 0.05f;
+        message = $"Shift(+512,0,+512) 逐字段精确={exact}，续走 {d.Length():F2}m，endDev={dev:F4}m";
+        return exact && d.Length() > 15f && !nan && dev < 0.05f;
+    }
+
+    /// <summary>
+    /// Launch 恢复：行走中被抛掷（全腿松手+站稳清零）→ 当 tick 后必须处于坠落态，
+    /// 落地后必须重新关重力并继续行走——击飞契约的机器可查覆盖（--yank 是它的场景版）。
+    /// </summary>
+    private static bool CheckLaunchRecovery(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
+        var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        long t = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            t++;
+            walker.MoveDir = new Vector3(1f, 0f, 0f);
+            walker.RunSpeed = 1f;
+            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+        }
+        walker.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+        t++;
+        walker.Tick(new TickContext(gravityPerTick, terrain, t));
+        bool airborne = walker.ApplyGravity;
+        Vector3 start = walker.Head.Pos;
+        for (int i = 0; i < 500; i++)
+        {
+            t++;
+            walker.MoveDir = new Vector3(1f, 0f, 0f);
+            walker.RunSpeed = 1f;
+            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+        }
+        bool regained = !walker.ApplyGravity;
+        Vector3 d = walker.Head.Pos - start;
+        d.Y = 0f;
+        bool nan = !walker.Head.Pos.IsFinite();
+        message = $"Launch 后坠落={airborne}，500 tick 后回归步态={regained}，续走 {d.Length():F2}m";
+        return airborne && regained && d.Length() > 10f && !nan;
     }
 
     /// <summary>

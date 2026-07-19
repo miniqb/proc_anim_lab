@@ -1,23 +1,26 @@
 #!/bin/bash
-# 确定性全矩阵回归：9 配置 × 硬断言（哈希基线 / 有限值 / 碰撞后约束终态 / 路点下限 / 退出码聚合）。
-# 任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、探针只打印不断言,
-# NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
+# 确定性全矩阵回归：11 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
+# 位置检查 / 退出码聚合）。任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、
+# 探针只打印不断言, NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
 #
-# 有意改内核后重定基线：先人工核对各配置 [METRIC]/[FINAL] 合理，再同步更新下方哈希表与 CLAUDE.md §5。
+# 有意改内核后重定基线：先人工核对各配置 [METRIC]/[FINAL] 合理，再同步更新下方哈希表与
+# core/smoke/Program.cs 的 ExpectedHash（基线哈希只存这两处，别处一律引用不复制），
+# 并按新参考值回顾一遍路点下限（下限 ≈ 参考值的 75~80%，历史上曾停在修复前旧值——终审 C16）。
 set -uo pipefail
+export LC_ALL=C   # awk/sed 的数值解析钉死 C locale（C# 侧输出已是 InvariantCulture，双保险）
 
 GODOT="${GODOT:-/Applications/Godot_mono.app/Contents/MacOS/Godot}"
 cd "$(dirname "$0")/.."
 OUT="${1:-/private/tmp/proc_anim_matrix}"
 LOG=/private/tmp/godot_codex.log
 
-# —— 基线哈希（400Hz/2000tick，与 CLAUDE.md §5 哈希表同步维护）——
+# —— 基线哈希（400Hz/2000tick；真相源两处之一，另一处是 smoke 的 ExpectedHash）——
 HASH_DEFAULT=2467A2B2D5511AF4
 HASH_WALL=62D10580D4B0FEE2
 HASH_STAND=D9F94BB9262BD2ED
-HASH_HEAVY=40023DABFBF998E4
+HASH_HEAVY=6F9B975B4135C603
 HASH_SPRINTER=168EC2C94EE347A7
-HASH_HEXAPOD=4E71B33910C55C76
+HASH_HEXAPOD=E1F9E0E515D678DD
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -63,16 +66,17 @@ run() {
 
 final_hash() { grep '^\[DET\]' "$OUT/$1.txt" | tail -1 | sed 's/.*hash=//'; }
 
-run default    "$HASH_DEFAULT"  12 2000 --tps=400
-run default-b  "$HASH_DEFAULT"  12 2000 --tps=400
-run default-40 "$HASH_DEFAULT"  12 2000
-# 微扰轨迹有意发散,路点下限放宽到「仍在健康走路线」（基线跑 12+,微扰实测 ~9）
+# 路点下限 ≈ 当前基线参考值（default 12 / wall 11 / heavy 6 / sprinter 17 / hexapod 9）的 75~80%；
+# 微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
+run default    "$HASH_DEFAULT"  10 2000 --tps=400
+run default-b  "$HASH_DEFAULT"  10 2000 --tps=400
+run default-40 "$HASH_DEFAULT"  10 2000
 run perturb    -                6  2000 --tps=400 --perturb=0.001
 run wall       "$HASH_WALL"     9  2000 --tps=400 --route=wall --spawn=-4,0.5,0
 run stand      "$HASH_STAND"    -  2000 --tps=400 --route=stand --spawn=-6,3.7,0
-run heavy      "$HASH_HEAVY"    6  2000 --tps=400 --breed=heavy
-run sprinter   "$HASH_SPRINTER" 15 2000 --tps=400 --breed=sprinter
-run hexapod    "$HASH_HEXAPOD"  3  2000 --tps=400 --breed=hexapod
+run heavy      "$HASH_HEAVY"    5  2000 --tps=400 --breed=heavy
+run sprinter   "$HASH_SPRINTER" 14 2000 --tps=400 --breed=sprinter
+run hexapod    "$HASH_HEXAPOD"  7  2000 --tps=400 --breed=hexapod
 # 评审复现固化:嵌入脱困（P1-3）与贴墙擦边（P1-2），位置断言在下方
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0
@@ -84,12 +88,15 @@ else
     echo "[embed-escape] FAIL：仍有 chunk 冻在地板内"; fail=1
 fi
 
-# 贴墙擦边:髋球（chunk=1,r=0.25）球面不得穿入 x=-5.8 的墙面（旧版穿 5cm 无接触）
-hipx=$(grep '^\[FINAL\] body=0 chunk=1 ' "$OUT/wallside.txt" | sed 's/.*pos=(\([^,]*\),.*/\1/')
-if awk -v x="${hipx:-0}" 'BEGIN{exit !(x >= -5.551)}'; then
+# 贴墙擦边:髋球（chunk=1,r=0.25）球面不得穿入 x=-5.8 的墙面（旧版穿 5cm 无接触）。
+# 抓取失败/非数值必须红——曾经 ${hipx:-0} 让空值以 0 参赛恒 PASS（终审 C4）。
+hipx=$(grep '^\[FINAL\] body=0 chunk=1 ' "$OUT/wallside.txt" | sed -n 's/.*pos=(\(-\{0,1\}[0-9][0-9.]*\),.*/\1/p')
+if [ -z "$hipx" ]; then
+    echo "[wallside-graze] FAIL：未能从 [FINAL] 提取髋球 x（格式漂移/chunk 索引变化）"; fail=1
+elif awk -v x="$hipx" 'BEGIN{exit !(x >= -5.551)}'; then
     echo "[wallside-graze] PASS（髋球 x=$hipx）"
 else
-    echo "[wallside-graze] FAIL：髋球穿墙（x=${hipx:-无}）"; fail=1
+    echo "[wallside-graze] FAIL：髋球穿墙（x=$hipx）"; fail=1
 fi
 
 # 双跑逐字节：两次 default 的 [DET] 序列必须完全一致
