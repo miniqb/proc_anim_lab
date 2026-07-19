@@ -222,7 +222,7 @@ public partial class SandboxWorld : Node3D
     public override void _Process(double delta)
     {
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
-        _rayDebug.Draw();
+        _rayDebug.Draw(_camera);
     }
 
     /// <summary>F3：随时开关射线可视化（洋红=命中，灰蓝=打空；只影响绘制，不影响物理）。</summary>

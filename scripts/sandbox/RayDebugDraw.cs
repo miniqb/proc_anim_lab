@@ -7,7 +7,8 @@ namespace ProcAnimLab.Sandbox;
 /// <summary>
 /// 射线可视化调试：包装 ITerrainQuery，把一个物理 tick 内经过接缝的所有射线
 /// （腿的落脚/翻越采样带、脚与身体的碰撞扫掠、推进目标投影、站稳探测）记录下来，
-/// 每帧用 ImmediateMesh 重画——洋红=命中（画到命中点），灰蓝=打空（画完整段）。
+/// 每帧用 ImmediateMesh 重画。GL 线图元恒为 1px 看不清，这里画成朝向相机的条带
+/// （有实际宽度），命中点再加菱形标记——洋红=命中（画到命中点），灰蓝=打空（完整段）。
 /// 纯观测：转发不改变任何查询结果，开关只影响记录与绘制，确定性哈希不受影响。
 /// </summary>
 public sealed class RayDebugDraw : ITerrainQuery
@@ -19,8 +20,15 @@ public sealed class RayDebugDraw : ITerrainQuery
     /// <summary>记录/绘制开关（F3 切换）。关闭时本类只是纯转发。</summary>
     public bool Enabled;
 
-    private static readonly Color HitColor = new(0.95f, 0.25f, 0.85f);
-    private static readonly Color MissColor = new(0.45f, 0.5f, 0.6f, 0.5f);
+    /// <summary>射线条带半宽（米）：总宽 2cm，生物尺度（腿长 0.55m）下清晰可辨。</summary>
+    private const float HalfWidth = 0.01f;
+
+    /// <summary>命中点菱形标记的半径（米）。</summary>
+    private const float MarkerSize = 0.035f;
+
+    private static readonly Color HitColor = new(1f, 0.2f, 0.9f);
+    private static readonly Color MarkerColor = new(1f, 0.85f, 1f);
+    private static readonly Color MissColor = new(0.55f, 0.65f, 0.85f, 0.75f);
 
     public RayDebugDraw(ITerrainQuery inner)
     {
@@ -55,12 +63,13 @@ public sealed class RayDebugDraw : ITerrainQuery
                 VertexColorUseAsAlbedo = true,
                 NoDepthTest = true, // 调试线透视：穿进墙里的射线段也要能看见
                 Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
             },
         };
         parent.AddChild(node);
     }
 
-    public void Draw()
+    public void Draw(Camera3D camera)
     {
         if (_mesh is null)
         {
@@ -71,15 +80,70 @@ public sealed class RayDebugDraw : ITerrainQuery
         {
             return;
         }
-        _mesh.SurfaceBegin(Mesh.PrimitiveType.Lines);
+        Vector3 camPos = camera.GlobalPosition;
+        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
         foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
         {
-            Color c = didHit ? HitColor : MissColor;
-            _mesh.SurfaceSetColor(c);
-            _mesh.SurfaceAddVertex(from);
-            _mesh.SurfaceSetColor(c);
-            _mesh.SurfaceAddVertex(end);
+            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
+            if (didHit)
+            {
+                AddMarker(end, camPos);
+            }
         }
         _mesh.SurfaceEnd();
+    }
+
+    /// <summary>一根射线 = 一条朝向相机的条带（两三角形），比 1px 线图元醒目得多。</summary>
+    private void AddRibbon(Vector3 from, Vector3 end, Color c, Vector3 camPos)
+    {
+        Vector3 seg = end - from;
+        if (seg.LengthSquared() < 1e-10f)
+        {
+            return;
+        }
+        Vector3 dir = seg.Normalized();
+        Vector3 toCam = camPos - (from + end) * 0.5f;
+        Vector3 side = dir.Cross(toCam);
+        if (side.LengthSquared() < 1e-8f)
+        {
+            side = dir.Cross(Vector3.Up); // 射线正对相机的退化情形
+            if (side.LengthSquared() < 1e-8f)
+            {
+                side = Vector3.Right;
+            }
+        }
+        side = side.Normalized() * HalfWidth;
+
+        Quad(from - side, from + side, end + side, end - side, c);
+    }
+
+    /// <summary>命中点画一个朝向相机的亮色菱形，一眼锁定落点。</summary>
+    private void AddMarker(Vector3 pos, Vector3 camPos)
+    {
+        Vector3 toCam = (camPos - pos).LengthSquared() < 1e-8f
+            ? Vector3.Back
+            : (camPos - pos).Normalized();
+        Vector3 right = toCam.Cross(Vector3.Up);
+        right = right.LengthSquared() < 1e-8f ? Vector3.Right : right.Normalized();
+        Vector3 up = right.Cross(toCam);
+
+        Quad(pos - right * MarkerSize, pos + up * MarkerSize,
+            pos + right * MarkerSize, pos - up * MarkerSize, MarkerColor);
+    }
+
+    private void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Color color)
+    {
+        _mesh!.SurfaceSetColor(color);
+        _mesh.SurfaceAddVertex(a);
+        _mesh.SurfaceSetColor(color);
+        _mesh.SurfaceAddVertex(b);
+        _mesh.SurfaceSetColor(color);
+        _mesh.SurfaceAddVertex(c);
+        _mesh.SurfaceSetColor(color);
+        _mesh.SurfaceAddVertex(a);
+        _mesh.SurfaceSetColor(color);
+        _mesh.SurfaceAddVertex(c);
+        _mesh.SurfaceSetColor(color);
+        _mesh.SurfaceAddVertex(d);
     }
 }
