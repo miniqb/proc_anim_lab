@@ -10,17 +10,17 @@ namespace ProcAnimLab.Sandbox;
 /// 在 _Process 里按物理插值分数渲染。逻辑一律不读 delta——步长恒为 1 tick，
 /// 内核里所有速度/力的单位都是「米/tick」（确定性来源，也与雨世界参数表同构）。
 ///
-/// M2：场景主体是四腿 Walker。WASD 给移动意图（世界 XZ 轴），左键拖拽任意 chunk。
-/// 确定性回归：--determinism=N 模式禁用输入，改跑脚本化路点巡走（行走本身进哈希），
-/// 提速到 400Hz 跑 N tick 打印状态哈希后退出。40Hz 与 400Hz 哈希必须一致。
+/// M3：场景主体是四腿 Walker。WASD 给移动意图（世界 XZ 轴）——推着墙走会被支撑系
+/// 重定向为向上爬（走/爬涌现，无模式键）；左键拖拽任意 chunk。
+/// 确定性回归：--determinism=N 模式禁用输入，改跑脚本化路点巡走（上坡→下坡→撞墙爬墙
+/// 全部进哈希），提速到 400Hz 跑 N tick 打印状态哈希后退出。40Hz 与 400Hz 哈希必须一致。
 /// </summary>
 public partial class SandboxWorld : Node3D
 {
     /// <summary>重力（米/秒²，人类可读单位）。默认 36 = 雨世界 0.9px/tick² 的直接换算。</summary>
     [Export] public float GravityMps2 = 36f;
 
-    [Export] public float AirFriction = 0.98f;
-    [Export] public float SurfaceFriction = 0.4f;
+    // 空气/表面摩擦由 Walker 按重力开关双档切换（≙ RW），不再由场景导出参数控制。
     [Export] public int ConstraintIterations = 3;
     [Export] public float DragSpring = 0.2f;
     [Export] public float DragDamping = 0.3f;
@@ -32,14 +32,15 @@ public partial class SandboxWorld : Node3D
     private Vector3 _spawn = new(0f, 2f, 0f); // --spawn=x,y,z 覆盖出生点（坡上/墙边测试用）
     private long _yankTick = -1; // --yank=T：T 起 5 tick 给头部上抛冲量（复现「拎起再摔」，回归步态恢复）
 
-    /// <summary>确定性模式的巡走路点（XZ 平面）。平地带 = x ∈ (-2, 1.15)：
-    /// 缓坡从 x≈1.15 起、台阶在 x∈[-4,-2]，方框必须整体落在两者之间。</summary>
+    /// <summary>确定性模式的巡走路点（XZ 平面，Y 忽略）。M3 路线覆盖三种地形：
+    /// ① 上缓坡到坡面中段（坡 x∈[1.15,6.85]）② 下坡横穿平地 ③ 目标点在 x=-6 墙的
+    /// 背面——撞墙后移动意图被支撑系重定向为向上爬；翻过墙顶则落地续走并循环路线，
+    /// 翻不过就贴墙爬到 tick 预算用尽，两种结局都确定性地进哈希。</summary>
     private static readonly Vector3[] Waypoints =
     {
-        new(0.8f, 0f, -2.2f),
-        new(0.8f, 0f, 2.2f),
-        new(-1.6f, 0f, 2.2f),
-        new(-1.6f, 0f, -2.2f),
+        new(4.2f, 0f, 0f),
+        new(0.5f, 0f, 1.8f),
+        new(-7.5f, 0f, 0f),
     };
     private int _waypointIndex;
     private int _waypointsReached;
@@ -65,8 +66,6 @@ public partial class SandboxWorld : Node3D
         ParseDeterminismArgs();
         _walker = BodyFactory.CreateWalker(_spawn);
         Body body = _walker.Body;
-        body.AirFriction = AirFriction;
-        body.SurfaceFriction = SurfaceFriction;
         body.ConstraintIterations = ConstraintIterations;
         if (_perturb != 0f)
         {
@@ -74,7 +73,7 @@ public partial class SandboxWorld : Node3D
             body.Chunks[0].LastPos = body.Chunks[0].Pos;
         }
         _bodies.Add(body);
-        _renderer.Build(this, _bodies, _walker.Limbs);
+        _renderer.Build(this, _bodies, _walker.Limbs, _walker);
         GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, determinism={(_probe is not null ? "on" : "off")}");
     }
 
@@ -154,8 +153,10 @@ public partial class SandboxWorld : Node3D
     private float _walkDistance;     // 头部 XZ 累计行走里程（验证「走得动」）
     private Vector3 _lastHeadPos;
     private long _gripTickSum;       // Σ 每 tick 抓地腿数（除以 tick 数 = 平均抓地腿数）
+    private long _gravityOffTicks;   // 重力被关（站稳/攀爬）的 tick 数（M3 涌现验证）
+    private float _maxHeadY;         // 头部最高点（爬墙验证：平地行走 ≈0.3，上墙应明显更高）
 
-    /// <summary>确定性模式下顺带记录质量指标：约束偏差峰值 + 行走里程 + 平均抓地腿数。</summary>
+    /// <summary>确定性模式下顺带记录质量指标：约束偏差峰值 + 行走里程 + 抓地/重力开关统计。</summary>
     private void TrackQualityMetrics()
     {
         // 用求解器自己的观测值：碰撞阶段会把 chunk 推开，那不是求解器的误差，
@@ -173,6 +174,14 @@ public partial class SandboxWorld : Node3D
         }
         _lastHeadPos = _walker.Head.Pos;
         _gripTickSum += _walker.LegsGripping;
+        if (!_walker.ApplyGravity)
+        {
+            _gravityOffTicks++;
+        }
+        if (_walker.Head.Pos.Y > _maxHeadY)
+        {
+            _maxHeadY = _walker.Head.Pos.Y;
+        }
     }
 
     /// <summary>探针跑完后输出终态：人工核对行走里程/抓地质量/是否 NaN/尾链是否发散。</summary>
@@ -181,7 +190,11 @@ public partial class SandboxWorld : Node3D
         GD.Print($"[METRIC] maxConstraintDev={_maxConstraintDev:F4} " +
                  $"({_maxConstraintDev / _bodies[0].Connections[0].RestLength * 100f:F1}% of rest) " +
                  $"walkDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
-                 $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_walker.Limbs.Count}");
+                 $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_walker.Limbs.Count} " +
+                 $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2}");
+        Vector3 sn = _walker.SupportNormal;
+        GD.Print($"[FINAL] walker applyGravity={_walker.ApplyGravity} footing={_walker.FootingCounter} " +
+                 $"noGrip={_walker.NoGripCounter} support=({sn.X:F3},{sn.Y:F3},{sn.Z:F3})");
         for (int b = 0; b < _bodies.Count; b++)
         {
             Body body = _bodies[b];

@@ -10,6 +10,10 @@ namespace ProcAnimLab.Physics;
 /// 超过 StepLength 阈值 → FindGrip 射线找新落点 → 再踩住。腿长由单侧距离钳制维持，
 /// 腿不反推身体——推进力在 Walker 层按抓地腿数另行施加（RW：锚与引擎分离）。
 /// 脚不进 Body.Chunks：它是独立受力点，会碰地形但不参与 chunk 间物理（≙ RW 图形层 BodyPart）。
+///
+/// M3：整套步进几何跑在「支撑系」里——up 参数 = Walker 的支撑法线，不再是重力反方向。
+/// 平地 up=世界上（与 M2 全等），爬墙 up=墙法线：落脚射线自动从「朝下」换成「朝墙」，
+/// 走/爬同一条代码（研究文档 §12.3「爬墙 = 换射线方向，逻辑一模一样」）。
 /// </summary>
 public sealed class Limb
 {
@@ -35,8 +39,16 @@ public sealed class Limb
     /// <summary>true = 正在迈步寻找/踩住地形；false = 摆动期（脚漂向髋前静止姿势位）。</summary>
     public bool ReachingForTerrain;
 
+    /// <summary>HuntPos 是否是 FindGrip 实际找到的地形落点（≙ RW HuntAbsolutePosition 模式）。
+    /// false = 还在追摆动期遗留的空中目标。只有真落点才计抓地——否则脚追上空中胡萝卜
+    /// 也算「抓稳」，M3 的重力开关会被它骗到悬空关重力、无限爬天。</summary>
+    public bool HasGrip { get; private set; }
+
     /// <summary>本 tick 是否已吸附到目标点。</summary>
     public bool ReachedSnapPosition;
+
+    /// <summary>当前抓握面的法线（FindGrip 命中时记录）。Walker 平均它得到支撑法线。</summary>
+    public Vector3 GripNormal = Vector3.Up;
 
     /// <summary>连续踩稳的 tick 数；≥ GripDelay 才算「抓地」计入推进力。</summary>
     public int GripCounter;
@@ -111,7 +123,8 @@ public sealed class Limb
 
     /// <summary>
     /// 推进一个 tick。stepDir = 本 tick 步进方向（身体朝向与移动意图的混合，单位向量）；
-    /// up = 重力反方向；allLimbs/smoothGait/runSpeed 用于多腿步态错开。
+    /// up = 支撑法线（平地=世界上，爬墙=墙法线——走/爬的射线换向全由它承载）；
+    /// allLimbs/smoothGait/runSpeed 用于多腿步态错开。
     /// 顺序镜像 LizardLimb.Update：状态机 → 成对互斥 → 追目标积分 → 腿长钳制 → 抓地计数。
     /// </summary>
     public void Tick(in TickContext ctx, Vector3 stepDir, Vector3 up,
@@ -141,7 +154,8 @@ public sealed class Limb
         }
         else
         {
-            if (!OverlappingHuntPos())
+            // 没有真落点时持续找（哪怕脚已贴着摆动期遗留的空中目标）；有真落点则等踩到再说。
+            if (!HasGrip || !OverlappingHuntPos())
             {
                 FindGrip(ctx, stepDir, up);
             }
@@ -155,6 +169,7 @@ public sealed class Limb
                     _extraLongStep = smoothGait && Pair is not null && Pair.GripCounter < 1;
                     _extraLongStepTicks = 0;
                     ReachingForTerrain = false;
+                    HasGrip = false;
                 }
 
                 // 步态错开：跑动中若本腿抓得最久且其余腿都已抓稳 → 主动松开迈步。
@@ -172,6 +187,7 @@ public sealed class Limb
                     if (oldestGrip)
                     {
                         ReachingForTerrain = false;
+                        HasGrip = false;
                     }
                 }
             }
@@ -190,11 +206,12 @@ public sealed class Limb
             }
         }
 
-        IntegrateHunt(ctx);
+        IntegrateHunt(ctx, up);
         ConnectToAnchor();
 
-        // 抓地计数：迈步中吸附到落点、或贴着落点且踩实地形，连续累计。
-        if (ReachingForTerrain && (ReachedSnapPosition || (OverlappingHuntPos() && TerrainContact)))
+        // 抓地计数：迈步中吸附到真落点、或贴着真落点且踩实地形，连续累计。
+        if (ReachingForTerrain && HasGrip
+            && (ReachedSnapPosition || (OverlappingHuntPos() && TerrainContact)))
         {
             GripCounter++;
         }
@@ -210,16 +227,24 @@ public sealed class Limb
     }
 
     /// <summary>
-    /// 找落点（≙ Limb.FindGrip 的射线版）：把目标方向加上向下/横向偏置得到期望落点，
-    /// 在其周围沿步进方向做固定序竖直投影射线（≙ SnapToTerrain），
-    /// 选「离期望点最近且腿够得着」的命中。找到 → HuntPos 固定为落点（plant）。
+    /// 找落点（≙ Limb.FindGrip 的射线版）：把目标方向加上向面/横向偏置得到期望落点 goal，
+    /// 候选来自两类固定序射线（≙ RW 9 格邻域搜索的收敛版）：
+    /// ① 锚点沿期望方向的直射——面前有墙/陡坡时率先够到其暴露面（平地上通常打空）；
+    /// ② goal 周围沿步进方向排开的支撑向投影射线（≙ SnapToTerrain，走=竖直、爬=垂直于墙）。
+    /// 统一选「离期望点最近且腿够得着」的命中——离墙远时地面赢、抵墙时墙面赢，
+    /// 走→爬的切换从纯几何涌现。找到 → HuntPos 固定为落点（plant）、记录抓握面法线。
     /// </summary>
     private void FindGrip(in TickContext ctx, Vector3 stepDir, Vector3 up)
     {
+        // 悬垂/天花板底面的过滤基于世界上方向（支撑系旋转后 up 已不指天）。
+        Vector3 worldUp = ctx.GravityPerTick.LengthSquared() > 1e-12f
+            ? -ctx.GravityPerTick.Normalized()
+            : Vector3.Up;
+
         Vector3 right = stepDir.Cross(up);
         if (right.LengthSquared() < 1e-8f)
         {
-            right = Vector3.Right; // 步进方向与重力共线的退化情形：固定回退方向保确定性
+            right = Vector3.Right; // 步进方向与支撑法线共线的退化情形：固定回退方向保确定性
         }
         else
         {
@@ -231,47 +256,74 @@ public sealed class Limb
         float maxRadius = JointDist - OverlapPad;
         Vector3 goal = Anchor.Pos + dir * maxRadius;
 
-        // 采样带沿步进方向的水平投影铺开（goal 上下扫的是竖直射线，横向才需要错开）。
-        Vector3 alongHoriz = stepDir - up * stepDir.Dot(up);
-        alongHoriz = alongHoriz.LengthSquared() < 1e-8f ? Vector3.Zero : alongHoriz.Normalized();
+        // 采样带沿步进方向的面内投影铺开（goal 上下扫的是支撑向射线，面内才需要错开）。
+        Vector3 alongSurface = stepDir - up * stepDir.Dot(up);
+        alongSurface = alongSurface.LengthSquared() < 1e-8f ? Vector3.Zero : alongSurface.Normalized();
 
         bool found = false;
         Vector3 best = default;
+        Vector3 bestNormal = Vector3.Up;
         float bestDistSq = float.MaxValue;
-        foreach (float offset in GripSamples)
+
+        void Consider(in TerrainHit hit)
         {
-            Vector3 probe = goal + alongHoriz * offset;
-            if (!ctx.Terrain.Raycast(probe + up * 0.35f, probe - up * 0.55f, out TerrainHit hit))
+            // 零法线 = 射线起点已陷入地形；朝下的面（悬垂/天花板底面）M3 仍不落脚。
+            if (hit.Normal.LengthSquared() < 1e-12f || hit.Normal.Dot(worldUp) < -0.3f)
             {
-                continue;
-            }
-            // 零法线 = 射线起点已陷入地形；朝下的面（悬垂底面）也不是 M2 的落脚面。
-            if (hit.Normal.LengthSquared() < 1e-12f || hit.Normal.Dot(up) < 0.3f)
-            {
-                continue;
+                return;
             }
             if ((hit.Point - Anchor.Pos).Length() > maxRadius)
             {
-                continue;
+                return;
             }
             float distSq = (hit.Point - goal).LengthSquared();
             if (distSq < bestDistSq)
             {
                 bestDistSq = distSq;
                 best = hit.Point;
+                bestNormal = hit.Normal;
                 found = true;
+            }
+        }
+
+        if (ctx.Terrain.Raycast(Anchor.Pos, Anchor.Pos + dir * (maxRadius + Radius), out TerrainHit direct))
+        {
+            Consider(direct);
+        }
+        foreach (float offset in GripSamples)
+        {
+            Vector3 probe = goal + alongSurface * offset;
+            if (ctx.Terrain.Raycast(probe + up * 0.35f, probe - up * 0.55f, out TerrainHit hit))
+            {
+                Consider(hit);
+            }
+        }
+
+        // 攀爬中（支撑系偏离世界系）补一组世界向下的投影：翻越棱线时支撑向射线还朝墙打空，
+        // 这组先够到墙顶/台面——RW 9 格搜索天然全向，跨面翻越靠的就是它（射线版等价物）。
+        if (up.Dot(worldUp) < 0.95f)
+        {
+            foreach (float offset in GripSamples)
+            {
+                Vector3 probe = goal + alongSurface * offset;
+                if (ctx.Terrain.Raycast(probe + worldUp * 0.35f, probe - worldUp * 0.55f, out TerrainHit hit))
+                {
+                    Consider(hit);
+                }
             }
         }
 
         if (found)
         {
             HuntPos = best;
+            GripNormal = bestNormal;
+            HasGrip = true;
         }
         // 没找到：HuntPos 维持原值，下 tick 重试（身体在动，goal 会变）——RW 同款行为。
     }
 
     /// <summary>追目标积分（≙ Limb.Update 主体）：吸附或 Lerp 逼近，然后出地形。</summary>
-    private void IntegrateHunt(in TickContext ctx)
+    private void IntegrateHunt(in TickContext ctx, Vector3 up)
     {
         // 追固定世界落点时脚要跟得上移动的身体（≙ huntSpeed += connection.vel.magnitude）。
         float huntSpeed = HuntSpeed + Anchor.Vel.Length();
@@ -289,7 +341,7 @@ public sealed class Limb
         }
         Pos += Vel;
         Vel *= AirFriction;
-        PushOutOfTerrain(ctx);
+        PushOutOfTerrain(ctx, up);
     }
 
     /// <summary>腿长单侧钳制（≙ ConnectToPoint(connection.pos, jointDist)）：只拉脚、不推身体。</summary>
@@ -306,12 +358,11 @@ public sealed class Limb
         Vel -= corr;
     }
 
-    /// <summary>脚 vs 地形（≙ BodyPart.PushOutOfTerrain 的射线版）：运动扫掠 + 重力向支撑，同 chunk 语义。</summary>
-    private void PushOutOfTerrain(in TickContext ctx)
+    /// <summary>脚 vs 地形（≙ BodyPart.PushOutOfTerrain 的射线版）：运动扫掠 + 支撑向探面，同 chunk 语义。</summary>
+    private void PushOutOfTerrain(in TickContext ctx, Vector3 supportUp)
     {
         TerrainContact = false;
-        Vector3 gravity = ctx.GravityPerTick;
-        Vector3 down = gravity.LengthSquared() > 1e-12f ? gravity.Normalized() : Vector3.Down;
+        Vector3 down = -supportUp; // 走=向下探地，爬=向墙探面（脚部版的射线换向）
 
         Vector3 motion = Pos - LastPos;
         float motionLen = motion.Length();

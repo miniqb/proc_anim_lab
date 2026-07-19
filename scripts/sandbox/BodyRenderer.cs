@@ -7,6 +7,7 @@ namespace ProcAnimLab.Sandbox;
 /// <summary>
 /// 白盒渲染：每 chunk 一个球 MeshInstance3D，连接线/腿线用 ImmediateMesh 每帧重画。
 /// 脚球按步态状态换色：绿=抓稳（正推进身体）、橙=迈步找落点、灰蓝=摆动期。
+/// 身体按重力开关换色：红=重力在拽（坠落/未站稳）、青=抓稳重力关（站立/攀爬）。
 /// Draw(t) 用物理插值分数在 LastPos→Pos 之间取位——渲染永远比物理"晚"不到一个 tick。
 /// </summary>
 public sealed class BodyRenderer
@@ -15,15 +16,21 @@ public sealed class BodyRenderer
     private readonly List<(Limb Limb, MeshInstance3D Node)> _feet = new();
     private readonly List<ChunkConnection> _connections = new();
     private readonly List<Limb> _limbs = new();
+    private Walker? _walker;
     private ImmediateMesh? _lineMesh;
 
+    private StandardMaterial3D _chunkFalling = null!;
+    private StandardMaterial3D _chunkFooted = null!;
     private StandardMaterial3D _footGrip = null!;
     private StandardMaterial3D _footReach = null!;
     private StandardMaterial3D _footSwing = null!;
 
-    public void Build(Node3D parent, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null)
+    public void Build(Node3D parent, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null,
+        Walker? walker = null)
     {
-        var chunkMat = new StandardMaterial3D { AlbedoColor = new Color(0.85f, 0.35f, 0.3f) };
+        _walker = walker;
+        _chunkFalling = new StandardMaterial3D { AlbedoColor = new Color(0.85f, 0.35f, 0.3f) };
+        _chunkFooted = new StandardMaterial3D { AlbedoColor = new Color(0.3f, 0.65f, 0.7f) };
         foreach (Body body in bodies)
         {
             foreach (BodyChunk chunk in body.Chunks)
@@ -31,7 +38,7 @@ public sealed class BodyRenderer
                 var node = new MeshInstance3D
                 {
                     Mesh = new SphereMesh { Radius = chunk.Radius, Height = chunk.Radius * 2f },
-                    MaterialOverride = chunkMat,
+                    MaterialOverride = _chunkFalling,
                 };
                 parent.AddChild(node);
                 _spheres.Add((chunk, node));
@@ -72,9 +79,11 @@ public sealed class BodyRenderer
 
     public void Draw(float t)
     {
+        StandardMaterial3D chunkMat = _walker is { ApplyGravity: false } ? _chunkFooted : _chunkFalling;
         foreach ((BodyChunk chunk, MeshInstance3D node) in _spheres)
         {
             node.Position = chunk.LerpPos(t);
+            node.MaterialOverride = chunkMat;
         }
         foreach ((Limb limb, MeshInstance3D node) in _feet)
         {
