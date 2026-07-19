@@ -1,7 +1,6 @@
 using Godot;
-using ProcAnimLab.Physics;
 
-namespace ProcAnimLab.Terrain;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// ITerrainQuery 的射线实现：包装 PhysicsDirectSpaceState3D 打真实 3D collider

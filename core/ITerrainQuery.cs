@@ -1,6 +1,6 @@
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 地形射线命中结果。Normal 为零向量表示射线起点已陷入 collider

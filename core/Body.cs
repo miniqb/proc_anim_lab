@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// chunk + 连接的容器；每 tick 按固定顺序推进：受力 → 积分 → 约束松弛 → 地形碰撞。

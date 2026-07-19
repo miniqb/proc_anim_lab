@@ -1,6 +1,6 @@
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 两 chunk 间的距离连接：可选软弹簧项 + 硬距离约束项

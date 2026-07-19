@@ -1,6 +1,6 @@
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 一个物理 tick 的环境包（传值）：内核不持有任何引擎对象。

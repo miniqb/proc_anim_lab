@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using Godot;
-using ProcAnimLab.Physics;
-using ProcAnimLab.Terrain;
+using ProcAnim.Core;
 
 namespace ProcAnimLab.Sandbox;
 

@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 一条腿 = 一个追目标点的粒子（合并 RW BodyPart/Limb/LizardLimb 中走路所需的部分）。

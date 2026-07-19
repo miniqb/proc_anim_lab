@@ -6,4 +6,11 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>ProcAnimLab</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- core/ 是独立内核程序集（见 core/ProcAnim.Core.csproj），不进游戏程序集的默认 glob；
+         只有 core/godot/ 的引擎适配器（RaycastTerrainQuery）由游戏程序集编译。 -->
+    <Compile Remove="core/**/*.cs" />
+    <Compile Include="core/godot/**/*.cs" />
+    <ProjectReference Include="core/ProcAnim.Core.csproj" />
+  </ItemGroup>
 </Project>

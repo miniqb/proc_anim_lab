@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 程序化生物运动内核（M5 回迁模块）。独立于游戏程序集编译——
+       内核不可能引用场景树/物理服务器/GD：唯一依赖是 GodotSharp 的纯托管数学结构
+       （Vector3/Mathf），脱离引擎也能运行（见 smoke/ 无引擎回归）。 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ProcAnim.Core</RootNamespace>
+    <AssemblyName>ProcAnim.Core</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- godot/ 是引擎侧适配器（要物理服务器），归游戏程序集编译；
+         smoke/ 是独立的无引擎回归 console 工程。都不进内核程序集。 -->
+    <Compile Remove="godot/**/*.cs" />
+    <Compile Remove="smoke/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 版本须与宿主 Godot 匹配（本项目 4.7.0；回迁时对齐目标仓库的 Godot.NET.Sdk 版本）。 -->
+    <PackageReference Include="GodotSharp" Version="4.7.0" />
+  </ItemGroup>
+</Project>

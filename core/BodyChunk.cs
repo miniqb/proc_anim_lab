@@ -1,6 +1,6 @@
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 身体的最小物理单元：带质量的球形粒子（对标雨世界 BodyChunk）。

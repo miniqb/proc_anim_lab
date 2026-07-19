@@ -1,7 +1,6 @@
 using Godot;
-using ProcAnimLab.Physics;
 
-namespace ProcAnimLab.Sandbox;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 测试身体工厂（≙ RW LizardBreeds：品种预设 + 按参数表装配）。
@@ -99,6 +98,7 @@ public static class BodyFactory
     /// <summary>沙盒可切换的品种表（数字键 1~N 与 --breed= 共用此序）。</summary>
     public static BreedParams[] AllBreeds() => new[] { Default(), Heavy(), Sprinter(), Hexapod() };
 
+    /// <summary>按名取预设；未知名回落 default（内核零日志——调用侧如需告警自行比对返回值的 Name）。</summary>
     public static BreedParams ByName(string name)
     {
         foreach (BreedParams p in AllBreeds())
@@ -108,7 +108,6 @@ public static class BodyFactory
                 return p;
             }
         }
-        GD.PushWarning($"[FACTORY] unknown breed '{name}', falling back to default");
         return Default();
     }
 

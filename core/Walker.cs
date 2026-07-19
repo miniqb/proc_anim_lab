@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 会走路的生物 = Body（chunk 物理）+ 若干 Limb（plant-and-trail 腿）+ 推进力。

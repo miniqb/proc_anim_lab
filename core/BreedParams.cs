@@ -1,4 +1,4 @@
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 品种参数表（≙ LizardBreedParams 的运动子集）：一个生物的"手感"全部收拢在这一张表上，

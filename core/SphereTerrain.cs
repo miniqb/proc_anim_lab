@@ -1,6 +1,6 @@
 using Godot;
 
-namespace ProcAnimLab.Physics;
+namespace ProcAnim.Core;
 
 /// <summary>
 /// 球 vs 地形命中的共用解算：Body 的 chunk 碰撞与 Limb 的脚部出地形走同一份语义，
