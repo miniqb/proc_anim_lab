@@ -52,6 +52,15 @@ public sealed class Walker
     /// <summary>支撑面射线打空（悬崖边/探进墙里）时相对目标的上抬量（米，M2 的 floorLeverage 回退）。</summary>
     public float FloorLeverage = 0.15f;
 
+    /// <summary>翻越窗口的比例回中增益（每 tick，≙ RW 攀爬时 vel -= (pos-格中心)*0.25 的回中力）：
+    /// 头部越过目标点后力自动反向 = 刹车，把弹道过顶压成贴着棱线的弧线。只在翻越窗口生效。</summary>
+    public float CrestCentering = 0.15f;
+
+    /// <summary>翻越探测的向下射线深度（米）。必须显著大于普通支撑探测（0.65）：
+    /// 头部冲过墙顶后这根射线是唯一还能看见顶面的目标源——太浅会过早退回
+    /// 「头前+向上」的飞行胡萝卜，在支撑系旋转跟上之前把身体持续往天上推。</summary>
+    public float CrestProbeDepth = 1.5f;
+
     /// <summary>步进方向中移动意图对身体朝向的混合权重（≙ LizardLimb 的 0.4）。</summary>
     public float SteerBlend = 0.4f;
 
@@ -75,6 +84,18 @@ public sealed class Walker
 
     /// <summary>悬空但没坠远时「支撑面就在附近」的探测余量（米，≙ RW 查相邻可达格）。</summary>
     public float NearTerrainRange = 0.4f;
+
+    // —— 顶死解锁（≙ RW timeSpentTryingThisMove 的极简确定性版）——
+    // 正面顶墙时身体静止 → 腿的 trail 松脚条件永远不满足 → 抓着矮处不换步 → 僵局。
+    // RW 靠随机抖动+卡住升级打破；确定性内核没有随机逃生口，用显式超时换步替代。
+    /// <summary>推着走却几乎不动，连续这么多 tick 后强制换一条腿。</summary>
+    public int StallReleaseTicks = 20;
+
+    /// <summary>头部速度低于此值（米/tick）视为「顶死」。行走均速 ~0.03。</summary>
+    public float StallSpeed = 0.008f;
+
+    /// <summary>顶死持续 tick 数（推着走且头部几乎不动）。</summary>
+    public int StallTicks { get; private set; }
 
     /// <summary>当前抓地腿数（≙ legsGrabbing，每 tick 腿更新后重算）。</summary>
     public int LegsGripping { get; private set; }
@@ -110,6 +131,8 @@ public sealed class Walker
         Vector3 effMove = RedirectMove(up);
         ApplyLocomotionForce(ctx, effMove, up);
         Body.Tick(ctx);
+        bool pushing = RunSpeed > 0.1f && MoveDir != Vector3.Zero;
+        StallTicks = pushing && Head.Vel.Length() < StallSpeed ? StallTicks + 1 : 0;
         TickLimbs(ctx, effMove);
         UpdateSupportNormal(up);
     }
@@ -209,11 +232,16 @@ public sealed class Walker
             : (float)LegsGripping / Limbs.Count * (1f - NoGripSpeed) + NoGripSpeed;
         float frameSpeed = BaseSpeed * gripFac * RunSpeed;
 
-        Vector3 target = FindMoveTarget(ctx, effMove, up);
+        Vector3 target = FindMoveTarget(ctx, effMove, up, out bool crest);
         Vector3 headDir = Dir(Head.Pos, target);
         if (Head.Vel.Dot(headDir) < MaxMoveSpeed)
         {
             Head.Vel += headDir * frameSpeed;
+        }
+        if (crest)
+        {
+            // 翻越窗口：朝顶面目标的比例伺服（过冲即反向刹车），弹道过顶的唯一解药。
+            Head.Vel += (target - Head.Pos) * CrestCentering;
         }
 
         float restLength = Body.Connections[0].RestLength;
@@ -225,15 +253,31 @@ public sealed class Walker
         {
             Hips.Vel += hipsDir * (frameSpeed * fold);
         }
+
+        // 拉直（≙ RW straightenOut）：身体轴线背对目标（正面撞墙翻倒、头折叠到髋后）时，
+        // 头沿「髋→目标」强拉、髋反向推，把身体甩回朝向目标——卡越久（StallTicks）力越大。
+        // 没有它，翻倒姿态会让 stepDir 被反向身体轴污染，腿全部背着目标迈步，永久瘫死。
+        float mis = Mathf.InverseLerp(0f, -1f, Dir(Head.Pos, target).Dot(Dir(Hips.Pos, Head.Pos)));
+        if (mis > 0f)
+        {
+            mis *= Mathf.Max(0.2f, Mathf.InverseLerp(5f, 20f, StallTicks));
+            Vector3 straight = Dir(Hips.Pos, target);
+            Head.Vel += straight * (mis * 2f * frameSpeed);
+            Hips.Vel -= straight * (mis * frameSpeed);
+        }
     }
 
     /// <summary>
     /// 推进目标钉在支撑面上（≙ RW 瞄路径格中心——格中心天然贴着地形）：
     /// 头前 LookAhead 处沿 -SupportNormal 投影到面、抬 RideHeight。
-    /// 打空/探进墙里（零法线）/朝下悬垂面 → 退回 M2 的头前相对目标。
+    /// 攀爬中支撑向打空（头已越过棱线）→ 补世界向下探测，目标钉在顶面上
+    /// （≙ RW 瞄墙顶那格）：头部力变成朝顶面的伺服，靠近自动减速——
+    /// 否则退回相对胡萝卜会在支撑系旋转跟上之前把身体抛过墙顶（快速爬墙必摔的根因）。
+    /// 两射线都打空/探进墙里（零法线）/朝下悬垂面 → 退回 M2 的头前相对目标。
     /// </summary>
-    private Vector3 FindMoveTarget(in TickContext ctx, Vector3 effMove, Vector3 up)
+    private Vector3 FindMoveTarget(in TickContext ctx, Vector3 effMove, Vector3 up, out bool crest)
     {
+        crest = false;
         Vector3 n = SupportNormal;
         Vector3 ahead = Head.Pos + effMove * LookAhead;
         if (ctx.Terrain.Raycast(ahead + n * 0.35f, ahead - n * 0.65f, out TerrainHit hit)
@@ -242,12 +286,36 @@ public sealed class Walker
         {
             return hit.Point + n * RideHeight;
         }
+        if (n.Dot(up) < 0.95f
+            && ctx.Terrain.Raycast(ahead + up * 0.35f, ahead - up * CrestProbeDepth, out TerrainHit topHit)
+            && topHit.Normal.LengthSquared() > 1e-12f
+            && topHit.Normal.Dot(up) > -0.3f)
+        {
+            crest = true;
+            return topHit.Point + up * RideHeight;
+        }
         return ahead + up * FloorLeverage;
     }
 
     /// <summary>固定顺序更新每条腿，然后重算抓地数（供下 tick 推进力与外部读取）。</summary>
     private void TickLimbs(in TickContext ctx, Vector3 effMove)
     {
+        // 顶死解锁：强制抓得最久的那条腿松开重迈步（并列取列表序靠前者，保确定性）。
+        // 新落点由上倾的 stepDir 引向更高处——正面顶墙从僵局变成棘轮式上爬。
+        if (StallTicks >= StallReleaseTicks)
+        {
+            Limb? oldest = null;
+            foreach (Limb limb in Limbs)
+            {
+                if (limb.GripCounter > (oldest?.GripCounter ?? 0))
+                {
+                    oldest = limb;
+                }
+            }
+            oldest?.ForceRelease();
+            StallTicks = 0;
+        }
+
         Vector3 forward = Dir(Hips.Pos, Head.Pos);
         Vector3 aim = effMove == Vector3.Zero ? forward : effMove;
         Vector3 stepDir = forward.Lerp(aim, SteerBlend);

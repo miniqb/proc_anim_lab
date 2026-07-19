@@ -225,6 +225,14 @@ public sealed class Limb
 		}
 	}
 
+	/// <summary>强制松开重迈步（Walker 顶死解锁用，≙ RW timeSpentTryingThisMove 的升级动作）。</summary>
+	public void ForceRelease()
+	{
+		ReachingForTerrain = false;
+		HasGrip = false;
+		_extraLongStep = false;
+	}
+
 	private bool OverlappingHuntPos()
 	{
 		return ReachedSnapPosition || (HuntPos - Pos).Length() < Radius + OverlapPad;

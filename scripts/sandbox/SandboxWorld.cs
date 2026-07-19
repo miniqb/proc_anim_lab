@@ -36,12 +36,22 @@ public partial class SandboxWorld : Node3D
     /// ① 上缓坡到坡面中段（坡 x∈[1.15,6.85]）② 下坡横穿平地 ③ 目标点在 x=-6 墙的
     /// 背面——撞墙后移动意图被支撑系重定向为向上爬；翻过墙顶则落地续走并循环路线，
     /// 翻不过就贴墙爬到 tick 预算用尽，两种结局都确定性地进哈希。</summary>
-    private static readonly Vector3[] Waypoints =
+    private static readonly Vector3[] DefaultRoute =
     {
         new(4.2f, 0f, 0f),
         new(0.5f, 0f, 1.8f),
         new(-7.5f, 0f, 0f),
     };
+
+    /// <summary>--route=wall：两路点垂直夹着 x=-6 的墙来回穿——每 +1 个 waypointsReached
+    /// = 一次成功翻越（含正反两向），配 --spawn=-4,0.5,0 即「正面推墙」的翻越成功率测试。</summary>
+    private static readonly Vector3[] WallRoute =
+    {
+        new(-7.5f, 0f, 0f),
+        new(-4f, 0f, 0f),
+    };
+
+    private Vector3[] _waypoints = DefaultRoute;
     private int _waypointIndex;
     private int _waypointsReached;
 
@@ -139,14 +149,14 @@ public partial class SandboxWorld : Node3D
     /// <summary>确定性模式的脚本化输入：绕路点方框巡走——把「走路」本身纳入回归。</summary>
     private void SteerAlongWaypoints()
     {
-        Vector3 target = Waypoints[_waypointIndex];
+        Vector3 target = _waypoints[_waypointIndex];
         Vector3 toTarget = target - _walker.Head.Pos;
         toTarget.Y = 0f;
         if (toTarget.Length() < 0.4f)
         {
-            _waypointIndex = (_waypointIndex + 1) % Waypoints.Length;
+            _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
             _waypointsReached++;
-            target = Waypoints[_waypointIndex];
+            target = _waypoints[_waypointIndex];
             toTarget = target - _walker.Head.Pos;
             toTarget.Y = 0f;
         }
@@ -199,7 +209,8 @@ public partial class SandboxWorld : Node3D
                  $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2}");
         Vector3 sn = _walker.SupportNormal;
         GD.Print($"[FINAL] walker applyGravity={_walker.ApplyGravity} footing={_walker.FootingCounter} " +
-                 $"noGrip={_walker.NoGripCounter} support=({sn.X:F3},{sn.Y:F3},{sn.Z:F3})");
+                 $"noGrip={_walker.NoGripCounter} stall={_walker.StallTicks} " +
+                 $"headVel={_walker.Head.Vel.Length():F4} support=({sn.X:F3},{sn.Y:F3},{sn.Z:F3})");
         for (int b = 0; b < _bodies.Count; b++)
         {
             Body body = _bodies[b];
@@ -254,6 +265,10 @@ public partial class SandboxWorld : Node3D
             else if (arg.StartsWith("--yank="))
             {
                 _yankTick = long.Parse(arg["--yank=".Length..]);
+            }
+            else if (arg == "--route=wall")
+            {
+                _waypoints = WallRoute;
             }
             else if (arg.StartsWith("--perturb="))
             {
