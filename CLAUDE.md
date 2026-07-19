@@ -65,7 +65,7 @@
 >
 > **M2 产物**：`scripts/physics/Limb.cs`（腿粒子：单点追目标 IK + plant-and-trail 状态机 + 竖直投影射线 FindGrip + 单侧腿长钳制，≙ RW Limb/LizardLimb）、`scripts/physics/Walker.cs`（行走驱动：推进力 ∝ 抓地腿数，无 locomotion 状态机，MoveDir/RunSpeed 唯一输入，≙ Lizard 移动块）、`scripts/physics/SphereTerrain.cs`（Body/Limb 共用的球-地形解算）；沙盒 WASD 行走 + 拖拽看腿自适应，脚球按状态换色（绿抓稳/橙迈步/灰蓝摆动）。确定性模式改为脚本化路点巡走（行走本身进哈希）：800 tick 走约 25.7 m、平均 2/4 腿抓地。
 >
-> **M3 产物**：走/爬两态涌现，零模式分支（≙ 研究文档 §11.6b/§12.3）。`Walker`：重力开关（`FootingCounter`/`NoGripCounter` → `ApplyGravity`：抓稳→重力 0 + 贴地摩擦档 0.8/0.5，坠落→重力回归 + 0.999/0.3，数值直取 RW）、支撑法线 `SupportNormal`（抓地腿抓握面法线的平滑平均：平地=上、墙=墙法线）、移动意图被支撑面挡住的分量沿面内上坡重定向（推墙自动变向上爬，同一公式覆盖斜坡）、推进目标射线钉在支撑面 + `RideHeight`（≙ 瞄路径格中心；身体不飘离墙的真正来源）、引擎极速 `MaxMoveSpeed`（墙面无阻滑升的唯一刹车——平地上碰撞/腿阻先饱和，撞不到它）。`Limb`：整套步进几何跑在支撑系（up=支撑法线：走=朝下打、爬=朝墙打，同一条代码）、FindGrip 三类候选统一选「离期望点最近」（支撑向投影 + 锚点直射【面前有墙先够到墙面】+ 攀爬中世界向下投影【翻越棱线够到顶面】）、`HasGrip` 区分真落点与摆动期空中目标（修掉 M2 潜伏 bug：脚追上空中胡萝卜也计抓地，M3 里它会骗重力开关悬空飞天）。确定性路线改为上坡→下坡→撞墙→爬墙→翻越 3m 墙顶→落地续走（2000 tick：waypointsReached=3、gravityOff≈70%、maxHeadY≈4.0）；身体按重力开关换色（红=坠落、青=抓稳/攀爬）。
+> **M3 产物**：走/爬两态涌现，零模式分支（≙ 研究文档 §11.6b/§12.3）。`Walker`：重力开关（`FootingCounter`/`NoGripCounter` → `ApplyGravity`：抓稳→重力 0 + 贴地摩擦档 0.8/0.5，坠落→重力回归 + 0.999/0.3，数值直取 RW）、支撑法线 `SupportNormal`（抓地腿抓握面法线的平滑平均：平地=上、墙=墙法线）、移动意图被支撑面挡住的分量沿面内上坡重定向（推墙自动变向上爬，同一公式覆盖斜坡）、推进目标射线钉在支撑面 + `RideHeight`（≙ 瞄路径格中心；身体不飘离墙的真正来源）、引擎极速 `MaxMoveSpeed`（墙面无阻滑升的唯一刹车——平地上碰撞/腿阻先饱和，撞不到它）。`Limb`：整套步进几何跑在支撑系（up=支撑法线：走=朝下打、爬=朝墙打，同一条代码）、FindGrip 三类候选统一选「离期望点最近」（支撑向投影 + 锚点直射【面前有墙先够到墙面】+ 攀爬中世界向下投影【翻越棱线够到顶面；起点必须沿「支撑法线的水平反方向」单侧排开——沿步进方向排会叠成悬在墙面外的竖线，薄墙顶面永远打不到】）、`HasGrip` 区分真落点与摆动期空中目标（修掉 M2 潜伏 bug：脚追上空中胡萝卜也计抓地，M3 里它会骗重力开关悬空飞天）。确定性路线改为上坡→下坡→撞墙→爬墙→翻越 3m 薄墙→落地续走的循环（2000 tick 跑两圈：waypointsReached=6、gravityOff≈83%、maxHeadY≈4.0）；身体按重力开关换色（红=坠落、青=抓稳/攀爬）。已知瞬态：翻墙/跳落的落地冲击会把主连接单 tick 拉伸至 ~16-24%（软体落地的压扁回弹，下 tick 即被松弛修正），稳态行走仍 ~3%。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
 >
@@ -74,7 +74,7 @@
 > GODOT=/Applications/Godot_mono.app/Contents/MacOS/Godot
 > $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- --determinism=2000 --tps=400 | grep '\[DET\]'
 > # 双跑 diff 必须为空；40Hz（去掉 --tps=400）与 400Hz 哈希必须一致；--perturb=0.001 哈希必须变。
-> # M3 路线全程进哈希：上坡→下坡→撞墙→爬墙→翻顶（[METRIC] waypointsReached≥3、maxHeadY≈4 = 翻墙成功）。
+> # M3 路线全程进哈希：上坡→下坡→撞墙→爬墙→翻顶循环（[METRIC] 2000 tick waypointsReached≥6、maxHeadY≈4 = 稳定翻墙）。
 > # 另有 --spawn=x,y,z 覆盖出生点（坡上/墙边空降压力测试）；
 > # --yank=T 在 T tick 给头部脚本化上抛冲量（「拎起再摔」回归：落地后步态必须恢复，
 > #   曾有成对腿 extraLongStep 互相死等导致四腿永久冻结的 bug，靠确定性超时打破）。
