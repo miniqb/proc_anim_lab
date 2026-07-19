@@ -28,6 +28,10 @@ public sealed class ChunkConnection
     /// <summary>软弹簧系数 ∈ [0,1]；0 = 纯硬约束。每 tick 只施加一次（与迭代次数解耦）。</summary>
     public float Elasticity;
 
+    /// <summary>true = 只走软弹簧、跳过硬约束（≙ RW BodyChunkConnection 的纯弹性修正——
+    /// 它全部连接都是软推，本项目默认硬约束，防折叠支柱这类"姿态弹簧"才用此档）。</summary>
+    public bool SoftOnly;
+
     /// <summary>硬约束修正分配给 A 端的权重 ∈ [0,1]（0 = A 视作无限重，全部位移落在 B）。</summary>
     public float WeightA;
 
@@ -41,7 +45,10 @@ public sealed class ChunkConnection
         WeightA = weightA;
     }
 
-    /// <summary>软弹簧：按距离误差把两端 Vel 向恢复方向推（对标 ConnectToPoint 的 elasticMovement 项）。</summary>
+    /// <summary>软弹簧：按距离误差把两端向恢复方向推（对标 ConnectToPoint 的 elasticMovement 项）。
+    /// 与硬约束同一套触发方向：PullOnly 只在拉长时推回，PushOnly 只在过近时撑开。
+    /// SoftOnly 档用 RW BodyChunkConnection.Update 的原语义——Pos/Vel 同步修正（按 Elasticity
+    /// 缩放的位置修正，立即生效）；普通软项只写 Vel（下 tick 生效，弱得多，配合硬约束用）。</summary>
     public void ApplySoft()
     {
         Vector3 delta = B.Pos - A.Pos;
@@ -51,28 +58,41 @@ public sealed class ChunkConnection
             return;
         }
         float err = dist - RestLength;
+        if (!Triggered(err))
+        {
+            return;
+        }
         Vector3 corr = delta / dist * (err * Elasticity);
-        A.Vel += corr * WeightA;
-        B.Vel -= corr * (1f - WeightA);
+        Vector3 corrA = corr * WeightA;
+        Vector3 corrB = corr * (1f - WeightA);
+        if (SoftOnly)
+        {
+            A.Pos += corrA;
+            A.Vel += corrA;
+            B.Pos -= corrB;
+            B.Vel -= corrB;
+        }
+        else
+        {
+            A.Vel += corrA;
+            B.Vel -= corrB;
+        }
     }
 
     /// <summary>硬约束：按模式判定触发后把两端拉回目标距离，Pos/Vel 同步修正。</summary>
     public void ApplyHard()
     {
+        if (SoftOnly)
+        {
+            return;
+        }
         Vector3 delta = B.Pos - A.Pos;
         float dist = delta.Length();
         // 两点重合时方向未定义——用固定回退方向保证确定性（不读随机数）。
         Vector3 dir = dist < 1e-6f ? Vector3.Up : delta / dist;
         float err = dist - RestLength;
 
-        bool triggered = ConstraintMode switch
-        {
-            Mode.Rigid => Mathf.Abs(err) > 0f,
-            Mode.PullOnly => err > 0f,
-            Mode.PushOnly => err < 0f,
-            _ => false,
-        };
-        if (!triggered)
+        if (!Triggered(err))
         {
             return;
         }
@@ -85,4 +105,12 @@ public sealed class ChunkConnection
         B.Pos -= corrB;
         B.Vel -= corrB;
     }
+
+    private bool Triggered(float err) => ConstraintMode switch
+    {
+        Mode.Rigid => Mathf.Abs(err) > 0f,
+        Mode.PullOnly => err > 0f,
+        Mode.PushOnly => err < 0f,
+        _ => false,
+    };
 }

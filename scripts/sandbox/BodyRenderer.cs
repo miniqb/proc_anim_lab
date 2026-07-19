@@ -44,7 +44,13 @@ public sealed class BodyRenderer
                 parent.AddChild(node);
                 _spheres.Add((chunk, node));
             }
-            _connections.AddRange(body.Connections);
+            foreach (ChunkConnection conn in body.Connections)
+            {
+                if (!conn.SoftOnly) // 防折叠支柱是姿态弹簧不是"骨头"，不画
+                {
+                    _connections.Add(conn);
+                }
+            }
         }
 
         if (limbs is not null)

@@ -36,6 +36,7 @@ public static class BodyFactory
         SpineSegments = 3,
         BodySizeFac = 1.2f,
         BodyMassFac = 3f,
+        BodyStiffness = 0.5f,
         BaseSpeed = 0.07f,
         MaxMoveSpeed = 0.085f,
         NoGripSpeed = 0.05f,
@@ -84,6 +85,7 @@ public static class BodyFactory
         Name = "hexapod",
         SpineSegments = 3,
         BodyMassFac = 1.3f,
+        BodyStiffness = 0.3f,
         BaseSpeed = 0.065f,
         MaxMoveSpeed = 0.085f,
         NoGripSpeed = 0.1f,
@@ -141,6 +143,20 @@ public static class BodyFactory
             {
                 ConstraintMode = ChunkConnection.Mode.Rigid,
                 Elasticity = 0.25f,
+            });
+        }
+        // 防折叠支柱（≙ RW Lizard bodyChunkConnections[2]：头↔第三节 Push-only）：
+        // 隔一节的 chunk 间下限距离 = 节长×(1+BodyStiffness)，伸直（2 节长）永不触发，
+        // 折叠到低于下限才软推撑开——等效于把最大折角参数化钳制。软推贴 RW 手感
+        // （RW elasticity = 1-Lerp(0.9,0.5,stiffness)，绿蜥 0.3），不用硬约束免得转弯发僵。
+        for (int i = 0; i + 2 < spine; i++)
+        {
+            body.Connections.Add(new ChunkConnection(chunks[i], chunks[i + 2],
+                linkLen * (1f + p.BodyStiffness), weightA: 0.5f)
+            {
+                ConstraintMode = ChunkConnection.Mode.PushOnly,
+                Elasticity = 1f - Mathf.Lerp(0.9f, 0.5f, p.BodyStiffness),
+                SoftOnly = true,
             });
         }
 

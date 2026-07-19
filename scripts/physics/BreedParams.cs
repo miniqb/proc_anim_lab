@@ -24,6 +24,11 @@ public sealed class BreedParams
     /// <summary>脊柱相邻 chunk 连接长度缩放（基准 0.3m/节）。</summary>
     public float BodyLengthFac = 1f;
 
+    /// <summary>弯曲刚度 ∈[0,1]（≙ bodyStiffnes；RW 粉蜥 0.2/绿蜥 0.5/蓝蜥 0）：脊柱每对隔一节
+    /// chunk 间的 PushOnly 防折叠支柱，RestLength = 节长×(1+此值)——越大允许的折角越小。
+    /// 伸直时隔节距离 = 2 节长，支柱永不触发；只在链条折起来时软推撑开。2 节脊柱无隔节对，无效。</summary>
+    public float BodyStiffness = 0.2f;
+
     // —— 推进（Walker，≙ baseSpeed / noGripSpeed）——
     /// <summary>满抓地满速每 tick 注入速度（≙ baseSpeed；RW 粉蜥 4.1 ↔ 0.06）。</summary>
     public float BaseSpeed = 0.06f;

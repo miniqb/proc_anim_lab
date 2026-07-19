@@ -79,11 +79,17 @@ public sealed class Body
         LastRelaxDeviation = 0f;
         foreach (ChunkConnection conn in Connections)
         {
-            float dev = Mathf.Abs((conn.B.Pos - conn.A.Pos).Length() - conn.RestLength);
-            if (conn.ConstraintMode == ChunkConnection.Mode.PullOnly)
+            if (conn.SoftOnly)
             {
-                dev = Mathf.Max(0f, (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength);
+                continue; // 姿态弹簧不归硬求解器管，常态就有"距离误差"，不计入求解质量
             }
+            float err = (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength;
+            float dev = conn.ConstraintMode switch
+            {
+                ChunkConnection.Mode.PullOnly => Mathf.Max(0f, err),
+                ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -err),
+                _ => Mathf.Abs(err),
+            };
             if (dev > LastRelaxDeviation)
             {
                 LastRelaxDeviation = dev;

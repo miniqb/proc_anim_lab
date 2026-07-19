@@ -186,6 +186,8 @@ public partial class SandboxWorld : Node3D
     }
 
     private float _maxConstraintDev; // 主连接距离偏差峰值（验收：<10% RestLength）
+    private float _maxFoldIntrusion; // 防折叠支柱被压入的峰值深度（米）——脊柱折叠程度的直接观测
+    private long _foldTicks;         // 深折叠（压入 > 支柱下限 1/3）持续 tick 数：区分落地瞬态与持续折叠
     private float _walkDistance;     // 头部 XZ 累计行走里程（验证「走得动」）
     private Vector3 _lastHeadPos;
     private long _gripTickSum;       // Σ 每 tick 抓地腿数（除以 tick 数 = 平均抓地腿数）
@@ -200,6 +202,25 @@ public partial class SandboxWorld : Node3D
         if (_bodies[0].LastRelaxDeviation > _maxConstraintDev)
         {
             _maxConstraintDev = _bodies[0].LastRelaxDeviation;
+        }
+
+        // 防折叠支柱（SoftOnly PushOnly）的压入深度：脊柱折得越狠值越大（0 = 从未折过下限）。
+        bool deepFold = false;
+        foreach (ChunkConnection conn in _bodies[0].Connections)
+        {
+            if (conn.SoftOnly && conn.ConstraintMode == ChunkConnection.Mode.PushOnly)
+            {
+                float intrusion = conn.RestLength - (conn.B.Pos - conn.A.Pos).Length();
+                if (intrusion > _maxFoldIntrusion)
+                {
+                    _maxFoldIntrusion = intrusion;
+                }
+                deepFold |= intrusion > conn.RestLength / 3f;
+            }
+        }
+        if (deepFold)
+        {
+            _foldTicks++;
         }
 
         if (_lastHeadPos != Vector3.Zero)
@@ -225,6 +246,7 @@ public partial class SandboxWorld : Node3D
     {
         GD.Print($"[METRIC] maxConstraintDev={_maxConstraintDev:F4} " +
                  $"({_maxConstraintDev / _bodies[0].Connections[0].RestLength * 100f:F1}% of rest) " +
+                 $"maxFoldIntrusion={_maxFoldIntrusion:F3}m foldTicks={_foldTicks} " +
                  $"walkDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
                  $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_walker.Limbs.Count} " +
                  $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2}");
