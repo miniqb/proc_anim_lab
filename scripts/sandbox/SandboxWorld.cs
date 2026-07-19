@@ -48,6 +48,7 @@ public partial class SandboxWorld : Node3D
     private readonly List<Body> _bodies = new();
     private Walker _walker = null!;
     private readonly RaycastTerrainQuery _terrain = new();
+    private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
     private readonly DragController _drag = new();
     private DeterminismProbe? _probe;
@@ -73,6 +74,8 @@ public partial class SandboxWorld : Node3D
             body.Chunks[0].LastPos = body.Chunks[0].Pos;
         }
         _bodies.Add(body);
+        _rayDebug = new RayDebugDraw(_terrain);
+        _rayDebug.Build(this);
         _renderer.Build(this, _bodies, _walker.Limbs, _walker);
         GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, determinism={(_probe is not null ? "on" : "off")}");
     }
@@ -81,6 +84,7 @@ public partial class SandboxWorld : Node3D
     {
         _tick++;
         _terrain.Bind(GetWorld3D().DirectSpaceState);
+        _rayDebug.BeginTick();
 
         if (_probe is null)
         {
@@ -98,7 +102,8 @@ public partial class SandboxWorld : Node3D
             _walker.Head.Vel += new Vector3(0.02f, 0.08f, 0.03f);
         }
 
-        var ctx = new TickContext(_gravityPerTick, _terrain, _tick);
+        // 地形查询经 _rayDebug 转发（纯观测装饰器）：F3 可视化打出的所有射线。
+        var ctx = new TickContext(_gravityPerTick, _rayDebug, _tick);
         _walker.Tick(ctx);
 
         if (_probe is not null)
@@ -217,6 +222,17 @@ public partial class SandboxWorld : Node3D
     public override void _Process(double delta)
     {
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
+        _rayDebug.Draw();
+    }
+
+    /// <summary>F3：随时开关射线可视化（洋红=命中，灰蓝=打空；只影响绘制，不影响物理）。</summary>
+    public override void _Input(InputEvent @event)
+    {
+        if (@event is InputEventKey { Pressed: true, Echo: false, PhysicalKeycode: Key.F3 })
+        {
+            _rayDebug.Enabled = !_rayDebug.Enabled;
+            GD.Print($"[SANDBOX] ray debug {(_rayDebug.Enabled ? "on" : "off")}");
+        }
     }
 
     /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。</summary>
