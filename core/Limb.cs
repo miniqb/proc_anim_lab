@@ -172,7 +172,9 @@ public sealed class Limb
 		{
 			// 闲置休息位：有移动意图立即退出恢复迈步；闲置中目标每 tick 跟着锚点重算
 			// （≙ relativeHuntPos 旋进身体系），脚自然垂在身侧随身体漂移。
-			if (IdlePose && runSpeed > 0.1f)
+			// 意图判定统一走 Walker.MoveIntentDeadzone——曾经推进层用 >0、这里用 >0.1，
+			// 0.05 的输入会推着一具永远退不出 IdlePose 的身体滑行（评审 P1-5）。
+			if (IdlePose && runSpeed > Walker.MoveIntentDeadzone)
 			{
 				IdlePose = false;
 				_gripFailTicks = 0;
@@ -185,7 +187,7 @@ public sealed class Limb
 			else if (!HasGrip || !OverlappingHuntPos())
 			{
 				FindGrip(ctx, stepDir, up);
-				if (HasGrip || runSpeed > 0.1f)
+				if (HasGrip || runSpeed > Walker.MoveIntentDeadzone)
 				{
 					_gripFailTicks = 0;
 				}
@@ -208,7 +210,7 @@ public sealed class Limb
 				}
 
 				// 步态错开：跑动中若本腿抓得最久且其余腿都已抓稳 → 主动松开迈步。
-				if (ReachingForTerrain && runSpeed > 0.1f && smoothGait)
+				if (ReachingForTerrain && runSpeed > Walker.MoveIntentDeadzone && smoothGait)
 				{
 					bool oldestGrip = true;
 					foreach (Limb other in allLimbs)
@@ -254,6 +256,14 @@ public sealed class Limb
 		{
 			GripCounter = 0;
 		}
+	}
+
+	/// <summary>整体平移（Walker.Shift 的腿部分）：位置、插值历史、追逐目标同步移动。</summary>
+	public void Shift(Vector3 delta)
+	{
+		Pos += delta;
+		LastPos += delta;
+		HuntPos += delta;
 	}
 
 	/// <summary>强制松开重迈步（Walker 顶死解锁用，≙ RW timeSpentTryingThisMove 的升级动作）。</summary>
@@ -375,7 +385,13 @@ public sealed class Limb
 			GripNormal = bestNormal;
 			HasGrip = true;
 		}
-		// 没找到：HuntPos 维持原值，下 tick 重试（身体在动，goal 会变）——RW 同款行为。
+		else
+		{
+			// 没找到：HuntPos 维持原值下 tick 重试（身体在动，goal 会变），但 HasGrip 必须
+			// 摘掉——它的语义是「HuntPos 是本次搜索背书的地形点」。留着旧 true 会让闲置
+			// 失败计数被永久清零、旧落点变不可达后腿吊死在钳制位（评审「旧落点残留」）。
+			HasGrip = false;
+		}
 	}
 
 	/// <summary>追目标积分（≙ Limb.Update 主体）：吸附或 Lerp 逼近，然后出地形。</summary>

@@ -31,8 +31,17 @@ public sealed class Walker
 	/// <summary>移动意图方向（单位向量或零向量）。由输入/AI 每 tick 写入。</summary>
 	public Vector3 MoveDir;
 
-	/// <summary>移动意图强度 ∈ [0,1]（≙ AI.runSpeed）。</summary>
+	/// <summary>移动意图强度 ∈ [0,1]（≙ AI.runSpeed）。低于 <see cref="MoveIntentDeadzone"/>
+	/// 一律视为零输入（见 HasMoveIntent）。</summary>
 	public float RunSpeed;
+
+	/// <summary>移动意图死区：RunSpeed ≤ 此值时推进/步态/顶死检测/闲置退出全部视为无输入。
+	/// 曾经推进层用 &gt;0、腿层用 &gt;0.1 —— 0.05 的合法输入会推着一具收着腿（IdlePose
+	/// 退不出来）的身体滑行（外部评审 P1-5）。唯一死区，所有层共用。</summary>
+	public const float MoveIntentDeadzone = 0.1f;
+
+	/// <summary>本 tick 是否存在有效移动意图（死区之上且方向非零）——推进与步态的唯一开关。</summary>
+	public bool HasMoveIntent => RunSpeed > MoveIntentDeadzone && MoveDir != Vector3.Zero;
 
 	/// <summary>满抓地满速时每 tick 注入的速度（米/tick，≙ lizardParams.baseSpeed）。</summary>
 	public float BaseSpeed = 0.06f;
@@ -122,6 +131,35 @@ public sealed class Walker
 		Hips = hips;
 	}
 
+	/// <summary>宿主 tether 契约的 rebase/teleport 入口：身体、腿、腿的追逐目标整体平移，
+	/// 速度/抓握/站稳状态原样保留。权威根瞬移或复位时调用——没有它，视觉身体只能以
+	/// MaxMoveSpeed 横穿场景慢慢追根，或继续抓在原地（评审 P1-7）。</summary>
+	public void Shift(Vector3 delta)
+	{
+		Body.Shift(delta);
+		foreach (Limb limb in Limbs)
+		{
+			limb.Shift(delta);
+		}
+	}
+
+	/// <summary>宿主冲量注入（跳跃/击飞/弹射，≙ RW 被抛掷）：全 chunk 加同一速度增量
+	/// （米/tick），全腿强制松手、站稳计数清零——重力当 tick 回归，身体进入弹道，
+	/// 落地后按常规 plant-and-trail 恢复步态（--yank 回归验证的正是这条恢复路径）。</summary>
+	public void Launch(Vector3 velocityPerTick)
+	{
+		foreach (BodyChunk c in Body.Chunks)
+		{
+			c.Vel += velocityPerTick;
+		}
+		foreach (Limb limb in Limbs)
+		{
+			limb.ForceRelease();
+		}
+		FootingCounter = 0;
+		NoGripCounter = LoseGripTicks + 1;
+	}
+
 	/// <summary>
 	/// 唯一入口：站稳判定 → 推进力 → 身体物理 → 腿 → 支撑系更新
 	/// （腿在图形层语义上晚于物理，与 RW 帧序一致；支撑法线滞后一 tick 使用）。
@@ -133,11 +171,10 @@ public sealed class Walker
 			: Vector3.Up;
 
 		UpdateFooting(ctx);
-		Vector3 effMove = RedirectMove(up);
+		Vector3 effMove = HasMoveIntent ? RedirectMove(up) : Vector3.Zero;
 		ApplyLocomotionForce(ctx, effMove, up);
 		Body.Tick(ctx);
-		bool pushing = RunSpeed > 0.1f && MoveDir != Vector3.Zero;
-		StallTicks = pushing && Head.Vel.Length() < StallSpeed ? StallTicks + 1 : 0;
+		StallTicks = HasMoveIntent && Head.Vel.Length() < StallSpeed ? StallTicks + 1 : 0;
 		TickLimbs(ctx, effMove);
 		UpdateSupportNormal(up);
 	}
@@ -153,7 +190,9 @@ public sealed class Walker
 		bool anyContact = false;
 		foreach (Limb limb in Limbs)
 		{
-			anyGrip |= limb.GripCounter > 0;
+			// 用真抓握（GripCounter ≥ GripDelay）而非「碰过一下」：棱边抖动时几条腿轮流
+			// 只接触 1 tick 也能把 NoGripCounter 摁在 0——零真抓地却关重力（外部评审 P1-6）。
+			anyGrip |= limb.Gripping;
 			anyContact |= limb.TerrainContact;
 		}
 		foreach (BodyChunk c in Body.Chunks)
@@ -227,7 +266,7 @@ public sealed class Walker
 	/// </summary>
 	private void ApplyLocomotionForce(in TickContext ctx, Vector3 effMove, Vector3 up)
 	{
-		if (RunSpeed <= 0f || effMove == Vector3.Zero)
+		if (RunSpeed <= MoveIntentDeadzone || effMove == Vector3.Zero)
 		{
 			return;
 		}
@@ -239,9 +278,12 @@ public sealed class Walker
 
 		Vector3 target = FindMoveTarget(ctx, effMove, up, out bool crest);
 		Vector3 headDir = Dir(Head.Pos, target);
-		if (Head.Vel.Dot(headDir) < MaxMoveSpeed)
+		// 注入量按剩余空间钳制：MaxMoveSpeed 是推进通道的真上限，不是「低于才加力」的
+		// 软闸（旧版初速 0.079 + 满注入可到 0.139——名字承诺的上限形同虚设）。
+		float headroom = MaxMoveSpeed - Head.Vel.Dot(headDir);
+		if (headroom > 0f)
 		{
-			Head.Vel += headDir * frameSpeed;
+			Head.Vel += headDir * Mathf.Min(frameSpeed, headroom);
 		}
 		if (crest)
 		{
@@ -253,9 +295,10 @@ public sealed class Walker
 		Vector3 hipsDir = Dir(Hips.Pos, trail);
 		// 身体折叠（髋看目标与看拖尾点方向相反）时衰减髋部力，防止两点对拉（≙ RW 的 dot LerpMap）。
 		float fold = Mathf.Remap(Dir(Hips.Pos, target).Dot(hipsDir), -1f, 1f, 0.5f, 1f);
-		if (Hips.Vel.Dot(hipsDir) < MaxMoveSpeed)
+		float hipsHeadroom = MaxMoveSpeed - Hips.Vel.Dot(hipsDir);
+		if (hipsHeadroom > 0f)
 		{
-			Hips.Vel += hipsDir * (frameSpeed * fold);
+			Hips.Vel += hipsDir * Mathf.Min(frameSpeed * fold, hipsHeadroom);
 		}
 
 		// 拉直（≙ RW straightenOut）：身体轴线背对目标（正面撞墙翻倒、头折叠到髋后）时，

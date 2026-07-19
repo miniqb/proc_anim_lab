@@ -57,16 +57,16 @@ public sealed class ChunkConnection
     {
         Vector3 delta = B.Pos - A.Pos;
         float dist = delta.Length();
-        if (dist < 1e-6f)
-        {
-            return;
-        }
         float err = dist - RestLength;
         if (!Triggered(err))
         {
             return;
         }
-        Vector3 corr = delta / dist * (err * Elasticity);
+        // 两点重合时方向未定义——固定回退方向（同 ApplyHard）。不能早退：防折叠支柱是
+        // SoftOnly PushOnly，脊柱精确 180° 对折、头与第三节重合时恰恰最需要它撑开，
+        // 确定性系统又没有随机扰动可以蹭出一个方向。
+        Vector3 dir = dist < 1e-6f ? Vector3.Up : delta / dist;
+        Vector3 corr = dir * (err * Elasticity);
         Vector3 corrA = corr * WeightA;
         Vector3 corrB = corr * (1f - WeightA);
         if (SoftOnly)

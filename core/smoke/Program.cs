@@ -24,7 +24,7 @@ internal static class Program
 
     /// <summary>基线哈希 = 内核行为的指纹。**只有有意改物理时才允许更新**（与 CLAUDE.md §5
     /// 的哈希表同步改）——只比双跑一致会漏掉「确定但错误」的行为漂移。</summary>
-    private const ulong ExpectedHash = 0x8312738384E28ED8UL;
+    private const ulong ExpectedHash = 0x653886DEBB5B3F60UL;
 
     private static int Main()
     {
@@ -32,12 +32,14 @@ internal static class Program
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) b = Run();
         bool boundaryOk = CheckEngineBoundary(out string boundaryMsg);
         bool embedOk = CheckEmbedRecovery(out string embedMsg);
+        bool shiftOk = CheckShiftContinuity(out string shiftMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
                           $"raysPerTick={a.RaysPerTick:F1} endDev={a.EndDev:F4}m nan={a.Nan}");
         Console.WriteLine($"[CORE-BOUNDARY] {boundaryMsg}");
         Console.WriteLine($"[CORE-EMBED] {embedMsg}");
+        Console.WriteLine($"[CORE-SHIFT] {shiftMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -67,6 +69,10 @@ internal static class Program
         if (!embedOk)
         {
             reasons.Add("嵌入恢复失败（出生在地形内没有被推出）");
+        }
+        if (!shiftOk)
+        {
+            reasons.Add("Shift 后步态中断（rebase 契约被破坏）");
         }
 
         bool pass = reasons.Count == 0;
@@ -140,6 +146,41 @@ internal static class Program
         }
         message = $"出生 y=-0.1 嵌入地板，50 tick 后最低 chunk y={minY:F3}（须 ≥ 0）";
         return minY > -1e-3f;
+    }
+
+    /// <summary>
+    /// rebase 连续性：行走中整体 Shift(+512,0,+512)（宿主 teleport/浮点原点重置的契约入口），
+    /// 步态必须无缝续走。坐标进入不同浮点尾数区间，bit-exact 不可期待——断言的是
+    /// 「平移不打断动力学」：续走里程过阈、无 NaN、约束收敛。
+    /// </summary>
+    private static bool CheckShiftContinuity(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
+        var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        long t = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            t++;
+            walker.MoveDir = new Vector3(1f, 0f, 0f);
+            walker.RunSpeed = 1f;
+            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+        }
+        walker.Shift(new Vector3(512f, 0f, 512f));
+        Vector3 start = walker.Head.Pos;
+        for (int i = 0; i < 300; i++)
+        {
+            t++;
+            walker.MoveDir = new Vector3(1f, 0f, 0f);
+            walker.RunSpeed = 1f;
+            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+        }
+        Vector3 d = walker.Head.Pos - start;
+        d.Y = 0f;
+        bool nan = !walker.Head.Pos.IsFinite();
+        float dev = walker.Body.CurrentMaxDeviation();
+        message = $"Shift(+512,0,+512) 后 300 tick 续走 {d.Length():F2}m，endDev={dev:F4}m（须 >15m 且收敛）";
+        return d.Length() > 15f && !nan && dev < 0.05f;
     }
 
     /// <summary>

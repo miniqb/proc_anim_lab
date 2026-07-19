@@ -107,6 +107,17 @@ public sealed class Body
         }
     }
 
+    /// <summary>整体平移（宿主 teleport/rebase 用）：Pos/LastPos 同步移动，速度与约束状态
+    /// 原样保留——动力学在新原点无缝继续，渲染插值不产生跨图拖影。</summary>
+    public void Shift(Vector3 delta)
+    {
+        foreach (BodyChunk c in Chunks)
+        {
+            c.Pos += delta;
+            c.LastPos += delta;
+        }
+    }
+
     /// <summary>当前时点的最大连接距离偏差（米，按各连接触发方向计，SoftOnly 不计）。
     /// 与 <see cref="LastRelaxDeviation"/> 的区别：这是「现在量」——tick 末尾调用可见
     /// 碰撞对约束的破坏（跨墙卡链等持续断裂靠它暴露，松弛末的观测值看不见）。</summary>
