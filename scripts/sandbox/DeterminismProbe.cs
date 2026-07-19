@@ -17,6 +17,9 @@ public sealed class DeterminismProbe
 
     public bool Finished { get; private set; }
 
+    /// <summary>当前折叠哈希（跑满后 = 终值,供 --expect-hash 断言)。</summary>
+    public ulong Hash => _hasher.Value;
+
     public DeterminismProbe(int runTicks, int checkpointInterval = 100)
     {
         _runTicks = runTicks;

@@ -30,6 +30,8 @@ public partial class SandboxWorld : Node3D
     private float _perturb; // --perturb=x 灵敏度自检：初始位置微扰 → 哈希必须变
     private Vector3 _spawn = new(0f, 2f, 0f); // --spawn=x,y,z 覆盖出生点（坡上/墙边测试用）
     private long _yankTick = -1; // --yank=T：T 起 5 tick 给头部上抛冲量（复现「拎起再摔」，回归步态恢复）
+    private ulong? _expectHash; // --expect-hash=X16：终值哈希对基线断言（回归脚本传文档基线，防「确定但错误」）
+    private bool _fatal; // CLI 畸形等致命错：停帧防 NRE 无限刷屏，退出码 2
 
     /// <summary>确定性模式的巡走路点（XZ 平面，Y 忽略）。M3 路线覆盖三种地形：
     /// ① 上缓坡到坡面中段（坡 x∈[1.15,6.85]）② 下坡横穿平地 ③ 目标点在 x=-6 墙的
@@ -78,7 +80,12 @@ public partial class SandboxWorld : Node3D
         _drag.Damping = DragDamping;
         _drag.MaxForce = DragMaxForce;
 
-        ParseDeterminismArgs();
+        if (!ParseDeterminismArgs())
+        {
+            _fatal = true;
+            GetTree().Quit(2);
+            return;
+        }
         _rayDebug = new RayDebugDraw(_terrain);
         _rayDebug.Build(this);
         SpawnWalker(_breed, _spawn);
@@ -106,6 +113,10 @@ public partial class SandboxWorld : Node3D
 
     public override void _PhysicsProcess(double delta)
     {
+        if (_fatal)
+        {
+            return;
+        }
         _tick++;
         _terrain.Bind(GetWorld3D().DirectSpaceState);
         _rayDebug.BeginTick();
@@ -136,8 +147,7 @@ public partial class SandboxWorld : Node3D
             _probe.Record(_tick, _bodies, _walker.Limbs);
             if (_probe.Finished)
             {
-                DumpFinalState();
-                GetTree().Quit();
+                GetTree().Quit(DumpFinalState());
             }
         }
     }
@@ -192,6 +202,10 @@ public partial class SandboxWorld : Node3D
     private long _gripTickSum;       // Σ 每 tick 抓地腿数（除以 tick 数 = 平均抓地腿数）
     private long _gravityOffTicks;   // 重力被关（站稳/攀爬）的 tick 数（M3 涌现验证）
     private float _maxHeadY;         // 头部最高点（爬墙验证：平地行走 ≈0.3，上墙应明显更高）
+    private float _endDevRatio;      // tick 末（碰撞后）连接偏差率（偏差/该连接 RestLength），每 tick 覆盖 → 终值即终态
+    private float _maxEndDevRatio;   // 同上的峰值（落地冲击等瞬态也计入，只观测不判定）
+    private long _stretchTicks;      // tick 末偏差率 >0.5 的 tick 数：瞬态尖峰只占几 tick，跨墙卡链会长期累积
+    private bool _nonFinite;         // 任意 chunk/limb 状态出现 NaN/Inf（一票 FAIL）
 
     /// <summary>确定性模式下顺带记录质量指标：约束偏差峰值 + 行走里程 + 抓地/重力开关统计。</summary>
     private void TrackQualityMetrics()
@@ -238,17 +252,61 @@ public partial class SandboxWorld : Node3D
         {
             _maxHeadY = _walker.Head.Pos.Y;
         }
+
+        // tick 末（碰撞后）的连接偏差：LastRelaxDeviation 只看松弛末，碰撞把 chunk 推回
+        // 墙外造成的持续断裂（尾链跨墙卡死）只有这里看得见——按偏差率判定，尾链细节不被长节稀释。
+        float endRatio = 0f;
+        foreach (ChunkConnection conn in _bodies[0].Connections)
+        {
+            if (conn.SoftOnly)
+            {
+                continue;
+            }
+            float err = (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength;
+            float dev = conn.ConstraintMode switch
+            {
+                ChunkConnection.Mode.PullOnly => Mathf.Max(0f, err),
+                ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -err),
+                _ => Mathf.Abs(err),
+            };
+            float ratio = conn.RestLength > 1e-6f ? dev / conn.RestLength : 0f;
+            if (ratio > endRatio)
+            {
+                endRatio = ratio;
+            }
+        }
+        _endDevRatio = endRatio;
+        if (endRatio > _maxEndDevRatio)
+        {
+            _maxEndDevRatio = endRatio;
+        }
+        if (endRatio > 0.5f)
+        {
+            _stretchTicks++;
+        }
+
+        foreach (BodyChunk c in _bodies[0].Chunks)
+        {
+            _nonFinite |= !c.Pos.IsFinite() || !c.Vel.IsFinite();
+        }
+        foreach (Limb l in _walker.Limbs)
+        {
+            _nonFinite |= !l.Pos.IsFinite();
+        }
     }
 
-    /// <summary>探针跑完后输出终态：人工核对行走里程/抓地质量/是否 NaN/尾链是否发散。</summary>
-    private void DumpFinalState()
+    /// <summary>探针跑完后输出终态与判定（[RESULT] PASS/FAIL），返回进程退出码。
+    /// 判定项：有限值、终态约束偏差（碰撞后！）、哈希对基线（--expect-hash 提供时）。
+    /// 只打印不断言的旧版是假绿——NaN、尾链跨墙断裂、哈希漂移全都照样退 0。</summary>
+    private int DumpFinalState()
     {
         GD.Print($"[METRIC] maxConstraintDev={_maxConstraintDev:F4} " +
                  $"({_maxConstraintDev / _bodies[0].Connections[0].RestLength * 100f:F1}% of rest) " +
                  $"maxFoldIntrusion={_maxFoldIntrusion:F3}m foldTicks={_foldTicks} " +
                  $"walkDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
                  $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_walker.Limbs.Count} " +
-                 $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2}");
+                 $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2} " +
+                 $"endDev={_endDevRatio:F2}x maxEndDev={_maxEndDevRatio:F2}x stretchTicks={_stretchTicks}");
         Vector3 sn = _walker.SupportNormal;
         GD.Print($"[FINAL] walker applyGravity={_walker.ApplyGravity} footing={_walker.FootingCounter} " +
                  $"noGrip={_walker.NoGripCounter} stall={_walker.StallTicks} " +
@@ -270,10 +328,31 @@ public partial class SandboxWorld : Node3D
                      $"grip={l.GripCounter} reaching={l.ReachingForTerrain} idle={l.IdlePose} " +
                      $"extra={l.ExtraLongStep} contact={l.TerrainContact}");
         }
+
+        var reasons = new List<string>();
+        if (_nonFinite)
+        {
+            reasons.Add("状态出现 NaN/Inf");
+        }
+        if (_endDevRatio > 0.5f)
+        {
+            reasons.Add($"终态约束断裂（endDev={_endDevRatio:F2}x rest，跨墙卡链/求解崩坏）");
+        }
+        if (_expectHash is ulong expect && _probe!.Hash != expect)
+        {
+            reasons.Add($"哈希 {_probe.Hash:X16} ≠ 基线 {expect:X16}（有意改内核请同步 CLAUDE.md §5 与矩阵脚本）");
+        }
+        bool pass = reasons.Count == 0;
+        GD.Print(pass ? "[RESULT] PASS" : $"[RESULT] FAIL: {string.Join("; ", reasons)}");
+        return pass ? 0 : 1;
     }
 
     public override void _Process(double delta)
     {
+        if (_fatal)
+        {
+            return;
+        }
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
         _rayDebug.Draw(_camera);
     }
@@ -305,51 +384,90 @@ public partial class SandboxWorld : Node3D
         }
     }
 
-    /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。</summary>
-    private void ParseDeterminismArgs()
+    /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。
+    /// 返回 false = 参数畸形（含未知开关、非有限数）。必须快速失败——解析半途抛异常曾把
+    /// _Ready 留在残局，随后 _PhysicsProcess 每帧 NRE、进程不退出、日志无限膨胀。</summary>
+    private bool ParseDeterminismArgs()
     {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
         foreach (string arg in OS.GetCmdlineUserArgs())
         {
-            if (arg.StartsWith("--determinism="))
+            try
             {
-                int ticks = int.Parse(arg["--determinism=".Length..]);
-                _probe = new DeterminismProbe(ticks);
+                if (arg.StartsWith("--determinism="))
+                {
+                    int ticks = int.Parse(arg["--determinism=".Length..], inv);
+                    if (ticks <= 0)
+                    {
+                        throw new System.FormatException("tick 数必须为正");
+                    }
+                    _probe = new DeterminismProbe(ticks);
+                }
+                else if (arg.StartsWith("--tps="))
+                {
+                    int tps = int.Parse(arg["--tps=".Length..], inv);
+                    if (tps <= 0)
+                    {
+                        throw new System.FormatException("tps 必须为正");
+                    }
+                    Engine.PhysicsTicksPerSecond = tps;
+                    Engine.MaxPhysicsStepsPerFrame = 100;
+                }
+                else if (arg.StartsWith("--yank="))
+                {
+                    _yankTick = long.Parse(arg["--yank=".Length..], inv);
+                }
+                else if (arg == "--route=wall")
+                {
+                    _waypoints = WallRoute;
+                }
+                else if (arg == "--route=stand")
+                {
+                    _waypoints = StandRoute;
+                }
+                else if (arg.StartsWith("--breed="))
+                {
+                    _breed = BodyFactory.ByName(arg["--breed=".Length..]);
+                }
+                else if (arg.StartsWith("--perturb="))
+                {
+                    _perturb = float.Parse(arg["--perturb=".Length..], inv);
+                    if (!float.IsFinite(_perturb))
+                    {
+                        throw new System.FormatException("perturb 必须是有限数（NaN 会污染全部状态且哈希照打）");
+                    }
+                }
+                else if (arg.StartsWith("--spawn="))
+                {
+                    string[] parts = arg["--spawn=".Length..].Split(',');
+                    if (parts.Length != 3)
+                    {
+                        throw new System.FormatException("spawn 需要 x,y,z 三个分量");
+                    }
+                    _spawn = new Vector3(
+                        float.Parse(parts[0], inv), float.Parse(parts[1], inv), float.Parse(parts[2], inv));
+                    if (!_spawn.IsFinite())
+                    {
+                        throw new System.FormatException("spawn 必须是有限数");
+                    }
+                }
+                else if (arg.StartsWith("--expect-hash="))
+                {
+                    _expectHash = ulong.Parse(arg["--expect-hash=".Length..],
+                        System.Globalization.NumberStyles.HexNumber, inv);
+                }
+                else
+                {
+                    // 打错的开关静默忽略 = 跑了错误配置还对着基线绿灯,必须硬拒。
+                    throw new System.FormatException("未知参数");
+                }
             }
-            else if (arg.StartsWith("--tps="))
+            catch (System.Exception e) when (e is System.FormatException or System.OverflowException)
             {
-                int tps = int.Parse(arg["--tps=".Length..]);
-                Engine.PhysicsTicksPerSecond = tps;
-                Engine.MaxPhysicsStepsPerFrame = 100;
-            }
-            else if (arg.StartsWith("--yank="))
-            {
-                _yankTick = long.Parse(arg["--yank=".Length..]);
-            }
-            else if (arg == "--route=wall")
-            {
-                _waypoints = WallRoute;
-            }
-            else if (arg == "--route=stand")
-            {
-                _waypoints = StandRoute;
-            }
-            else if (arg.StartsWith("--breed="))
-            {
-                _breed = BodyFactory.ByName(arg["--breed=".Length..]);
-            }
-            else if (arg.StartsWith("--perturb="))
-            {
-                _perturb = float.Parse(arg["--perturb=".Length..],
-                    System.Globalization.CultureInfo.InvariantCulture);
-            }
-            else if (arg.StartsWith("--spawn="))
-            {
-                string[] parts = arg["--spawn=".Length..].Split(',');
-                _spawn = new Vector3(
-                    float.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture),
-                    float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
-                    float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture));
+                GD.PrintErr($"[SANDBOX] 参数畸形: {arg}（{e.Message}）");
+                return false;
             }
         }
+        return true;
     }
 }

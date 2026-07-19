@@ -97,6 +97,33 @@ public sealed class Body
         }
     }
 
+    /// <summary>当前时点的最大连接距离偏差（米，按各连接触发方向计，SoftOnly 不计）。
+    /// 与 <see cref="LastRelaxDeviation"/> 的区别：这是「现在量」——tick 末尾调用可见
+    /// 碰撞对约束的破坏（跨墙卡链等持续断裂靠它暴露，松弛末的观测值看不见）。</summary>
+    public float CurrentMaxDeviation()
+    {
+        float max = 0f;
+        foreach (ChunkConnection conn in Connections)
+        {
+            if (conn.SoftOnly)
+            {
+                continue;
+            }
+            float err = (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength;
+            float dev = conn.ConstraintMode switch
+            {
+                ChunkConnection.Mode.PullOnly => Mathf.Max(0f, err),
+                ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -err),
+                _ => Mathf.Abs(err),
+            };
+            if (dev > max)
+            {
+                max = dev;
+            }
+        }
+        return max;
+    }
+
     private void Collide(in TickContext ctx)
     {
         foreach (BodyChunk c in Chunks)

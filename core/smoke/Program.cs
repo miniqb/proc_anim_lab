@@ -1,4 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using Godot;
 
 namespace ProcAnim.Core.Smoke;
@@ -6,8 +10,9 @@ namespace ProcAnim.Core.Smoke;
 /// <summary>
 /// 无引擎冒烟回归：内核完全脱离 Godot 运行时跑在纯 .NET 进程里（M5「与引擎解耦」
 /// 的实证），也是回迁后目标仓库最快的内核回归入口。
-/// 纯解析平面地形 + default 品种平地巡走（前半直行、后半 45° 转向）：
-/// 进程内双跑哈希必须 bit-exact、行走里程过阈、终态无 NaN。
+/// 纯解析平面地形 + default 品种平地巡走（前半直行、后半 45° 转向）。
+/// 断言：双跑 bit-exact、哈希对基线（防「确定但错误」）、里程过阈、终态约束收敛、
+/// 无 NaN、内核程序集引擎边界干净（TypeRef 扫描）。
 /// </summary>
 internal static class Program
 {
@@ -17,23 +22,55 @@ internal static class Program
     private const float TickDt = 0.025f;
     private const float GravityMps2 = 36f;
 
+    /// <summary>基线哈希 = 内核行为的指纹。**只有有意改物理时才允许更新**（与 CLAUDE.md §5
+    /// 的哈希表同步改）——只比双跑一致会漏掉「确定但错误」的行为漂移。</summary>
+    private const ulong ExpectedHash = 0x17A085DE53E2E133UL;
+
     private static int Main()
     {
-        (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan) a = Run();
-        (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan) b = Run();
+        (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) a = Run();
+        (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) b = Run();
+        bool boundaryOk = CheckEngineBoundary(out string boundaryMsg);
 
-        Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16}");
+        Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
-                          $"raysPerTick={a.RaysPerTick:F1} nan={a.Nan}");
+                          $"raysPerTick={a.RaysPerTick:F1} endDev={a.EndDev:F4}m nan={a.Nan}");
+        Console.WriteLine($"[CORE-BOUNDARY] {boundaryMsg}");
 
-        bool pass = a.Hash == b.Hash && a.Walk > 15f && !a.Nan;
+        var reasons = new List<string>();
+        if (a.Hash != b.Hash)
+        {
+            reasons.Add("双跑哈希不一致");
+        }
+        if (a.Hash != ExpectedHash)
+        {
+            reasons.Add("哈希偏离基线（有意改内核请同步更新 ExpectedHash 与 CLAUDE.md §5）");
+        }
+        if (a.Walk <= 15f)
+        {
+            reasons.Add($"行走里程不足（{a.Walk:F2}m）");
+        }
+        if (a.Nan)
+        {
+            reasons.Add("状态出现 NaN/Inf");
+        }
+        if (a.EndDev >= 0.05f)
+        {
+            reasons.Add($"终态约束偏差过大（{a.EndDev:F4}m，碰撞后量取）");
+        }
+        if (!boundaryOk)
+        {
+            reasons.Add("内核程序集越出引擎边界");
+        }
+
+        bool pass = reasons.Count == 0;
         Console.WriteLine(pass
-            ? "[CORE-SMOKE] PASS：双跑 bit-exact、平地巡走正常、无 NaN——内核在纯 .NET 进程内确定运行"
-            : "[CORE-SMOKE] FAIL");
+            ? "[CORE-SMOKE] PASS：双跑 bit-exact、哈希对基线、约束收敛、边界干净、无 NaN"
+            : $"[CORE-SMOKE] FAIL：{string.Join("；", reasons)}");
         return pass ? 0 : 1;
     }
 
-    private static (ulong, float, float, float, bool) Run()
+    private static (ulong, float, float, float, bool, float) Run()
     {
         var terrain = new PlaneTerrainQuery(0f);
         Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
@@ -71,6 +108,40 @@ internal static class Program
         {
             nan |= !l.Pos.IsFinite();
         }
-        return (hasher.Value, walk, (float)gripSum / Ticks, (float)terrain.RayCount / Ticks, nan);
+        return (hasher.Value, walk, (float)gripSum / Ticks, (float)terrain.RayCount / Ticks,
+            nan, walker.Body.CurrentMaxDeviation());
+    }
+
+    /// <summary>
+    /// 内核程序集的引擎边界扫描：除数学允许清单外出现任何 Godot.* 类型引用即 FAIL。
+    /// GodotSharp 包里 Node/GD/PhysicsServer3D 全部编译期可达——「不引 Godot.NET.Sdk」
+    /// 只挡住了场景树源生成器，真正的强制靠这道 TypeRef 扫描（离线、秒级，回迁后照跑）。
+    /// </summary>
+    private static bool CheckEngineBoundary(out string message)
+    {
+        var allowed = new HashSet<string> { "Vector3", "Mathf" };
+        using FileStream fs = File.OpenRead(typeof(Body).Assembly.Location);
+        using var pe = new PEReader(fs);
+        MetadataReader md = pe.GetMetadataReader();
+        var offenders = new List<string>();
+        foreach (TypeReferenceHandle handle in md.TypeReferences)
+        {
+            TypeReference tr = md.GetTypeReference(handle);
+            string ns = md.GetString(tr.Namespace);
+            if (!ns.StartsWith("Godot", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            string name = md.GetString(tr.Name);
+            if (ns == "Godot" && allowed.Contains(name))
+            {
+                continue;
+            }
+            offenders.Add($"{ns}.{name}");
+        }
+        message = offenders.Count == 0
+            ? $"ProcAnim.Core 引擎类型引用 = 允许清单 [{string.Join(", ", allowed)}]，边界干净"
+            : $"越界引用: {string.Join(", ", offenders)}";
+        return offenders.Count == 0;
     }
 }
