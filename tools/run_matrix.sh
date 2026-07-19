@@ -10,15 +10,14 @@ GODOT="${GODOT:-/Applications/Godot_mono.app/Contents/MacOS/Godot}"
 cd "$(dirname "$0")/.."
 OUT="${1:-/private/tmp/proc_anim_matrix}"
 LOG=/private/tmp/godot_codex.log
-TICKS=2000
 
 # —— 基线哈希（400Hz/2000tick，与 CLAUDE.md §5 哈希表同步维护）——
-HASH_DEFAULT=0C757AF36469CD1C
-HASH_WALL=F3B88D81E286CC8B
-HASH_STAND=7069911AEECF1DD2
-HASH_HEAVY=B2AC7CA1BB8DF9D0
-HASH_SPRINTER=30DF00DC82039FC5
-HASH_HEXAPOD=2E31ED4688385CD1
+HASH_DEFAULT=06431FD41741EA82
+HASH_WALL=F4E8C6DBF7B7B74D
+HASH_STAND=A3461FD3A1D8B23C
+HASH_HEAVY=B6E85B67EC18B1AE
+HASH_SPRINTER=F90E9991F22DE3F5
+HASH_HEXAPOD=9DF6353629532685
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -27,13 +26,13 @@ fi
 
 fail=0
 
-# run <name> <期望哈希|-> <路点下限|-> <额外参数...>
+# run <name> <期望哈希|-> <路点下限|-> <tick数> <额外参数...>
 run() {
-    local name="$1" expect="$2" minwp="$3"; shift 3
+    local name="$1" expect="$2" minwp="$3" ticks="$4"; shift 4
     local file="$OUT/$name.txt" extra=()
     [ "$expect" != "-" ] && extra+=("--expect-hash=$expect")
     "$GODOT" --headless --path . --log-file "$LOG" --fixed-fps 40 -- \
-        --determinism=$TICKS "${extra[@]+"${extra[@]}"}" "$@" > "$file" 2>&1
+        --determinism="$ticks" "${extra[@]+"${extra[@]}"}" "$@" > "$file" 2>&1
     local code=$?
     local ok=1
     if ! grep -q '^\[RESULT\] PASS' "$file"; then
@@ -64,16 +63,34 @@ run() {
 
 final_hash() { grep '^\[DET\]' "$OUT/$1.txt" | tail -1 | sed 's/.*hash=//'; }
 
-run default    "$HASH_DEFAULT"  12 --tps=400
-run default-b  "$HASH_DEFAULT"  12 --tps=400
-run default-40 "$HASH_DEFAULT"  12
+run default    "$HASH_DEFAULT"  12 2000 --tps=400
+run default-b  "$HASH_DEFAULT"  12 2000 --tps=400
+run default-40 "$HASH_DEFAULT"  12 2000
 # 微扰轨迹有意发散,路点下限放宽到「仍在健康走路线」（基线跑 12+,微扰实测 ~9）
-run perturb    -                6  --tps=400 --perturb=0.001
-run wall       "$HASH_WALL"     9  --tps=400 --route=wall --spawn=-4,0.5,0
-run stand      "$HASH_STAND"    -  --tps=400 --route=stand --spawn=-6,3.7,0
-run heavy      "$HASH_HEAVY"    6  --tps=400 --breed=heavy
-run sprinter   "$HASH_SPRINTER" 15 --tps=400 --breed=sprinter
-run hexapod    "$HASH_HEXAPOD"  3  --tps=400 --breed=hexapod
+run perturb    -                6  2000 --tps=400 --perturb=0.001
+run wall       "$HASH_WALL"     9  2000 --tps=400 --route=wall --spawn=-4,0.5,0
+run stand      "$HASH_STAND"    -  2000 --tps=400 --route=stand --spawn=-6,3.7,0
+run heavy      "$HASH_HEAVY"    6  2000 --tps=400 --breed=heavy
+run sprinter   "$HASH_SPRINTER" 15 2000 --tps=400 --breed=sprinter
+run hexapod    "$HASH_HEXAPOD"  3  2000 --tps=400 --breed=hexapod
+# 评审复现固化:嵌入脱困（P1-3）与贴墙擦边（P1-2），位置断言在下方
+run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
+run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0
+
+# 嵌入脱困:60 tick 后所有 chunk 必须已被 MTD 推出地板（旧版 HitFromInside 永久冻结）
+if grep '^\[FINAL\] body' "$OUT/embed.txt" | awk -F'pos=\\(' '{split($2,a,","); if (a[2]+0 < -0.01) bad=1} END {exit bad}'; then
+    echo "[embed-escape] PASS"
+else
+    echo "[embed-escape] FAIL：仍有 chunk 冻在地板内"; fail=1
+fi
+
+# 贴墙擦边:髋球（chunk=1,r=0.25）球面不得穿入 x=-5.8 的墙面（旧版穿 5cm 无接触）
+hipx=$(grep '^\[FINAL\] body=0 chunk=1 ' "$OUT/wallside.txt" | sed 's/.*pos=(\([^,]*\),.*/\1/')
+if awk -v x="${hipx:-0}" 'BEGIN{exit !(x >= -5.551)}'; then
+    echo "[wallside-graze] PASS（髋球 x=$hipx）"
+else
+    echo "[wallside-graze] FAIL：髋球穿墙（x=${hipx:-无}）"; fail=1
+fi
 
 # 双跑逐字节：两次 default 的 [DET] 序列必须完全一致
 if diff <(grep '^\[DET\]' "$OUT/default.txt") <(grep '^\[DET\]' "$OUT/default-b.txt") > /dev/null; then

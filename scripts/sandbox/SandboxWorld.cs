@@ -205,6 +205,9 @@ public partial class SandboxWorld : Node3D
     private float _endDevRatio;      // tick 末（碰撞后）连接偏差率（偏差/该连接 RestLength），每 tick 覆盖 → 终值即终态
     private float _maxEndDevRatio;   // 同上的峰值（落地冲击等瞬态也计入，只观测不判定）
     private long _stretchTicks;      // tick 末偏差率 >0.5 的 tick 数：瞬态尖峰只占几 tick，跨墙卡链会长期累积
+    private long _deepRun;           // 当前连续「深度违反」（偏差率 >1 = 卡链释放的触发带）tick 数
+    private long _maxDeepRun;        // 深度违反的最长连跑——判定用：释放机制保证单环 ≤10、整链级联 ≤~50，
+                                     // 断裂未恢复是 800+；终态快照式判据会在合法释放窗口上误报，这个不会
     private bool _nonFinite;         // 任意 chunk/limb 状态出现 NaN/Inf（一票 FAIL）
 
     /// <summary>确定性模式下顺带记录质量指标：约束偏差峰值 + 行走里程 + 抓地/重力开关统计。</summary>
@@ -284,6 +287,11 @@ public partial class SandboxWorld : Node3D
         {
             _stretchTicks++;
         }
+        _deepRun = endRatio > 1f ? _deepRun + 1 : 0;
+        if (_deepRun > _maxDeepRun)
+        {
+            _maxDeepRun = _deepRun;
+        }
 
         foreach (BodyChunk c in _bodies[0].Chunks)
         {
@@ -306,7 +314,8 @@ public partial class SandboxWorld : Node3D
                  $"walkDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
                  $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_walker.Limbs.Count} " +
                  $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2} " +
-                 $"endDev={_endDevRatio:F2}x maxEndDev={_maxEndDevRatio:F2}x stretchTicks={_stretchTicks}");
+                 $"endDev={_endDevRatio:F2}x maxEndDev={_maxEndDevRatio:F2}x stretchTicks={_stretchTicks} " +
+                 $"maxDeepRun={_maxDeepRun} snagReleases={_bodies[0].SnagReleases}");
         Vector3 sn = _walker.SupportNormal;
         GD.Print($"[FINAL] walker applyGravity={_walker.ApplyGravity} footing={_walker.FootingCounter} " +
                  $"noGrip={_walker.NoGripCounter} stall={_walker.StallTicks} " +
@@ -334,9 +343,9 @@ public partial class SandboxWorld : Node3D
         {
             reasons.Add("状态出现 NaN/Inf");
         }
-        if (_endDevRatio > 0.5f)
+        if (_maxDeepRun > 100)
         {
-            reasons.Add($"终态约束断裂（endDev={_endDevRatio:F2}x rest，跨墙卡链/求解崩坏）");
+            reasons.Add($"约束深度断裂持续 {_maxDeepRun} tick（>100）——卡链释放未起效/求解崩坏");
         }
         if (_expectHash is ulong expect && _probe!.Hash != expect)
         {

@@ -24,18 +24,20 @@ internal static class Program
 
     /// <summary>基线哈希 = 内核行为的指纹。**只有有意改物理时才允许更新**（与 CLAUDE.md §5
     /// 的哈希表同步改）——只比双跑一致会漏掉「确定但错误」的行为漂移。</summary>
-    private const ulong ExpectedHash = 0x17A085DE53E2E133UL;
+    private const ulong ExpectedHash = 0x8312738384E28ED8UL;
 
     private static int Main()
     {
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) a = Run();
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) b = Run();
         bool boundaryOk = CheckEngineBoundary(out string boundaryMsg);
+        bool embedOk = CheckEmbedRecovery(out string embedMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
                           $"raysPerTick={a.RaysPerTick:F1} endDev={a.EndDev:F4}m nan={a.Nan}");
         Console.WriteLine($"[CORE-BOUNDARY] {boundaryMsg}");
+        Console.WriteLine($"[CORE-EMBED] {embedMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -61,6 +63,10 @@ internal static class Program
         if (!boundaryOk)
         {
             reasons.Add("内核程序集越出引擎边界");
+        }
+        if (!embedOk)
+        {
+            reasons.Add("嵌入恢复失败（出生在地形内没有被推出）");
         }
 
         bool pass = reasons.Count == 0;
@@ -110,6 +116,30 @@ internal static class Program
         }
         return (hasher.Value, walk, (float)gripSum / Ticks, (float)terrain.RayCount / Ticks,
             nan, walker.Body.CurrentMaxDeviation());
+    }
+
+    /// <summary>
+    /// 嵌入恢复：出生在地板下，SpherePenetration 的 MTD 必须在数 tick 内把全身推出
+    /// （外部评审 P1-3：旧版 HitFromInside 回退 LastPos + 清速 = 出生嵌入永久冻结）。
+    /// </summary>
+    private static bool CheckEmbedRecovery(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, -0.1f, 0f), BodyFactory.Default());
+        var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        for (long tick = 1; tick <= 50; tick++)
+        {
+            walker.MoveDir = Vector3.Zero;
+            walker.RunSpeed = 0f;
+            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+        }
+        float minY = float.MaxValue;
+        foreach (BodyChunk c in walker.Body.Chunks)
+        {
+            minY = Math.Min(minY, c.Pos.Y);
+        }
+        message = $"出生 y=-0.1 嵌入地板，50 tick 后最低 chunk y={minY:F3}（须 ≥ 0）";
+        return minY > -1e-3f;
     }
 
     /// <summary>

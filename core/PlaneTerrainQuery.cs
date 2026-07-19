@@ -15,6 +15,9 @@ public sealed class PlaneTerrainQuery : ITerrainQuery
     /// <summary>Raycast 调用计数（观测用：冒烟回归顺带产出每 tick 射线量级，供性能预算参考）。</summary>
     public long RayCount { get; private set; }
 
+    /// <summary>SpherePenetration 调用计数（同上，形状查询与射线分开计）。</summary>
+    public long ShapeQueryCount { get; private set; }
+
     public PlaneTerrainQuery(float floorY = 0f)
     {
         FloorY = floorY;
@@ -36,5 +39,14 @@ public sealed class PlaneTerrainQuery : ITerrainQuery
         float t = (from.Y - FloorY) / (from.Y - to.Y);
         hit = new TerrainHit(from.Lerp(to, t), Vector3.Up, 1UL);
         return true;
+    }
+
+    /// <summary>半空间语义：地面以下无限厚，MTD 恒为竖直向上——深嵌入一步即出。</summary>
+    public bool SpherePenetration(Vector3 center, float radius, out Vector3 pushDir, out float depth)
+    {
+        ShapeQueryCount++;
+        pushDir = Vector3.Up;
+        depth = FloorY - (center.Y - radius);
+        return depth > 0f;
     }
 }

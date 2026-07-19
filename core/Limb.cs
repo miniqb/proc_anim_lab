@@ -414,7 +414,8 @@ public sealed class Limb
 		Vel -= corr;
 	}
 
-	/// <summary>脚 vs 地形（≙ BodyPart.PushOutOfTerrain 的射线版）：运动扫掠 + 支撑向探面，同 chunk 语义。</summary>
+	/// <summary>脚 vs 地形（≙ BodyPart.PushOutOfTerrain 的射线+MTD 版）：运动扫掠 + 支撑向探面
+	/// + 球体重叠去穿透（擦边/嵌入兜底），同 chunk 语义。</summary>
 	private void PushOutOfTerrain(in TickContext ctx, Vector3 supportUp)
 	{
 		TerrainContact = false;
@@ -426,15 +427,22 @@ public sealed class Limb
 		{
 			Vector3 dir = motion / motionLen;
 			if (ctx.Terrain.Raycast(LastPos, Pos + dir * Radius, out TerrainHit hit1)
-				&& SphereTerrain.Resolve(hit1, Radius, SurfaceFriction, ref Pos, ref Vel, LastPos, out _))
+				&& SphereTerrain.Resolve(hit1, Radius, SurfaceFriction, ref Pos, ref Vel, out _))
 			{
 				TerrainContact = true;
 			}
 		}
 
 		if (ctx.Terrain.Raycast(Pos, Pos + down * (Radius + Skin), out TerrainHit hit2)
-			&& SphereTerrain.Resolve(hit2, Radius, SurfaceFriction, ref Pos, ref Vel, LastPos, out _))
+			&& SphereTerrain.Resolve(hit2, Radius, SurfaceFriction, ref Pos, ref Vel, out _))
 		{
+			TerrainContact = true;
+		}
+
+		if (ctx.Terrain.SpherePenetration(Pos, Radius, out Vector3 pushDir, out float depth))
+		{
+			Pos += pushDir * depth;
+			SphereTerrain.RespondVelocity(pushDir, SurfaceFriction, ref Vel);
 			TerrainContact = true;
 		}
 	}

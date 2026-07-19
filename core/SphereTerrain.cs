@@ -10,17 +10,17 @@ public static class SphereTerrain
 {
     /// <summary>
     /// 解穿透 + 速度响应。返回是否真的产生了接触（normal 输出接触法线）。
-    /// HitFromInside（零法线）时回退到 fallbackPos 并清零速度——归一化零向量会 NaN，必须特判。
+    /// HitFromInside（零法线）直接返回 false：射线给不出脱离方向与深度，
+    /// 嵌入恢复由 <see cref="ITerrainQuery.SpherePenetration"/> 的 MTD 负责
+    /// ——旧版在这里回退 LastPos + 清速，出生嵌入时 LastPos 同样在内部，永久冻结。
     /// </summary>
     public static bool Resolve(in TerrainHit hit, float radius, float surfaceFriction,
-        ref Vector3 pos, ref Vector3 vel, in Vector3 fallbackPos, out Vector3 normal)
+        ref Vector3 pos, ref Vector3 vel, out Vector3 normal)
     {
         if (hit.Normal.LengthSquared() < 1e-12f)
         {
-            pos = fallbackPos;
-            vel = Vector3.Zero;
             normal = Vector3.Zero;
-            return true;
+            return false;
         }
 
         normal = hit.Normal;
@@ -31,6 +31,14 @@ public static class SphereTerrain
         }
 
         pos += normal * depth;
+        RespondVelocity(normal, surfaceFriction, ref vel);
+        return true;
+    }
+
+    /// <summary>接触的速度响应（Resolve 与 MTD 去穿透共用）：法向内向速度清零（无反弹，
+    /// 雨世界手感）、切向乘 surfaceFriction。</summary>
+    public static void RespondVelocity(in Vector3 normal, float surfaceFriction, ref Vector3 vel)
+    {
         float vn = vel.Dot(normal);
         if (vn < 0f)
         {
@@ -38,6 +46,5 @@ public static class SphereTerrain
         }
         Vector3 vt = vel - normal * vel.Dot(normal);
         vel -= vt * (1f - surfaceFriction);
-        return true;
     }
 }

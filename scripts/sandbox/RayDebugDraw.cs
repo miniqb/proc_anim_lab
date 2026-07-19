@@ -45,6 +45,17 @@ public sealed class RayDebugDraw : ITerrainQuery
         return didHit;
     }
 
+    public bool SpherePenetration(Vector3 center, float radius, out Vector3 pushDir, out float depth)
+    {
+        bool overlapped = _inner.SpherePenetration(center, radius, out pushDir, out depth);
+        if (Enabled && overlapped)
+        {
+            // 去穿透画成从球心沿 MTD 的短条带（未重叠的查询每 tick 量大，不记）。
+            _rays.Add((center, center + pushDir * (depth + 0.05f), true));
+        }
+        return overlapped;
+    }
+
     /// <summary>每个物理 tick 开头调用：清掉上一 tick 的记录（画面始终显示最近一个 tick）。</summary>
     public void BeginTick()
     {

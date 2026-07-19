@@ -37,6 +37,10 @@ public sealed class ChunkConnection
 
     public Mode ConstraintMode = Mode.Rigid;
 
+    /// <summary>碰撞后仍深度违反的连续 tick 计数（Body.ReleaseSnags 维护）。
+    /// 由轨迹确定性导出，不进状态哈希。</summary>
+    public int SnagTicks;
+
     public ChunkConnection(BodyChunk a, BodyChunk b, float restLength, float weightA)
     {
         A = a;
