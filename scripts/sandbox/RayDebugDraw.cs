@@ -68,6 +68,8 @@ public sealed class RayDebugDraw : ITerrainQuery
         var node = new MeshInstance3D
         {
             Mesh = _mesh,
+            TopLevel = true, // 顶点是世界坐标，节点钉在世界原点
+
             MaterialOverride = new StandardMaterial3D
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,

@@ -23,9 +23,9 @@
 |------|------|------|
 | `BodyChunk.cs` | 带质量球形粒子，纯数据（Pos/LastPos/Vel/Radius/接触态） | BodyChunk |
 | `ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档） | BodyChunkConnection / ConnectToPoint |
-| `Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞 | GenericBodyPart.Update 帧序 |
+| `Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞→卡链释放 | GenericBodyPart.Update 帧序 + BodyPart.Reset |
 | `SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
-| `ITerrainQuery.cs` | **唯一接缝**：单射线原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
+| `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
 | `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
 | `Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
 | `Walker.cs` | 行走驱动：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
@@ -38,8 +38,11 @@
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
-- 内核程序集 `ProcAnim.Core` **只依赖 GodotSharp NuGet 的纯托管数学结构**（`Vector3`/`Mathf`）。
-  不引用 `Godot.NET.Sdk`——场景树、物理服务器、`GD`、`Node` 在内核里**编译期不可达**。
+- 内核程序集 `ProcAnim.Core` **只使用 GodotSharp NuGet 的纯托管数学结构**（`Vector3`/`Mathf`）。
+  注意准确性：GodotSharp 包里 `GD`/`Node`/`PhysicsServer3D` 也是**编译期可达**的——
+  「不引 Godot.NET.Sdk」只挡住场景树源生成器，不是编译器强制。真正的强制是
+  `core/smoke` 的 **TypeRef 边界扫描**：内核程序集出现允许清单（`Vector3`/`Mathf`）之外的
+  任何 `Godot.*` 类型引用即回归 FAIL（离线、秒级，回迁后照跑）。
 - 运行时实证：`core/smoke` 在**纯 .NET 进程**（非 Godot 可执行文件）里驱动内核确定运行。
   即：内核对引擎的依赖 = 一组 float 结构体的数学库用法，与引擎运行时零耦合。
 - 保留 `Godot.Vector3` 而非自造数学类型是**有意为之**：回迁目标同为 Godot 4 C#，
@@ -95,7 +98,7 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
   walker.Tick(new TickContext(gravityPerTick, terrain, tick));
   ```
 - `Walker.Tick` 内部序（勿拆开自driving，锚定 ≙ RW 帧序）：
-  站稳判定/重力开关 → 意图重定向 → 推进力 → `Body.Tick`（受力→积分→约束→碰撞）
+  站稳判定/重力开关 → 意图重定向 → 推进力 → `Body.Tick`（受力→积分→约束→碰撞→卡链释放）
   → 顶死计数 → 腿 → 支撑法线更新。
 
 ### 3.2 渲染插值
@@ -106,7 +109,8 @@ Godot 宿主：`t = (float)Engine.GetPhysicsInterpolationFraction()`（沙盒即
 
 ### 3.3 宿主时基 ≠ 40Hz 时（主项目是 60Hz 物理）
 
-主项目无固定步长设施（调研 §8.1），内核**自带累加器**，塞进宿主的 tick 入口即可：
+主项目无固定步长设施（调研 §8.1）；内核本身不持有时基（`Tick` 一次 = 一步），
+**由宿主在自己的 tick 入口装一个 0.025s 累加器**驱动：
 
 ```csharp
 _acc += delta;                       // 宿主物理帧（60Hz，delta≈16.7ms）
@@ -120,25 +124,46 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 确定性注意：累加器起点与 delta 序列决定 tick 时刻，**回归探针必须直接按 tick 驱动**
 （不经变步长 delta），与本仓库 `--determinism` 模式同构。
 
-### 3.4 出生 / 传送
+### 3.4 出生 / 传送 / 冲量
 
-出生 = `CreateWalker(origin, p)`（沙盒热切换品种即整体替换，**传送首选也是整体重建**）。
-手动传送则不要只写 `Pos`——chunk 与 limb 都需同步 `LastPos = Pos`、清 `Vel`，
-腿的 `HuntPos`（世界系落点）也要跟着挪，否则下一 tick 的运动扫掠射线会从旧位置
-扫过整张地图、脚会飞回旧落点。
+- 出生 = `CreateWalker(origin, p)`（沙盒热切换品种即整体替换）。
+- **传送/rebase = `Walker.Shift(delta)`**：身体、腿、腿的追逐目标整体平移，速度/抓握/
+  站稳状态原样保留——动力学无缝续走（浮点原点重置同用此入口）。不要手写逐字段
+  平移：漏掉 `LastPos` 会让运动扫掠射线扫过整张地图，漏掉 `HuntPos` 会让脚飞回旧落点。
+- **跳跃/击飞 = `Walker.Launch(velPerTick)`**：全 chunk 加同一速度增量，全腿强制松手、
+  站稳计数清零——重力当 tick 回归，身体进入弹道，落地后 plant-and-trail 自动恢复。
+- 想「删掉重来」（长途瞬移后不在乎连续性）：整体重建仍然最简单。
 
 ## 4. 输入契约（AI 只有两个旋钮）
 
 | 输入 | 类型/域 | 语义 |
 |------|---------|------|
 | `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时）。 |
-| `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。内部多处用 `> 0.1f` 判「有输入」。 |
+| `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。 |
+| `Walker.Shift(delta)` | 方法 | 传送/rebase（§3.4）。 |
+| `Walker.Launch(velPerTick)` | 方法 | 跳跃/击飞冲量（§3.4）。 |
 
 - 每 tick 写入（不写则保持上次值——AI 决策频率可以低于 tick 频率）。
 - **不要**直接写内核其它状态（`SupportNormal`/`GripCounter`/…都是内核私有语义）；
   唯一例外是外力注入 `chunk.Vel`（§3.1 相位）。
-- 宿主侧「Grounded=false / 被击飞」不需要特殊 API：放空输入（或照常给意图），
-  重力开关自己会因抓空而恢复坠落，落地后自动回归步态（`--yank` 回归即此场景）。
+- 宿主侧「Grounded=false」（走出平台、被剥夺支撑）：放空输入即可，重力开关自己会
+  因抓空而恢复坠落、落地自动回归步态（`--yank` 回归即此场景）。
+  **主动位移事件（跳跃/击飞/弹射）必须走 `Launch`**——只放空输入不会给内核向上的
+  冲量，视觉身体会继续抓在原地看着权威根飞走。
+
+### 4.1 宿主 tether 配方（姿态 1 的闭环，≙ §8.3）
+
+权威根（`CharacterBody3D`）与内核身体之间每宿主 tick 三档处置，全部用 §4 的入口：
+
+| 根的行为 | 判据（建议值） | 内核动作 |
+|---|---|---|
+| 常规移动 | 偏离 ≤ `MaxTether`（建议 1.5m） | `MoveDir = 朝 (rootPos + rootVel·k)`，`RunSpeed` 按距离饱和——身体像追路径点一样拖行 |
+| 被甩开（追不上/卡地形） | 偏离 > `MaxTether` | `Shift(rootPos − Hips.Pos)` 的超出量（或全量）——硬拽回签约距离内 |
+| 瞬移/复位/换房 | 单 tick 根位移 > 传送阈（建议 2m） | `Shift(rootDelta)` 全量 |
+| 跳跃/击飞 | 事件驱动 | `Launch(rootImpulse × dt/tick 换算)` 后照常给意图 |
+
+`MaxTether` 是**宿主侧参数**（内核不知道根的存在）；把它连同阈值写进主项目的
+snapshot→内核映射层，即姿态 1 的完整接线面。
 
 ## 5. 输出契约（渲染与 AI 的观测面）
 
@@ -165,6 +190,7 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 public interface ITerrainQuery
 {
     bool Raycast(Vector3 from, Vector3 to, out TerrainHit hit);
+    bool SpherePenetration(Vector3 center, float radius, out Vector3 pushDir, out float depth);
 }
 public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong ColliderId; }
 ```
@@ -174,22 +200,34 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 1. **线段射线**：from→to 有限段，命中返回最近交点与表面法线。
 2. **HitFromInside 必须开启**：起点已陷入 collider 时返回命中且 **`Normal = 零向量`**
    ——内核所有调用点都特判零法线（直接归一化会 NaN）。纯实现参考 `PlaneTerrainQuery`。
-3. **只打「可站立的静态地形」**：不含生物自身、道具、门等动态物。
+3. **SpherePenetration = 球体重叠的最小平移向量（MTD）**：交叠时给出「沿 `pushDir`
+   平移 `depth` 即完全脱离」；**深度嵌入（球心已在 collider 内）也必须给出有效方向**
+   ——这是嵌入恢复的唯一通道（射线的零法线给不出方向；曾导致出生嵌入永久冻结）。
+   恰好相切（depth=0）算未交叠，静息接触不抖。Godot 实现走
+   `PhysicsDirectSpaceState3D.GetRestInfo`（`core/godot/RaycastTerrainQuery.cs` 参考，
+   含法线缺失时「接触点→球心」的确定性兜底），Jolt 4.7 实证可用。
+   为什么必须有它：三根「球心射线」对与运动平行的墙面擦边侵入全盲（实测穿墙 5cm
+   无接触）——球形碰撞的承诺由这条原语兜底，砍掉它 = 回到评审 P1-2/P1-3 的坑。
+4. **只打「可站立的静态地形」**：不含生物自身、道具、门等动态物。
    - 本仓库：碰撞掩码层 1（白盒全在层 1）。
    - 主项目：掩码 = `PhysicsCollisionLayers.ProceduralContactGround`（层 20，1<<19；
      由 RoomBuilder/LadderBuilder 附着于可行走静态几何）+ **排除宿主自身 RID**
-     （`SetCollisionExclusions`）+ `CollideWithAreas=false`——照抄其 `ContactPlanner`
-     的既有规范（规格 §9.2：被动只读、只在物理 tick 内）。
-   - 查询参数对象**复用实例**（主项目惯例，避免每射线分配）。
-4. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。
-5. **Jolt 验证点**（主项目物理后端是 Jolt，本仓库是 Godot Physics）：接入时先跑
-   `--route=stand`/`--route=wall` 等价场景，确认 Jolt 的 `hit_from_inside` 同样
-   返回零法线、斜坡/棱线法线连续——这是两个后端间唯一有语义风险的点。
+     + `CollideWithAreas=false`——照抄其 `ContactPlanner` 的既有规范
+     （规格 §9.2：被动只读、只在物理 tick 内）。参考实现已内建对应 API：
+     `CollisionMask` 属性 + `SetExclusions(rids)`。
+   - 查询参数对象**复用实例**（参考实现即此；射线参数/球形参数/球 shape 各一份常驻。
+     `IntersectRay/GetRestInfo` 返回的 Dictionary 是引擎 API 固有分配，无非分配变体）。
+5. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。
+6. **Jolt 验证点**：本仓库 `project.godot` 已启用 Jolt——零法线 HitFromInside、
+   斜坡/棱线法线连续、`GetRestInfo` 的 MTD 语义**均已在 Jolt 上实证**（全矩阵 +
+   embed/wallside 配置）。主项目同为 Jolt，后端语义风险已消除；接入时跑一遍
+   `--route=stand`/`--route=wall` 等价场景做环境级确认即可。
 
-### 6.1 射线量级（性能预算参考）
+### 6.1 查询量级（性能预算参考）
 
-- 实测：default（8 chunk + 4 腿）平地巡走 **26.5 射线/tick/只**（`core/smoke` 顺带输出）。
-- 构成：身体每 chunk 1~3 根（运动扫掠+支撑+接触法向探针）、每脚 1~2 根、
+- 实测：default（8 chunk + 4 腿）平地巡走 **26.3 射线/tick/只 + 12 形状查询/tick/只**
+  （每 chunk/每脚各 1 次 SpherePenetration；`core/smoke` 顺带输出射线计数）。
+- 射线构成：身体每 chunk 1~3 根（运动扫掠+支撑+接触法向探针）、每脚 1~2 根、
   推进目标 1~2 根；**FindGrip 采样带 6~11 根只在「迈步找落点」的腿上发生**
   （plant-and-trail 天然限流）。攀爬/多 chunk 品种峰值估算 ~50-60。
 - 对照主项目规格 §10.4（24 只并发 ≤3.0ms/tick）：接入后按其流程实测。
@@ -206,22 +244,25 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 - 哈希算法唯一（`DeterminismHasher`，FNV-1a 64 折叠 Pos/Vel 原始位），
   Godot 探针与无引擎回归共用——两边可互证。
 
-### 7.2 三层回归（由快到慢）
+### 7.2 三层回归（由快到慢，全部真断言——只打印不判定的探针是假绿）
 
 ```bash
-# ① 无引擎冒烟（秒级；改内核后的最快反馈）：
-dotnet run --project core/smoke        # PASS + 双跑哈希一致（当前 17A085DE53E2E133）
+# ① 无引擎冒烟（秒级；改内核后的最快反馈）。退出码即判定：
+#    双跑 bit-exact + 哈希对基线（钉死在 Program.cs 的 ExpectedHash，防「确定但错误」）
+#    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + TypeRef 引擎边界扫描。
+dotnet run --project core/smoke
 
-# ② Godot 全矩阵（分钟级；改物理内核后必跑，命令见 CLAUDE.md §5）：
-#    default 双跑 + 40/400Hz 一致 + perturb 变哈希 + wall/stand 路线 + 三品种。
+# ② Godot 全矩阵（分钟级；改物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+#    [RESULT] 判定聚合，任何一项红即非零退出：
+./tools/run_matrix.sh
 
 # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
-当前已知哈希（400Hz、2000 tick）：default `0C757AF36469CD1C`、wall `F3B88D81E286CC8B`、
-stand `7069911AEECF1DD2`、heavy `B2AC7CA1BB8DF9D0`、sprinter `30DF00DC82039FC5`、
-hexapod `2E31ED4688385CD1`。
+**基线哈希只存两处**（有意改内核后同步更新，别处一律引用）：
+`tools/run_matrix.sh` 顶部的哈希表（Godot 全矩阵）与 `core/smoke/Program.cs` 的
+`ExpectedHash`（无引擎冒烟）。回迁后把这两处一起带走即为目标仓库的基线。
 
 ### 7.3 回迁后的回归形态
 
@@ -250,8 +291,8 @@ hexapod `2E31ED4688385CD1`。
 | | A. 源码拷入（主项目惯例） | B. 首个 ProjectReference |
 |---|---|---|
 | 做法 | `core/*.cs` 拷进 `scripts/enemies/visual/motion/kernel/`，命名空间 sed 归化为 `RandomRoomRuntime.Enemies.Visual.Motion.Kernel` | `core/` 连 csproj 拷进仓库任意路径，主 csproj 加 `<ProjectReference>`（`EnableDynamicLoading` 已开） |
-| 优点 | 零构建结构改动，与 definition/rig 迁入先例一致 | 保住编译期解耦边界与 `core/smoke` 原样可跑 |
-| 代价 | 解耦只剩纪律约束（建议留 grep 检查：kernel 目录禁 `GD.`/`Node`） | 引入该仓库第一个多程序集结构 |
+| 优点 | 零构建结构改动，与 definition/rig 迁入先例一致 | 保住独立程序集边界，`core/smoke` 的 TypeRef 边界扫描原样有效 |
+| 代价 | 边界扫描失效（内核并入主程序集，无法按程序集扫）——解耦只剩纪律约束，建议留 grep 检查：kernel 目录禁 `GD.`/`Node` | 引入该仓库第一个多程序集结构 |
 
 两条路源码逐字相同（差一行 namespace）；**选择留给回迁时的主项目决策**，本契约两者兼容。
 
@@ -261,17 +302,24 @@ hexapod `2E31ED4688385CD1`。
 `CharacterBody3D` 照旧走导航/`MoveAndSlide`；内核身体活在世界系、脚踩真实地形，
 但推进意图指向宿主根：`MoveDir = (hostPos + hostVel·k − Head.Pos)` 的方向、
 `RunSpeed` 按距离饱和——身体像 RW 生物追路径点一样**追着权威根拖行**，
-腿/重力开关/爬墙全部照常涌现。视觉层不建碰撞体（内核本就没有 collider，天然合规）、
-不动根（内核只算自己的 chunk 位置）。`MonsterMotionSnapshot` 映射：
+腿/重力开关/爬墙全部照常涌现。追不上/瞬移/跳跃击飞的三档处置见 **§4.1 tether 配方**
+（`Shift`/`Launch` 即为此姿态补的接线 API）。视觉层不建碰撞体（内核本就没有
+collider，天然合规）、不动根（内核只算自己的 chunk 位置）。`MonsterMotionSnapshot` 映射：
 
 | Snapshot 字段 | → 内核 |
 |---|---|
 | `LocalVelocity`（局部） | 转世界系后与根位置合成追踪目标（上式） |
 | `Speed01` | `RunSpeed` |
 | `LookDirection` | 不进内核（头部朝向属渲染层修饰） |
-| `Grounded=false` | 放空输入即可（重力开关自然坠落，落地自恢复） |
+| `Grounded=false`（走空/坠落） | 放空输入即可（重力开关自然坠落，落地自恢复） |
+| 跳跃/击飞/弹射事件 | `Walker.Launch(冲量)`——只放空输入不会给向上冲量（§4.1） |
+| 根瞬移/复位/换房 | `Walker.Shift(rootDelta)`（§4.1） |
 | `VariantSeed` | 出生时微调 `BreedParams`（纯装配期，运行时仍零随机） |
 | `Mode`/`Alertness`/`Health01` | 映射到品种/`RunSpeed` 上限等出生或输入参数 |
+
+> 状态如实说明：本仓库交付到「API 与配方齐备」；tether 循环本体（读根、算三档、写
+> 输入）活在主项目的 snapshot 映射层里，**闭环要在主仓接线后才算验证完成**——
+> 在那之前 M5 的准确状态是「内核抽离完成 + 集成契约就位」，不是「默认集成姿态已闭环」。
 
 **姿态 2：RW 忠实——内核当位置权威，根跟随内核。**
 `MoveDir/RunSpeed` 直接来自 AI，宿主根每帧贴到 `Hips.Pos`（或质心）。

@@ -40,6 +40,8 @@ public sealed class BodyRenderer
                 {
                     Mesh = new SphereMesh { Radius = chunk.Radius, Height = chunk.Radius * 2f },
                     MaterialOverride = _chunkFalling,
+                    // 物理坐标是世界系；TopLevel 让 Position 直写世界——父节点带变换也不错位
+                    TopLevel = true,
                 };
                 parent.AddChild(node);
                 _spheres.Add((chunk, node));
@@ -64,6 +66,7 @@ public sealed class BodyRenderer
                 {
                     Mesh = new SphereMesh { Radius = limb.Radius, Height = limb.Radius * 2f },
                     MaterialOverride = _footSwing,
+                    TopLevel = true,
                 };
                 parent.AddChild(node);
                 _feet.Add((limb, node));
@@ -80,6 +83,7 @@ public sealed class BodyRenderer
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
                 AlbedoColor = new Color(0.95f, 0.9f, 0.4f),
             },
+            TopLevel = true, // 顶点直接写世界坐标，节点必须钉在世界原点
         };
         parent.AddChild(_lineNode);
     }
