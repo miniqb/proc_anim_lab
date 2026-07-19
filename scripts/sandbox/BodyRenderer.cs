@@ -18,6 +18,7 @@ public sealed class BodyRenderer
     private readonly List<Limb> _limbs = new();
     private Walker? _walker;
     private ImmediateMesh? _lineMesh;
+    private MeshInstance3D? _lineNode;
 
     private StandardMaterial3D _chunkFalling = null!;
     private StandardMaterial3D _chunkFooted = null!;
@@ -65,7 +66,7 @@ public sealed class BodyRenderer
         }
 
         _lineMesh = new ImmediateMesh();
-        var lineNode = new MeshInstance3D
+        _lineNode = new MeshInstance3D
         {
             Mesh = _lineMesh,
             MaterialOverride = new StandardMaterial3D
@@ -74,7 +75,28 @@ public sealed class BodyRenderer
                 AlbedoColor = new Color(0.95f, 0.9f, 0.4f),
             },
         };
-        parent.AddChild(lineNode);
+        parent.AddChild(_lineNode);
+    }
+
+    /// <summary>拆掉本次 Build 创建的全部节点（品种切换重生用），之后可再次 Build。</summary>
+    public void Clear()
+    {
+        foreach ((_, MeshInstance3D node) in _spheres)
+        {
+            node.QueueFree();
+        }
+        foreach ((_, MeshInstance3D node) in _feet)
+        {
+            node.QueueFree();
+        }
+        _lineNode?.QueueFree();
+        _lineNode = null;
+        _lineMesh = null;
+        _spheres.Clear();
+        _feet.Clear();
+        _connections.Clear();
+        _limbs.Clear();
+        _walker = null;
     }
 
     public void Draw(float t)

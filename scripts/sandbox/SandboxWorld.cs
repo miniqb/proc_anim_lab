@@ -61,6 +61,7 @@ public partial class SandboxWorld : Node3D
 
     private readonly List<Body> _bodies = new();
     private Walker _walker = null!;
+    private BreedParams _breed = BodyFactory.Default();
     private readonly RaycastTerrainQuery _terrain = new();
     private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
@@ -79,19 +80,29 @@ public partial class SandboxWorld : Node3D
         _drag.MaxForce = DragMaxForce;
 
         ParseDeterminismArgs();
-        _walker = BodyFactory.CreateWalker(_spawn);
-        Body body = _walker.Body;
-        body.ConstraintIterations = ConstraintIterations;
-        if (_perturb != 0f)
-        {
-            body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
-            body.Chunks[0].LastPos = body.Chunks[0].Pos;
-        }
-        _bodies.Add(body);
         _rayDebug = new RayDebugDraw(_terrain);
         _rayDebug.Build(this);
+        SpawnWalker(_breed, _spawn);
+        if (_perturb != 0f)
+        {
+            _walker.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
+            _walker.Body.Chunks[0].LastPos = _walker.Body.Chunks[0].Pos;
+        }
+        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, breed={_breed.Name}, " +
+                 $"determinism={(_probe is not null ? "on" : "off")}");
+    }
+
+    /// <summary>（重）生成行走体：替换物理对象并重建渲染节点（数字键换品种共用此路径）。</summary>
+    private void SpawnWalker(BreedParams breed, Vector3 origin)
+    {
+        _breed = breed;
+        _walker = BodyFactory.CreateWalker(origin, breed);
+        _walker.Body.ConstraintIterations = ConstraintIterations;
+        _bodies.Clear();
+        _bodies.Add(_walker.Body);
+        _drag.Release();
+        _renderer.Clear();
         _renderer.Build(this, _bodies, _walker.Limbs, _walker);
-        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, determinism={(_probe is not null ? "on" : "off")}");
     }
 
     public override void _PhysicsProcess(double delta)
@@ -246,13 +257,30 @@ public partial class SandboxWorld : Node3D
         _rayDebug.Draw(_camera);
     }
 
-    /// <summary>F3：随时开关射线可视化（洋红=命中，灰蓝=打空；只影响绘制，不影响物理）。</summary>
+    /// <summary>F3：开关射线可视化（只影响绘制）。数字键 1~N：现场换品种重生（交互模式限定）。</summary>
     public override void _Input(InputEvent @event)
     {
-        if (@event is InputEventKey { Pressed: true, Echo: false, PhysicalKeycode: Key.F3 })
+        if (@event is not InputEventKey { Pressed: true, Echo: false } key)
+        {
+            return;
+        }
+        if (key.PhysicalKeycode == Key.F3)
         {
             _rayDebug.Enabled = !_rayDebug.Enabled;
             GD.Print($"[SANDBOX] ray debug {(_rayDebug.Enabled ? "on" : "off")}");
+            return;
+        }
+        if (_probe is not null || key.PhysicalKeycode < Key.Key1 || key.PhysicalKeycode > Key.Key9)
+        {
+            return;
+        }
+        BreedParams[] breeds = BodyFactory.AllBreeds();
+        int index = (int)(key.PhysicalKeycode - Key.Key1);
+        if (index < breeds.Length)
+        {
+            // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
+            SpawnWalker(breeds[index], _walker.Hips.Pos + Vector3.Up * 0.5f);
+            GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
         }
     }
 
@@ -283,6 +311,10 @@ public partial class SandboxWorld : Node3D
             else if (arg == "--route=stand")
             {
                 _waypoints = StandRoute;
+            }
+            else if (arg.StartsWith("--breed="))
+            {
+                _breed = BodyFactory.ByName(arg["--breed=".Length..]);
             }
             else if (arg.StartsWith("--perturb="))
             {

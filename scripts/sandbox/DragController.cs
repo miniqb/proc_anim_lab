@@ -26,6 +26,9 @@ public sealed class DragController
 
     public bool IsDragging => _grabbed is not null;
 
+    /// <summary>外部强制释放（身体被品种重生替换时调用，防止悬挂旧 chunk 引用）。</summary>
+    public void Release() => _grabbed = null;
+
     /// <summary>每 tick 开头采样鼠标状态：按下→拾取最近 chunk；按住→更新定深平面目标点；松开→释放。</summary>
     public void SampleInput(Camera3D camera, IReadOnlyList<Body> bodies)
     {
