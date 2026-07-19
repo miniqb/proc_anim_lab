@@ -89,7 +89,7 @@ public sealed class BodyRenderer
         {
             node.Position = limb.LerpPos(t);
             node.MaterialOverride = limb.Gripping ? _footGrip
-                : limb.ReachingForTerrain ? _footReach
+                : limb.ReachingForTerrain && !limb.IdlePose ? _footReach
                 : _footSwing;
         }
 

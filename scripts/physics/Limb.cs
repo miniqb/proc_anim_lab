@@ -47,6 +47,11 @@ public sealed class Limb
 	/// <summary>本 tick 是否已吸附到目标点。</summary>
 	public bool ReachedSnapPosition;
 
+	/// <summary>true = 闲置休息位（≙ RW Limb.Mode.HuntRelativePosition）：无移动意图且连续
+	/// 找不到落点（如翻墙登顶后站在棱线上，本侧脚下全是空气）时，脚不再悬在最大前伸位，
+	/// 而是垂回锚点身侧。纯姿态——HasGrip 恒 false，不计抓地、不影响重力开关。</summary>
+	public bool IdlePose { get; private set; }
+
 	/// <summary>当前抓握面的法线（FindGrip 命中时记录）。Walker 平均它得到支撑法线。</summary>
 	public Vector3 GripNormal = Vector3.Up;
 
@@ -98,6 +103,12 @@ public sealed class Limb
 
 	/// <summary>判定「已抓稳」所需连续 tick 数（≙ limbGripDelay）。</summary>
 	public int GripDelay = 4;
+
+	/// <summary>触发闲置休息位所需的连续找不到落点 tick 数（只在无移动意图时累计）。</summary>
+	public int IdleAfterTicks = 20;
+
+	/// <summary>连续 FindGrip 失败计数（找到落点或有移动意图即清零）。</summary>
+	private int _gripFailTicks;
 
 	/// <summary>抓地中：这条腿正为身体提供锚点/推进（Walker 按此计数施力）。</summary>
 	public bool Gripping => GripCounter >= GripDelay;
@@ -154,14 +165,34 @@ public sealed class Limb
 			if (!_extraLongStep && advance > JointDist * stepThreshold)
 			{
 				ReachingForTerrain = true;
+				_gripFailTicks = 0;
 			}
 		}
 		else
 		{
+			// 闲置休息位：有移动意图立即退出恢复迈步；闲置中目标每 tick 跟着锚点重算
+			// （≙ relativeHuntPos 旋进身体系），脚自然垂在身侧随身体漂移。
+			if (IdlePose && runSpeed > 0.1f)
+			{
+				IdlePose = false;
+				_gripFailTicks = 0;
+			}
+			if (IdlePose)
+			{
+				HuntPos = RestHuntPos(stepDir, up);
+			}
 			// 没有真落点时持续找（哪怕脚已贴着摆动期遗留的空中目标）；有真落点则等踩到再说。
-			if (!HasGrip || !OverlappingHuntPos())
+			else if (!HasGrip || !OverlappingHuntPos())
 			{
 				FindGrip(ctx, stepDir, up);
+				if (HasGrip || runSpeed > 0.1f)
+				{
+					_gripFailTicks = 0;
+				}
+				else if (++_gripFailTicks > IdleAfterTicks)
+				{
+					IdlePose = true; // 站着没事干还够不着地：收脚休息，别橙色悬在最大前伸位
+				}
 			}
 			else
 			{
@@ -230,7 +261,16 @@ public sealed class Limb
 	{
 		ReachingForTerrain = false;
 		HasGrip = false;
+		IdlePose = false;
 		_extraLongStep = false;
+	}
+
+	/// <summary>休息位（≙ relativeHuntPos 的支撑系版）：锚点沿支撑方向垂下、向本侧微撇。</summary>
+	private Vector3 RestHuntPos(Vector3 stepDir, Vector3 up)
+	{
+		Vector3 side = stepDir.Cross(up);
+		side = side.LengthSquared() < 1e-8f ? Vector3.Right : side.Normalized();
+		return Anchor.Pos - up * (JointDist * 0.6f) + side * (Side * JointDist * 0.3f);
 	}
 
 	private bool OverlappingHuntPos()

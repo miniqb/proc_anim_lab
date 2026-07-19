@@ -51,6 +51,10 @@ public partial class SandboxWorld : Node3D
         new(-4f, 0f, 0f),
     };
 
+    /// <summary>--route=stand：零路点零输入的站桩路线。配 --spawn=-6,3.7,0（空降薄墙顶）
+    /// 复现闲置姿态：悬空侧的脚找不到落点又无移动意图 → 应垂回身侧（IdlePose）而非悬在前伸位。</summary>
+    private static readonly Vector3[] StandRoute = System.Array.Empty<Vector3>();
+
     private Vector3[] _waypoints = DefaultRoute;
     private int _waypointIndex;
     private int _waypointsReached;
@@ -149,6 +153,12 @@ public partial class SandboxWorld : Node3D
     /// <summary>确定性模式的脚本化输入：绕路点方框巡走——把「走路」本身纳入回归。</summary>
     private void SteerAlongWaypoints()
     {
+        if (_waypoints.Length == 0)
+        {
+            _walker.MoveDir = Vector3.Zero;
+            _walker.RunSpeed = 0f;
+            return;
+        }
         Vector3 target = _waypoints[_waypointIndex];
         Vector3 toTarget = target - _walker.Head.Pos;
         toTarget.Y = 0f;
@@ -225,7 +235,7 @@ public partial class SandboxWorld : Node3D
         {
             Limb l = _walker.Limbs[i];
             GD.Print($"[FINAL] limb={i} pos=({l.Pos.X:F4},{l.Pos.Y:F4},{l.Pos.Z:F4}) " +
-                     $"grip={l.GripCounter} reaching={l.ReachingForTerrain} " +
+                     $"grip={l.GripCounter} reaching={l.ReachingForTerrain} idle={l.IdlePose} " +
                      $"extra={l.ExtraLongStep} contact={l.TerrainContact}");
         }
     }
@@ -269,6 +279,10 @@ public partial class SandboxWorld : Node3D
             else if (arg == "--route=wall")
             {
                 _waypoints = WallRoute;
+            }
+            else if (arg == "--route=stand")
+            {
+                _waypoints = StandRoute;
             }
             else if (arg.StartsWith("--perturb="))
             {
