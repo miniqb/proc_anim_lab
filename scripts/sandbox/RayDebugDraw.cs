@@ -9,6 +9,8 @@ namespace ProcAnimLab.Sandbox;
 /// （腿的落脚/翻越采样带、脚与身体的碰撞扫掠、推进目标投影、站稳探测）记录下来，
 /// 每帧用 ImmediateMesh 重画。GL 线图元恒为 1px 看不清，这里画成朝向相机的条带
 /// （有实际宽度），命中点再加菱形标记——洋红=命中（画到命中点），灰蓝=打空（完整段）。
+/// 另画推进目标（胡萝卜）：头→目标的条带 + 大菱形，按来源分支着色——
+/// 绿=钉在支撑面、橙=翻越顶面、红=空中退化目标（红长期出现 = 身体在追悬空胡萝卜）。
 /// 纯观测：转发不改变任何查询结果，开关只影响记录与绘制，确定性哈希不受影响。
 /// </summary>
 public sealed class RayDebugDraw : ITerrainQuery
@@ -29,6 +31,13 @@ public sealed class RayDebugDraw : ITerrainQuery
     private static readonly Color HitColor = new(1f, 0.2f, 0.9f);
     private static readonly Color MarkerColor = new(1f, 0.85f, 1f);
     private static readonly Color MissColor = new(0.55f, 0.65f, 0.85f, 0.75f);
+
+    /// <summary>胡萝卜标记比射线命中菱形大一圈，一眼区分「目标」与「落点」。</summary>
+    private const float CarrotMarkerSize = 0.07f;
+
+    private static readonly Color CarrotSupportColor = new(0.25f, 0.95f, 0.35f);
+    private static readonly Color CarrotCrestColor = new(1f, 0.65f, 0.15f);
+    private static readonly Color CarrotFallbackColor = new(1f, 0.18f, 0.18f);
 
     public RayDebugDraw(ITerrainQuery inner)
     {
@@ -82,14 +91,15 @@ public sealed class RayDebugDraw : ITerrainQuery
         parent.AddChild(node);
     }
 
-    public void Draw(Camera3D camera)
+    public void Draw(Camera3D camera, Walker walker)
     {
         if (_mesh is null)
         {
             return;
         }
         _mesh.ClearSurfaces();
-        if (!Enabled || _rays.Count == 0)
+        bool hasCarrot = walker.LastMoveTargetKind != MoveTargetKind.None;
+        if (!Enabled || (_rays.Count == 0 && !hasCarrot))
         {
             return;
         }
@@ -100,8 +110,19 @@ public sealed class RayDebugDraw : ITerrainQuery
             AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
             if (didHit)
             {
-                AddMarker(end, camPos);
+                AddMarker(end, camPos, MarkerColor, MarkerSize);
             }
+        }
+        if (hasCarrot)
+        {
+            Color c = walker.LastMoveTargetKind switch
+            {
+                MoveTargetKind.Support => CarrotSupportColor,
+                MoveTargetKind.Crest => CarrotCrestColor,
+                _ => CarrotFallbackColor,
+            };
+            AddRibbon(walker.Head.Pos, walker.LastMoveTarget, c, camPos);
+            AddMarker(walker.LastMoveTarget, camPos, c, CarrotMarkerSize);
         }
         _mesh.SurfaceEnd();
     }
@@ -130,8 +151,8 @@ public sealed class RayDebugDraw : ITerrainQuery
         Quad(from - side, from + side, end + side, end - side, c);
     }
 
-    /// <summary>命中点画一个朝向相机的亮色菱形，一眼锁定落点。</summary>
-    private void AddMarker(Vector3 pos, Vector3 camPos)
+    /// <summary>指定点画一个朝向相机的菱形（射线命中点/胡萝卜共用），一眼锁定位置。</summary>
+    private void AddMarker(Vector3 pos, Vector3 camPos, Color color, float size)
     {
         Vector3 toCam = (camPos - pos).LengthSquared() < 1e-8f
             ? Vector3.Back
@@ -140,8 +161,8 @@ public sealed class RayDebugDraw : ITerrainQuery
         right = right.LengthSquared() < 1e-8f ? Vector3.Right : right.Normalized();
         Vector3 up = right.Cross(toCam);
 
-        Quad(pos - right * MarkerSize, pos + up * MarkerSize,
-            pos + right * MarkerSize, pos - up * MarkerSize, MarkerColor);
+        Quad(pos - right * size, pos + up * size,
+            pos + right * size, pos - up * size, color);
     }
 
     private void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Color color)

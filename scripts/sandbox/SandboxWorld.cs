@@ -376,10 +376,10 @@ public partial class SandboxWorld : Node3D
             return;
         }
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
-        _rayDebug.Draw(_camera);
+        _rayDebug.Draw(_camera, _walker);
     }
 
-    /// <summary>F3：开关射线可视化（只影响绘制）。数字键 1~N：现场换品种重生（交互模式限定）。</summary>
+    /// <summary>F3：开关射线+推进目标（胡萝卜）可视化（只影响绘制）。数字键 1~N：现场换品种重生（交互模式限定）。</summary>
     public override void _Input(InputEvent @event)
     {
         if (@event is not InputEventKey { Pressed: true, Echo: false } key)

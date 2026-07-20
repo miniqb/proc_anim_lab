@@ -3,6 +3,24 @@ using Godot;
 
 namespace ProcAnim.Core;
 
+/// <summary>推进目标（<see cref="Walker.FindMoveTarget"/> 的胡萝卜）来源分支。
+/// 纯观测：供调试绘制与宿主读取，内核不回读、不进确定性哈希。</summary>
+public enum MoveTargetKind
+{
+	/// <summary>本 tick 未施加推进（无移动意图/死区内），目标点无效。</summary>
+	None,
+
+	/// <summary>钉在支撑面上：头前沿 -SupportNormal 投影命中 + RideHeight（健康态）。</summary>
+	Support,
+
+	/// <summary>翻越窗口：世界向下探测钉在顶面 + RideHeight（伴随 CrestCentering 伺服）。</summary>
+	Crest,
+
+	/// <summary>退化分支：两射线都打空，头前+向上的空中相对目标（FloorLeverage）——
+	/// 长期停留在此分支 = 身体在追一根悬空胡萝卜（棱边悬空上飘姿态的来源）。</summary>
+	Fallback,
+}
+
 /// <summary>
 /// 会走路的生物 = Body（chunk 物理）+ 若干 Limb（plant-and-trail 腿）+ 推进力。
 /// 镜像 RW Lizard 的移动块：腿的抓握既是锚也是引擎——推进力 ∝ 抓地腿数
@@ -123,6 +141,12 @@ public sealed class Walker
 
 	/// <summary>支撑系的「上」：抓地腿抓握面法线的平滑平均。平地=世界上，爬墙=墙法线。</summary>
 	public Vector3 SupportNormal { get; private set; } = Vector3.Up;
+
+	/// <summary>本 tick 推进目标（胡萝卜）的来源分支；None = 本 tick 没有推进。</summary>
+	public MoveTargetKind LastMoveTargetKind { get; private set; }
+
+	/// <summary>本 tick 的推进目标点（仅 <see cref="LastMoveTargetKind"/> ≠ None 时有效）。</summary>
+	public Vector3 LastMoveTarget { get; private set; }
 
 	public Walker(Body body, BodyChunk head, BodyChunk hips)
 	{
@@ -281,6 +305,7 @@ public sealed class Walker
 	/// </summary>
 	private void ApplyLocomotionForce(in TickContext ctx, Vector3 effMove, Vector3 up)
 	{
+		LastMoveTargetKind = MoveTargetKind.None;
 		if (RunSpeed <= MoveIntentDeadzone || effMove == Vector3.Zero)
 		{
 			return;
@@ -291,7 +316,10 @@ public sealed class Walker
 			: (float)LegsGripping / Limbs.Count * (1f - NoGripSpeed) + NoGripSpeed;
 		float frameSpeed = BaseSpeed * gripFac * RunSpeed;
 
-		Vector3 target = FindMoveTarget(ctx, effMove, up, out bool crest);
+		Vector3 target = FindMoveTarget(ctx, effMove, up, out MoveTargetKind targetKind);
+		LastMoveTarget = target;
+		LastMoveTargetKind = targetKind;
+		bool crest = targetKind == MoveTargetKind.Crest;
 		Vector3 headDir = Dir(Head.Pos, target);
 		// 注入量按剩余空间钳制：MaxMoveSpeed 是推进通道的真上限，不是「低于才加力」的
 		// 软闸（旧版初速 0.079 + 满注入可到 0.139——名字承诺的上限形同虚设）。
@@ -337,15 +365,15 @@ public sealed class Walker
 	/// 否则退回相对胡萝卜会在支撑系旋转跟上之前把身体抛过墙顶（快速爬墙必摔的根因）。
 	/// 两射线都打空/探进墙里（零法线）/朝下悬垂面 → 退回 M2 的头前相对目标。
 	/// </summary>
-	private Vector3 FindMoveTarget(in TickContext ctx, Vector3 effMove, Vector3 up, out bool crest)
+	private Vector3 FindMoveTarget(in TickContext ctx, Vector3 effMove, Vector3 up, out MoveTargetKind kind)
 	{
-		crest = false;
 		Vector3 n = SupportNormal;
 		Vector3 ahead = Head.Pos + effMove * LookAhead;
 		if (ctx.Terrain.Raycast(ahead + n * 0.35f, ahead - n * 0.65f, out TerrainHit hit)
 			&& hit.Normal.LengthSquared() > 1e-12f
 			&& hit.Normal.Dot(up) > -0.3f)
 		{
+			kind = MoveTargetKind.Support;
 			return hit.Point + n * RideHeight;
 		}
 		if (n.Dot(up) < 0.95f
@@ -353,9 +381,10 @@ public sealed class Walker
 			&& topHit.Normal.LengthSquared() > 1e-12f
 			&& topHit.Normal.Dot(up) > -0.3f)
 		{
-			crest = true;
+			kind = MoveTargetKind.Crest;
 			return topHit.Point + up * RideHeight;
 		}
+		kind = MoveTargetKind.Fallback;
 		return ahead + up * FloorLeverage;
 	}
 
