@@ -93,7 +93,7 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
 - 每 tick 固定顺序：
   ```csharp
   terrain.Bind(space);                        // 仅 Godot 适配器需要（物理帧内合法）
-  walker.MoveDir = …; walker.RunSpeed = …;    // 输入（§4）
+  walker.MoveDir = …; walker.RunSpeed = …;    // 输入（§4；也可改写 MoveTarget）
   chunk.Vel += …;                             // 可选：外力（拖拽/击退），只许写 Vel
   walker.Tick(new TickContext(gravityPerTick, terrain, tick));
   ```
@@ -129,26 +129,36 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 - 出生 = `CreateWalker(origin, p)`（沙盒热切换品种即整体替换）。
 - **rebase = `Walker.Shift(delta)`**：整体平移，速度/抓握/站稳状态**原样保留**——
   只适用于「地形随你一起平移」的场景（浮点原点重置、整个世界搬家）。不要手写逐字段
-  平移：漏掉 `LastPos` 会让运动扫掠射线扫过整张地图，漏掉 `HuntPos` 会让脚飞回旧落点
+  平移：漏掉 `LastPos` 会让运动扫掠射线扫过整张地图，漏掉 `HuntPos` 会让脚飞回旧落点，
+  漏掉世界系 `MoveTarget` 会让身体转头追旧原点。`LastMoveTarget` 观测量也同步平移
   （smoke 的 [CORE-SHIFT] 逐字段精确断言钉死了这份完备性）。
 - **瞬移/复位/换房 = `Walker.Teleport(delta)`**：Shift + 全腿强制松手 + 站稳清零——
-  地形不动时旧抓握点在新位置是空气，保留它们会悬空关重力永久漂浮。落地后步态自动重建。
+  地形不动时旧抓握点在新位置是空气，保留它们会悬空关重力永久漂浮；旧 `MoveTarget`
+  也不再满足「邻近可达点」契约，因此 Teleport 会清 null，宿主须按新位置重喂。
+  落地后步态自动重建。
 - **跳跃/击飞 = `Walker.Launch(velPerTick)`**：全 chunk 加同一速度增量，全腿强制松手、
   站稳计数清零——重力当 tick 回归，身体进入弹道，落地后 plant-and-trail 自动恢复
   （smoke 的 [CORE-LAUNCH] 断言覆盖；沙盒 `--yank` 是它的场景版）。
 - 想「删掉重来」（长途瞬移后不在乎连续性）：整体重建仍然最简单。
 
-## 4. 输入契约（AI 只有两个旋钮）
+## 4. 输入契约（AI 有两个旋钮 + 一个可选路径点直喂）
 
 | 输入 | 类型/域 | 语义 |
 |------|---------|------|
-| `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时）。 |
-| `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。 |
+| `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时）。`MoveTarget` 非 null 时由内核在该 tick **临时导出覆盖**，tick 末清零，不冒充下一 tick 的宿主方向。 |
+| `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。两种驱动模式共用（油门始终归宿主）。 |
+| `Walker.MoveTarget` | `Vector3?`，默认 null | **可选第三旋钮：路径点直喂**（≙ RW 寻路器给 FollowConnection 的下一路径格中心——RW 的原始形态）。非 null 时进入直喂模式：MoveDir 由内核导出（头→点方向，撞墙仍走重定向涌现）；到点基准是喂点沿 `SupportNormal` 抬 `RideHeight`，实际推进胡萝卜**跳过射线构造**，意图顶住支撑面时会沿面旋转，因此重定向窗口里不一定与到点基准重合。External 模式始终没有方向驱动在棱边/悬崖处的 Fallback 空中退化分支。**契约**：喂点必须是**邻近的可达路径点**（导航网格/路径采样贴地；与头之间无墙阻隔——隔墙远点 RW 同样走不过去）；喂点与换点节奏归宿主（≙ 寻路器逐格递进），`AtMoveTarget` 到达即换下一点或清 null（到点即视为无意图，停下/闲置涌现）。`Shift` 随世界平移它；`Teleport` 作废并清 null。 |
+| `Walker.MoveTargetArriveRadius` | 米，默认 0.4 | 直喂模式到点判定半径（头到到点基准「喂点+法线抬升」的 3D 距离）。按寻路格距/路径点密度调。 |
 | `Walker.Shift(delta)` | 方法 | rebase：地形随体平移时用（§3.4）。 |
-| `Walker.Teleport(delta)` | 方法 | 瞬移：地形不动时用（Shift + 松手 + 站稳清零，§3.4）。 |
+| `Walker.Teleport(delta)` | 方法 | 瞬移：地形不动时用（Shift + 松手 + 站稳清零 + 清 `MoveTarget`，§3.4）。 |
 | `Walker.Launch(velPerTick)` | 方法 | 跳跃/击飞冲量（§3.4）。 |
 
 - 每 tick 写入（不写则保持上次值——AI 决策频率可以低于 tick 频率）。
+- **两种驱动模式怎么选**：宿主有寻路器/贴地路径点 → 用 `MoveTarget` 直喂（到点基准贴地、
+  不走 Fallback，≙ RW 原始形态）；玩家直控/只有方向没有点（受击失衡、简单游荡）→ 用
+  `MoveDir`（内核自己构造胡萝卜，棱边处可能短暂退化为空中目标）。可逐 tick 切换：
+  只清 `MoveTarget` 即停；要由方向驱动立即接管，则同 tick 清 null 并写新 `MoveDir`。
+  `HasMoveIntent` / `AtMoveTarget` / `LastMoveTargetKind` 是配套观测（§5.2）。
 - **不要**直接写内核其它状态（`SupportNormal`/`GripCounter`/…都是内核私有语义）；
   唯一例外是外力注入 `chunk.Vel`（§3.1 相位）。
 - 宿主侧「Grounded=false」（走出平台、被剥夺支撑）：放空输入即可，重力开关自己会
@@ -193,6 +203,9 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 
 `Walker.LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
 （支撑面法线：平地≈上、爬墙≈墙法线——可判「正在爬墙」）、`StallTicks`（顶死程度）、
+`AtMoveTarget`（直喂模式到达信号，宿主换点驱动）、`LastMoveTarget`/`LastMoveTargetKind`
+（本 tick 实际推进胡萝卜及其来源分支：Support 钉面 / Crest 翻越 / External 直喂或沿面重定向 /
+Fallback 空中退化——Fallback 长期驻留 = 方向驱动在棱边失去地形参照，可视化为红色）、
 `Limb.GripNormal`/`HasGrip`、`BodyChunk.TerrainContact`/`ContactNormal`。
 全部是**只读观测**；写它们后果自负。
 
@@ -261,7 +274,8 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 ```bash
 # ① 无引擎冒烟（秒级；改内核后的最快反馈）。退出码即判定：
 #    双跑 bit-exact + 哈希对基线（钉死在 Program.cs 的 ExpectedHash，防「确定但错误」）
-#    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + TypeRef 引擎边界扫描。
+#    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + Launch 恢复
+#    + MoveTarget 到达/取消/传送契约 + TypeRef 引擎边界扫描。
 dotnet run --project core/smoke
 
 # ② Godot 全矩阵（分钟级；改物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +

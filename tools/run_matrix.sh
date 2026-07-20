@@ -1,5 +1,5 @@
 #!/bin/bash
-# 确定性全矩阵回归：11 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
+# 确定性全矩阵回归：12 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
 # 位置检查 / 退出码聚合）。任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、
 # 探针只打印不断言, NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
 #
@@ -21,6 +21,7 @@ HASH_STAND=D9F94BB9262BD2ED
 HASH_HEAVY=6F9B975B4135C603
 HASH_SPRINTER=168EC2C94EE347A7
 HASH_HEXAPOD=E1F9E0E515D678DD
+HASH_CARROT=C8F0C6D87F99C21F
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -66,14 +67,15 @@ run() {
 
 final_hash() { grep '^\[DET\]' "$OUT/$1.txt" | tail -1 | sed 's/.*hash=//'; }
 
-# 路点下限 ≈ 当前基线参考值（default 12 / wall 11 / heavy 6 / sprinter 17 / hexapod 9）的 75~80%；
-# 微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
+# 路点下限 ≈ 当前基线参考值（default 12 / wall 11 / heavy 6 / sprinter 17 / hexapod 9 / carrot 26）
+# 的 75~80%；微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
 run default    "$HASH_DEFAULT"  10 2000 --tps=400
 run default-b  "$HASH_DEFAULT"  10 2000 --tps=400
 run default-40 "$HASH_DEFAULT"  10 2000
 run perturb    -                6  2000 --tps=400 --perturb=0.001
 run wall       "$HASH_WALL"     9  2000 --tps=400 --route=wall --spawn=-4,0.5,0
 run stand      "$HASH_STAND"    -  2000 --tps=400 --route=stand --spawn=-6,3.7,0
+run carrot     "$HASH_CARROT"   20 2000 --tps=400 --route=carrot
 run heavy      "$HASH_HEAVY"    5  2000 --tps=400 --breed=heavy
 run sprinter   "$HASH_SPRINTER" 14 2000 --tps=400 --breed=sprinter
 run hexapod    "$HASH_HEXAPOD"  7  2000 --tps=400 --breed=hexapod

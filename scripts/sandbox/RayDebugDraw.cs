@@ -10,7 +10,8 @@ namespace ProcAnimLab.Sandbox;
 /// 每帧用 ImmediateMesh 重画。GL 线图元恒为 1px 看不清，这里画成朝向相机的条带
 /// （有实际宽度），命中点再加菱形标记——洋红=命中（画到命中点），灰蓝=打空（完整段）。
 /// 另画推进目标（胡萝卜）：头→目标的条带 + 大菱形，按来源分支着色——
-/// 绿=钉在支撑面、橙=翻越顶面、红=空中退化目标（红长期出现 = 身体在追悬空胡萝卜）。
+/// 绿=钉在支撑面、橙=翻越顶面、紫=宿主直喂（MoveTarget）、红=空中退化目标
+/// （红长期出现 = 身体在追悬空胡萝卜）。
 /// 纯观测：转发不改变任何查询结果，开关只影响记录与绘制，确定性哈希不受影响。
 /// </summary>
 public sealed class RayDebugDraw : ITerrainQuery
@@ -38,6 +39,7 @@ public sealed class RayDebugDraw : ITerrainQuery
     private static readonly Color CarrotSupportColor = new(0.25f, 0.95f, 0.35f);
     private static readonly Color CarrotCrestColor = new(1f, 0.65f, 0.15f);
     private static readonly Color CarrotFallbackColor = new(1f, 0.18f, 0.18f);
+    private static readonly Color CarrotExternalColor = new(0.7f, 0.35f, 1f);
 
     public RayDebugDraw(ITerrainQuery inner)
     {
@@ -119,6 +121,7 @@ public sealed class RayDebugDraw : ITerrainQuery
             {
                 MoveTargetKind.Support => CarrotSupportColor,
                 MoveTargetKind.Crest => CarrotCrestColor,
+                MoveTargetKind.External => CarrotExternalColor,
                 _ => CarrotFallbackColor,
             };
             AddRibbon(walker.Head.Pos, walker.LastMoveTarget, c, camPos);

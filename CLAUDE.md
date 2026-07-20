@@ -84,30 +84,32 @@
 >
 > **M5 产物**：内核抽离为独立程序集——回迁 = 拷走 `core/` 一个文件夹。
 > - `core/ProcAnim.Core.csproj`：内核 classlib（BodyChunk/ChunkConnection/Body/SphereTerrain/ITerrainQuery/TickContext/Limb/Walker/BreedParams/BodyFactory + DeterminismHasher/PlaneTerrainQuery），**只使用 GodotSharp NuGet 的纯托管数学结构**——不引 Godot.NET.Sdk（挡住场景树源生成器；注意 GodotSharp 包里 GD/Node 仍编译期可达，真正的强制是 smoke 的 TypeRef 边界扫描：允许清单 Vector3/Mathf 之外的 Godot.* 引用即回归 FAIL）。命名空间去 Lab 化：`ProcAnimLab.{Physics,Sandbox,Terrain}` → `ProcAnim.Core`。`core/godot/RaycastTerrainQuery.cs` 引擎适配器随文件夹走、归游戏程序集编译（游戏 csproj `Compile Remove core/**` 后单独 Include 它）。BodyFactory 进内核并去掉唯一 GD 调用（未知品种名静默回落 default）。
-> - `core/smoke/`：**无引擎冒烟回归**（纯 .NET console，`dotnet run --project core/smoke`，退出码判定）：解析平面地形（PlaneTerrainQuery，含 HitFromInside 零法线语义）+ default 平地巡走 1000 tick（直行+45° 转向进哈希），进程内双跑 bit-exact 且哈希钉死基线（值以 `core/smoke/Program.cs` 的 `ExpectedHash` 为唯一真相源）——「与引擎解耦」的运行时实证，也是回迁后目标仓库的秒级内核回归。评审修复轮追加断言：嵌入恢复、Shift 连续性、TypeRef 引擎边界扫描。哈希折叠下沉为内核 `DeterminismHasher`，沙盒探针与冒烟共用同一实现（两边哈希可互证）。
+> - `core/smoke/`：**无引擎冒烟回归**（纯 .NET console，`dotnet run --project core/smoke`，退出码判定）：解析平面地形（PlaneTerrainQuery，含 HitFromInside 零法线语义）+ default 平地巡走 1000 tick（直行+45° 转向进哈希），进程内双跑 bit-exact 且哈希钉死基线（值以 `core/smoke/Program.cs` 的 `ExpectedHash` 为唯一真相源）——「与引擎解耦」的运行时实证，也是回迁后目标仓库的秒级内核回归。评审修复轮追加断言：嵌入恢复、Shift 连续性、Launch 恢复、MoveTarget 到达/取消/传送契约、TypeRef 引擎边界扫描。哈希折叠下沉为内核 `DeterminismHasher`，沙盒探针与冒烟共用同一实现（两边哈希可互证）。
 > - **抽离质量门**：9 配置全矩阵（default 双跑/40vs400Hz/perturb、wall、stand、三品种）与抽离前基线**逐字节 diff 为空**——移动文件+改命名空间+程序集拆分+哈希器下沉，零行为漂移。
-> - [`docs/porting_contract.md`](docs/porting_contract.md)：回迁契约。模块清单与依赖面、装配（品种可行域表）/驱动（40 tick 固定序、60Hz 宿主 0.025s 累加器）/输入（MoveDir/RunSpeed 两旋钮）/输出（渲染与 AI 观测面）四契约、ITerrainQuery 接缝全语义（HitFromInside 零法线、主项目掩码层 20 + RID 排除规范、射线量级与节流阀门、Jolt 验证点）、确定性守则与三层回归、**两条迁移路线**（源码拷入 ≙ 主项目惯例 / 首个 ProjectReference）与**两种集成姿态**（规格 §4.3 可替换后端·身体拴权威根拖行 / 内核位置权威·根跟随，前者默认）。主项目对接面调研快照（单程序集 60Hz Jolt、motion 子系统 Gate-C 已过待接线、MonsterMotionSnapshot 映射表）沉淀于契约 §8。
+> - [`docs/porting_contract.md`](docs/porting_contract.md)：回迁契约。模块清单与依赖面、装配（品种可行域表）/驱动（40 tick 固定序、60Hz 宿主 0.025s 累加器）/输入（MoveDir/RunSpeed 两旋钮 + MoveTarget 路径点直喂可选第三旋钮，≙ RW 寻路器喂路径格的原始形态）/输出（渲染与 AI 观测面）四契约、ITerrainQuery 接缝全语义（HitFromInside 零法线、主项目掩码层 20 + RID 排除规范、射线量级与节流阀门、Jolt 验证点）、确定性守则与三层回归、**两条迁移路线**（源码拷入 ≙ 主项目惯例 / 首个 ProjectReference）与**两种集成姿态**（规格 §4.3 可替换后端·身体拴权威根拖行 / 内核位置权威·根跟随，前者默认）。主项目对接面调研快照（单程序集 60Hz Jolt、motion 子系统 Gate-C 已过待接线、MonsterMotionSnapshot 映射表）沉淀于契约 §8。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
 >
 > **确定性回归**（改物理内核后必跑；全部真断言——探针只打印不判定的旧形态是假绿，评审修复轮的教训）：
 > ```bash
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
-> #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + TypeRef 边界扫描。
+> #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
+> #    MoveTarget 直喂契约 + TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
-> # ② Godot 全矩阵（分钟级）。11 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查），
+> # ② Godot 全矩阵（分钟级）。12 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查），
 > #    pipefail + 退出码聚合，任何一项红 → 非零退出；结尾打 MATRIX GREEN/RED：
 > ./tools/run_matrix.sh [输出目录]
 > # 配置：default ×2（双跑 diff）、default 40Hz（时基不变性）、perturb（灵敏度：哈希必须变）、
-> #   wall（正面推墙翻越 ≥9）、stand（站桩+闲置姿态）、heavy/sprinter/hexapod（品种路线）、
-> #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）。
+> #   wall（正面推墙翻越 ≥9）、stand（站桩+闲置姿态）、carrot（MoveTarget 路径点直喂通路）、
+> #   heavy/sprinter/hexapod（品种路线）、embed（出生嵌入 60 tick 必须脱困）、
+> #   wallside（贴墙擦边不得穿墙）。
 > # [RESULT] 在进程 teardown 之前打印；已知 Godot 4.7 macOS 偶发退场 mutex 崩溃（exit 134），
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
 > # 2000 tick 参考值（评审修复轮后）：default 12 路点、wall 11 翻越、heavy 6 路点/抓地 1.75、
-> #   sprinter 17 路点、hexapod 9 路点/抓地 2.41/6。
+> #   sprinter 17 路点、hexapod 9 路点/抓地 2.41/6、carrot 26 路点。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。

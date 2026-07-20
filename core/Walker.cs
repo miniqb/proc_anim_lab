@@ -19,6 +19,10 @@ public enum MoveTargetKind
 	/// <summary>退化分支：两射线都打空，头前+向上的空中相对目标（FloorLeverage）——
 	/// 长期停留在此分支 = 身体在追一根悬空胡萝卜（棱边悬空上飘姿态的来源）。</summary>
 	Fallback,
+
+	/// <summary>宿主直喂的路径点（<see cref="Walker.MoveTarget"/> 旋钮，≙ RW 寻路器给的
+	/// followingConnection 目标格）：跳过射线构造；实际推进胡萝卜可能按支撑系重定向。</summary>
+	External,
 }
 
 /// <summary>
@@ -32,7 +36,7 @@ public enum MoveTargetKind
 /// · 站稳（FootingCounter 足够 且 有腿抓地）→ 重力关成 0：没有吸墙力，
 ///   是重力本身被开关——这就是身体不从墙上掉下来的全部原因。
 /// · 移动意图被支撑面挡住的分量沿面内上坡方向重定向：推着墙走自然变成往上爬。
-/// 无状态机：MoveDir/RunSpeed 是唯一输入，「抓住/没抓住」是唯一开关。
+/// 无状态机：MoveDir/RunSpeed（或可选 MoveTarget）是输入，「抓住/没抓住」是唯一开关。
 /// </summary>
 public sealed class Walker
 {
@@ -46,20 +50,44 @@ public sealed class Walker
 	/// <summary>脊柱总长（米，= 头到髋各连接 RestLength 之和）：推进拖尾点在目标身后这个距离。</summary>
 	public float SpineLength = 0.3f;
 
-	/// <summary>移动意图方向（单位向量或零向量）。由输入/AI 每 tick 写入。</summary>
+	/// <summary>移动意图方向（单位向量或零向量）。由输入/AI 每 tick 写入；
+	/// <see cref="MoveTarget"/> 非 null 时改由内核每 tick 导出（宿主写入被覆盖）。</summary>
 	public Vector3 MoveDir;
 
 	/// <summary>移动意图强度 ∈ [0,1]（≙ AI.runSpeed）。低于 <see cref="MoveIntentDeadzone"/>
 	/// 一律视为零输入（见 HasMoveIntent）。</summary>
 	public float RunSpeed;
 
+	/// <summary>可选第三旋钮：宿主直喂的移动目标点（世界系，≙ RW 寻路器给 FollowConnection 的
+	/// 下一路径格中心——RW 的原始形态，MoveDir 抽象是本项目的收缩）。非 null 时 MoveDir 每 tick
+	/// 由内核从该点导出（宿主写入被覆盖；导出值 tick 末清零不跨 tick 残留——只清 null 不写
+	/// MoveDir 即停，派生方向不冒充宿主意图）。到点基准 = 喂点沿 SupportNormal 抬
+	/// RideHeight；实际推进胡萝卜跳过射线构造，并在意图顶住支撑面时沿面重定向为爬，
+	/// 因而重定向窗口里不一定与到点基准重合。External 模式始终没有 Fallback 空中退化分支。
+	/// 喂点与换点节奏归宿主（≙ RW 寻路器逐格递进）：**点必须是邻近的可达路径点**（导航网格/
+	/// 路径采样，与头之间无墙阻隔——隔墙远点是契约违规，RW 同样走不过去）；
+	/// <see cref="AtMoveTarget"/> 是到达信号——到点即视为无意图（停下/闲置涌现），
+	/// 宿主应换下一点或清 null。RunSpeed 仍由宿主控制（油门不变）。
+	/// 世界坐标语义：<see cref="Shift"/> 随世界平移它，<see cref="Teleport"/> 作废它（清 null）。</summary>
+	public Vector3? MoveTarget;
+
+	/// <summary>到点判定半径（米）：头到到点基准「喂点 + SupportNormal·RideHeight」的
+	/// 3D 距离 ≤ 此值即到达。推进发生支撑系重定向时，实际胡萝卜可能暂时不与该基准重合。</summary>
+	public float MoveTargetArriveRadius = 0.4f;
+
+	/// <summary>MoveTarget 模式的到达信号（每 tick 更新；MoveTarget 为 null 时恒 false）。</summary>
+	public bool AtMoveTarget { get; private set; }
+
 	/// <summary>移动意图死区：RunSpeed ≤ 此值时推进/步态/顶死检测/闲置退出全部视为无输入。
 	/// 曾经推进层用 &gt;0、腿层用 &gt;0.1 —— 0.05 的合法输入会推着一具收着腿（IdlePose
 	/// 退不出来）的身体滑行（外部评审 P1-5）。唯一死区，所有层共用。</summary>
 	public const float MoveIntentDeadzone = 0.1f;
 
-	/// <summary>本 tick 是否存在有效移动意图（死区之上且方向非零）——推进与步态的唯一开关。</summary>
-	public bool HasMoveIntent => RunSpeed > MoveIntentDeadzone && MoveDir != Vector3.Zero;
+	/// <summary>本 tick 是否存在有效移动意图——推进与步态的唯一开关。
+	/// 方向驱动读宿主的 MoveDir；直喂驱动读「尚未到点」，不受 tick 末清掉派生 MoveDir 影响，
+	/// 因此外部在 Tick 后读取时仍能得到真实的直喂运动状态。</summary>
+	public bool HasMoveIntent => RunSpeed > MoveIntentDeadzone
+		&& (MoveTarget is not null ? !AtMoveTarget : MoveDir != Vector3.Zero);
 
 	/// <summary>满抓地满速时每 tick 注入的速度（米/tick，≙ lizardParams.baseSpeed）。</summary>
 	public float BaseSpeed = 0.06f;
@@ -155,10 +183,10 @@ public sealed class Walker
 		Hips = hips;
 	}
 
-	/// <summary>rebase：身体、腿、腿的追逐目标整体平移，速度/抓握/站稳状态**原样保留**。
-	/// 只适用于「地形随你一起平移」的场景（浮点原点重置、整个世界搬家）——地形不动的
-	/// 瞬移要用 <see cref="Teleport"/>：保留的抓握点会留在旧位置的空气里，身体悬空关重力
-	/// 永久漂浮（终审 C8）。</summary>
+	/// <summary>rebase：身体、腿、腿的追逐目标、直喂目标整体平移，速度/抓握/站稳状态
+	/// **原样保留**。只适用于「地形随你一起平移」的场景（浮点原点重置、整个世界搬家）——
+	/// 地形不动的瞬移要用 <see cref="Teleport"/>：保留的抓握点会留在旧位置的空气里，
+	/// 身体悬空关重力永久漂浮（终审 C8）。</summary>
 	public void Shift(Vector3 delta)
 	{
 		Body.Shift(delta);
@@ -166,10 +194,17 @@ public sealed class Walker
 		{
 			limb.Shift(delta);
 		}
+		// MoveTarget/LastMoveTarget 是世界坐标：漏平移会让下 tick 朝旧原点里的目标走（评审 P1）。
+		if (MoveTarget is { } fed)
+		{
+			MoveTarget = fed + delta;
+		}
+		LastMoveTarget += delta;
 	}
 
 	/// <summary>teleport：平移到新位置并作废一切位置态记忆——全腿强制松手（旧抓握点
-	/// 对新位置无效）、站稳计数清零，落地后按常规 plant-and-trail 重建步态。
+	/// 对新位置无效）、站稳计数清零、直喂目标清 null（旧路径点对新位置同样无效，
+	/// 宿主须按新位置重喂），落地后按常规 plant-and-trail 重建步态。
 	/// 权威根瞬移/复位/换房用这个（评审 P1-7 + 终审 C8 的区分）。</summary>
 	public void Teleport(Vector3 delta)
 	{
@@ -180,6 +215,9 @@ public sealed class Walker
 		}
 		FootingCounter = 0;
 		NoGripCounter = LoseGripTicks + 1;
+		MoveTarget = null;
+		AtMoveTarget = false;
+		LastMoveTargetKind = MoveTargetKind.None;
 	}
 
 	/// <summary>宿主冲量注入（跳跃/击飞/弹射，≙ RW 被抛掷）：全 chunk 加同一速度增量
@@ -209,6 +247,15 @@ public sealed class Walker
 			? -ctx.GravityPerTick.Normalized()
 			: Vector3.Up;
 
+		bool derivedMove = MoveTarget is not null;
+		if (MoveTarget is { } fed)
+		{
+			DeriveMoveFromTarget(fed);
+		}
+		else
+		{
+			AtMoveTarget = false;
+		}
 		UpdateFooting(ctx);
 		Vector3 effMove = HasMoveIntent ? RedirectMove(up) : Vector3.Zero;
 		ApplyLocomotionForce(ctx, effMove, up);
@@ -216,6 +263,27 @@ public sealed class Walker
 		StallTicks = HasMoveIntent && Head.Vel.Length() < StallSpeed ? StallTicks + 1 : 0;
 		TickLimbs(ctx, effMove);
 		UpdateSupportNormal(up);
+
+		if (derivedMove)
+		{
+			// 派生 MoveDir 不跨 tick 残留：宿主只清 MoveTarget 不写 MoveDir 就该停——
+			// 残留值会冒充宿主意图继续推着身体走。下个直喂 tick 会重新导出；
+			// HasMoveIntent 在直喂模式读 AtMoveTarget，因此 tick 后观测仍如实。
+			MoveDir = Vector3.Zero;
+		}
+	}
+
+	/// <summary>MoveTarget 旋钮的意图导出（每 tick 覆盖 MoveDir，≙ RW FollowConnection 的
+	/// DirVec(chunk, 格中心)——完整方向不压平，局部合法性由「喂邻近点」的契约保证）：
+	/// 方向 = 头 → 到点基准（喂点 + SupportNormal·RideHeight）。指向墙内的分量仍由
+	/// RedirectMove 重定向为沿面上爬——撞墙、上坡、翻越等下游涌现全部复用 MoveDir 通路。
+	/// 到达 → 意图清零（停下涌现），AtMoveTarget 供宿主换点。
+	/// 支撑法线沿用上 tick 终值（与腿/推进同一「滞后一 tick」约定）。</summary>
+	private void DeriveMoveFromTarget(Vector3 target)
+	{
+		Vector3 carrot = target + SupportNormal * RideHeight;
+		AtMoveTarget = (carrot - Head.Pos).Length() <= MoveTargetArriveRadius;
+		MoveDir = AtMoveTarget ? Vector3.Zero : Dir(Head.Pos, carrot);
 	}
 
 	/// <summary>
@@ -367,6 +435,17 @@ public sealed class Walker
 	/// </summary>
 	private Vector3 FindMoveTarget(in TickContext ctx, Vector3 effMove, Vector3 up, out MoveTargetKind kind)
 	{
+		if (MoveTarget is { } fed)
+		{
+			// 宿主直喂（≙ RW 瞄路径格中心）：到点基准 = 喂点沿支撑法线抬 RideHeight，零射线，
+			// 因此 External 模式没有 Fallback 分支。实际胡萝卜沿 effMove 摆在「头到到点基准」
+			// 的同距离处：意图未被支撑面挡时 effMove 就是头→基准方向，两者恒等；
+			// 被挡时（喂点在墙根、身体已上墙）
+			// 身体施力跟着重定向走——否则「撞墙涌现为爬」只传给腿，头髋仍朝墙里顶（评审 P2）。
+			kind = MoveTargetKind.External;
+			Vector3 fedCarrot = fed + SupportNormal * RideHeight;
+			return Head.Pos + effMove * (fedCarrot - Head.Pos).Length();
+		}
 		Vector3 n = SupportNormal;
 		Vector3 ahead = Head.Pos + effMove * LookAhead;
 		if (ctx.Terrain.Raycast(ahead + n * 0.35f, ahead - n * 0.65f, out TerrainHit hit)

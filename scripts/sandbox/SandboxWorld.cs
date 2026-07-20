@@ -56,9 +56,21 @@ public partial class SandboxWorld : Node3D
     /// 复现闲置姿态：悬空侧的脚找不到落点又无移动意图 → 应垂回身侧（IdlePose）而非悬在前伸位。</summary>
     private static readonly Vector3[] StandRoute = System.Array.Empty<Vector3>();
 
+    /// <summary>--route=carrot：路线2输入通路（MoveTarget 直喂，≙ RW 寻路器喂路径格）回归。
+    /// 宿主侧每 tick 把当前路点贴地采样后直喂内核，AtMoveTarget 到达信号驱动换点——
+    /// 上坡/下坡/跨台阶全部走 External 胡萝卜。不含墙路点：隔墙远点是直喂契约违规
+    /// （RW 寻路器只喂邻近可达格），爬墙由 default/wall 路线的 MoveDir 通路覆盖。</summary>
+    private static readonly Vector3[] CarrotRoute =
+    {
+        new(4.2f, 0f, 0f),
+        new(0.5f, 0f, 1.8f),
+        new(-3f, 0f, 0f),
+    };
+
     private Vector3[] _waypoints = DefaultRoute;
     private int _waypointIndex;
     private int _waypointsReached;
+    private bool _carrotDrive; // --route=carrot：路点经 MoveTarget 直喂（否则 MoveDir 方向驱动）
 
     private readonly List<Body> _bodies = new();
     private Walker _walker = null!;
@@ -160,7 +172,9 @@ public partial class SandboxWorld : Node3D
         }
     }
 
-    /// <summary>WASD → 世界 XZ 移动意图（相机固定朝 -Z，W 即「向屏幕里」）。</summary>
+    /// <summary>WASD → 世界 XZ 移动意图（相机固定朝 -Z，W 即「向屏幕里」）；
+    /// 右键点地形 → MoveTarget 直喂（路线2 手测通路：命中点就是喂点，胡萝卜画紫色），
+    /// 到点自动清除。WASD 一按立即接管（清 MoveTarget 回方向驱动）。</summary>
     private void SampleWalkInput()
     {
         Vector3 dir = Vector3.Zero;
@@ -168,14 +182,41 @@ public partial class SandboxWorld : Node3D
         if (Input.IsPhysicalKeyPressed(Key.S)) dir.Z += 1f;
         if (Input.IsPhysicalKeyPressed(Key.A)) dir.X -= 1f;
         if (Input.IsPhysicalKeyPressed(Key.D)) dir.X += 1f;
-        if (dir == Vector3.Zero)
+
+        if (dir != Vector3.Zero)
         {
-            _walker.MoveDir = Vector3.Zero;
-            _walker.RunSpeed = 0f;
+            _walker.MoveTarget = null;
+            _walker.MoveDir = dir.Normalized();
+            _walker.RunSpeed = 1f;
             return;
         }
-        _walker.MoveDir = dir.Normalized();
-        _walker.RunSpeed = 1f;
+
+        if (Input.IsMouseButtonPressed(MouseButton.Right))
+        {
+            Vector2 mouse = _camera.GetViewport().GetMousePosition();
+            Vector3 origin = _camera.ProjectRayOrigin(mouse);
+            Vector3 rayDir = _camera.ProjectRayNormal(mouse);
+            if (_rayDebug.Raycast(origin, origin + rayDir * 100f, out TerrainHit hit))
+            {
+                _walker.MoveTarget = hit.Point;
+            }
+        }
+
+        if (_walker.MoveTarget is not null)
+        {
+            if (_walker.AtMoveTarget)
+            {
+                _walker.MoveTarget = null;
+                _walker.RunSpeed = 0f;
+                _walker.MoveDir = Vector3.Zero;
+                return;
+            }
+            _walker.RunSpeed = 1f;
+            return;
+        }
+
+        _walker.MoveDir = Vector3.Zero;
+        _walker.RunSpeed = 0f;
     }
 
     /// <summary>确定性模式的脚本化输入：绕路点方框巡走——把「走路」本身纳入回归。</summary>
@@ -185,6 +226,11 @@ public partial class SandboxWorld : Node3D
         {
             _walker.MoveDir = Vector3.Zero;
             _walker.RunSpeed = 0f;
+            return;
+        }
+        if (_carrotDrive)
+        {
+            SteerCarrotWaypoints();
             return;
         }
         Vector3 target = _waypoints[_waypointIndex];
@@ -199,6 +245,27 @@ public partial class SandboxWorld : Node3D
             toTarget.Y = 0f;
         }
         _walker.MoveDir = toTarget.LengthSquared() < 1e-12f ? Vector3.Zero : toTarget.Normalized();
+        _walker.RunSpeed = 1f;
+    }
+
+    /// <summary>路线2（MoveTarget 直喂）的脚本化宿主：当前路点贴地采样后直喂内核，
+    /// AtMoveTarget 到达即换下一点——模拟「寻路器逐格递进」的喂点节奏。
+    /// 贴地采样走同一 ITerrainQuery（射线进 F3 可视化）≙ 宿主从导航网格取贴地路径点，
+    /// 这正是直喂契约要求的「点贴近可达地形」。</summary>
+    private void SteerCarrotWaypoints()
+    {
+        if (_walker.AtMoveTarget)
+        {
+            _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
+            _waypointsReached++;
+        }
+        Vector3 wp = _waypoints[_waypointIndex];
+        Vector3 fed = wp;
+        if (_rayDebug.Raycast(wp + Vector3.Up * 3f, wp + Vector3.Down * 1f, out TerrainHit hit))
+        {
+            fed = hit.Point;
+        }
+        _walker.MoveTarget = fed;
         _walker.RunSpeed = 1f;
     }
 
@@ -446,6 +513,11 @@ public partial class SandboxWorld : Node3D
                 else if (arg == "--route=stand")
                 {
                     _waypoints = StandRoute;
+                }
+                else if (arg == "--route=carrot")
+                {
+                    _waypoints = CarrotRoute;
+                    _carrotDrive = true;
                 }
                 else if (arg.StartsWith("--breed="))
                 {
