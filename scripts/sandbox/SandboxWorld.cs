@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using ProcAnim.Core;
@@ -24,6 +25,10 @@ public partial class SandboxWorld : Node3D
     [Export] public float DragSpring = 0.2f;
     [Export] public float DragDamping = 0.3f;
     [Export] public float DragMaxForce = 0.5f;
+
+    // 编辑器式自由摄像机（右键，不按 Shift）：纯观察工具，跑在 _Process，不进物理 tick/确定性哈希。
+    [Export] public float CameraFlySpeed = 6f; // 米/秒
+    [Export] public float CameraMouseSensitivity = 0.003f; // 弧度/像素
 
     private const float TickDt = 0.025f; // 40 tick/s，与 project.godot 的 physics_ticks_per_second 一致
 
@@ -79,8 +84,12 @@ public partial class SandboxWorld : Node3D
     private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
     private readonly DragController _drag = new();
+    private BreedSelectorUI? _breedUI;
     private DeterminismProbe? _probe;
     private Camera3D _camera = null!;
+    private float _camYaw;
+    private float _camPitch;
+    private bool _cameraFlying; // 上一帧是否处于飞行态，仅用于检测切换边沿（含鼠标捕获模式）
     private Vector3 _gravityPerTick;
     private long _tick;
 
@@ -94,6 +103,8 @@ public partial class SandboxWorld : Node3D
             System.Globalization.CultureInfo.InvariantCulture;
 
         _camera = GetNode<Camera3D>("Camera3D");
+        _camYaw = _camera.Rotation.Y;
+        _camPitch = _camera.Rotation.X;
         _gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         _drag.Spring = DragSpring;
         _drag.Damping = DragDamping;
@@ -112,6 +123,19 @@ public partial class SandboxWorld : Node3D
         {
             _walker.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
             _walker.Body.Chunks[0].LastPos = _walker.Body.Chunks[0].Pos;
+        }
+        if (_probe is null)
+        {
+            // 确定性回归模式禁交互输入（含品种切换），UI 面板只在交互模式下建——与数字键的既有限制对齐。
+            BreedParams[] breeds = BodyFactory.AllBreeds();
+            var names = new string[breeds.Length];
+            for (int i = 0; i < breeds.Length; i++)
+            {
+                names[i] = breeds[i].Name;
+            }
+            _breedUI = new BreedSelectorUI();
+            _breedUI.Build(this, names, SelectBreed);
+            _breedUI.SyncSelection(Array.FindIndex(breeds, b => b.Name == _breed.Name));
         }
         GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, breed={_breed.Name}, " +
                  $"determinism={(_probe is not null ? "on" : "off")}");
@@ -173,10 +197,18 @@ public partial class SandboxWorld : Node3D
     }
 
     /// <summary>WASD → 世界 XZ 移动意图（相机固定朝 -Z，W 即「向屏幕里」）；
-    /// 右键点地形 → MoveTarget 直喂（路线2 手测通路：命中点就是喂点，胡萝卜画紫色），
-    /// 到点自动清除。WASD 一按立即接管（清 MoveTarget 回方向驱动）。</summary>
+    /// Shift+右键点地形 → MoveTarget 直喂（路线2 手测通路：命中点就是喂点，胡萝卜画紫色），
+    /// 到点自动清除。WASD 一按立即接管（清 MoveTarget 回方向驱动）。
+    /// 右键（不按 Shift）= 自由摄像机飞行态：WASD 让位给 UpdateCameraFly，本函数直接短路。</summary>
     private void SampleWalkInput()
     {
+        if (WantCameraFly)
+        {
+            _walker.MoveDir = Vector3.Zero;
+            _walker.RunSpeed = 0f;
+            return;
+        }
+
         Vector3 dir = Vector3.Zero;
         if (Input.IsPhysicalKeyPressed(Key.W)) dir.Z -= 1f;
         if (Input.IsPhysicalKeyPressed(Key.S)) dir.Z += 1f;
@@ -191,7 +223,7 @@ public partial class SandboxWorld : Node3D
             return;
         }
 
-        if (Input.IsMouseButtonPressed(MouseButton.Right))
+        if (Input.IsMouseButtonPressed(MouseButton.Right) && Input.IsPhysicalKeyPressed(Key.Shift))
         {
             Vector2 mouse = _camera.GetViewport().GetMousePosition();
             Vector3 origin = _camera.ProjectRayOrigin(mouse);
@@ -442,13 +474,67 @@ public partial class SandboxWorld : Node3D
         {
             return;
         }
+        UpdateCameraFly((float)delta);
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
         _rayDebug.Draw(_camera, _walker);
     }
 
-    /// <summary>F3：开关射线+推进目标（胡萝卜）可视化（只影响绘制）。数字键 1~N：现场换品种重生（交互模式限定）。</summary>
+    /// <summary>右键held且不按Shift = 想要飞行摄像机（与 Shift+右键放胡萝卜互斥）。
+    /// 确定性模式无交互相机，此处不判 _probe——调用侧（SampleWalkInput/UpdateCameraFly）各自把关。</summary>
+    private bool WantCameraFly =>
+        Input.IsMouseButtonPressed(MouseButton.Right) && !Input.IsPhysicalKeyPressed(Key.Shift);
+
+    /// <summary>编辑器式自由摄像机：右键（不按 Shift）按住时捕获鼠标，WASD 沿视线基向量平移、
+    /// E/Q 沿世界竖直轴升降（不受俯仰影响，仰头时也是垂直上升），鼠标位移（_Input 里的
+    /// InputEventMouseMotion）旋转视角。纯观察工具，跑在渲染帧、用真实 delta，不进物理 tick、
+    /// 不进确定性哈希——松开右键回到 Walker 输入与可见光标。</summary>
+    private void UpdateCameraFly(float delta)
+    {
+        if (_probe is not null)
+        {
+            return;
+        }
+        bool flying = WantCameraFly;
+        if (flying != _cameraFlying)
+        {
+            Input.MouseMode = flying ? Input.MouseModeEnum.Captured : Input.MouseModeEnum.Visible;
+            _cameraFlying = flying;
+        }
+        if (!flying)
+        {
+            return;
+        }
+
+        Basis basis = _camera.GlobalTransform.Basis;
+        Vector3 dir = Vector3.Zero;
+        if (Input.IsPhysicalKeyPressed(Key.W)) dir -= basis.Z;
+        if (Input.IsPhysicalKeyPressed(Key.S)) dir += basis.Z;
+        if (Input.IsPhysicalKeyPressed(Key.A)) dir -= basis.X;
+        if (Input.IsPhysicalKeyPressed(Key.D)) dir += basis.X;
+        if (Input.IsPhysicalKeyPressed(Key.E)) dir += Vector3.Up; // 世界竖直轴，与视角俯仰无关
+        if (Input.IsPhysicalKeyPressed(Key.Q)) dir -= Vector3.Up;
+        if (dir != Vector3.Zero)
+        {
+            _camera.GlobalPosition += dir.Normalized() * CameraFlySpeed * delta;
+        }
+    }
+
+    /// <summary>F3：开关射线+推进目标（胡萝卜）可视化（只影响绘制）。数字键 1~9：现场换品种重生
+    /// （交互模式限定，与左上角下拉面板走同一个 SelectBreed 入口，互相同步）。
+    /// 鼠标移动：飞行摄像机态下累加偏航/俯仰旋转相机（俯仰钳制防止翻过头顶）。</summary>
     public override void _Input(InputEvent @event)
     {
+        if (@event is InputEventMouseMotion motion)
+        {
+            if (WantCameraFly)
+            {
+                _camYaw -= motion.Relative.X * CameraMouseSensitivity;
+                _camPitch = Mathf.Clamp(_camPitch - motion.Relative.Y * CameraMouseSensitivity,
+                    -1.5f, 1.5f);
+                _camera.Rotation = new Vector3(_camPitch, _camYaw, 0f);
+            }
+            return;
+        }
         if (@event is not InputEventKey { Pressed: true, Echo: false } key)
         {
             return;
@@ -463,14 +549,21 @@ public partial class SandboxWorld : Node3D
         {
             return;
         }
+        SelectBreed((int)(key.PhysicalKeycode - Key.Key1));
+    }
+
+    /// <summary>数字键与下拉面板共用的换品种入口，保证两个输入源互相同步。</summary>
+    private void SelectBreed(int index)
+    {
         BreedParams[] breeds = BodyFactory.AllBreeds();
-        int index = (int)(key.PhysicalKeycode - Key.Key1);
-        if (index < breeds.Length)
+        if (index < 0 || index >= breeds.Length)
         {
-            // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
-            SpawnWalker(breeds[index], _walker.Hips.Pos + Vector3.Up * 0.5f);
-            GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
+            return;
         }
+        // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
+        SpawnWalker(breeds[index], _walker.Hips.Pos + Vector3.Up * 0.5f);
+        _breedUI?.SyncSelection(index);
+        GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
     }
 
     /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。
