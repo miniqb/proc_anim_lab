@@ -20,7 +20,7 @@ HASH_WALL=62D10580D4B0FEE2
 HASH_STAND=D9F94BB9262BD2ED
 HASH_HEAVY=6F9B975B4135C603
 HASH_SPRINTER=168EC2C94EE347A7
-HASH_HEXAPOD=E1F9E0E515D678DD
+HASH_HEXAPOD=F22AC1F83F0A8BAD
 HASH_CARROT=C8F0C6D87F99C21F
 
 mkdir -p "$OUT"
@@ -67,8 +67,9 @@ run() {
 
 final_hash() { grep '^\[DET\]' "$OUT/$1.txt" | tail -1 | sed 's/.*hash=//'; }
 
-# 路点下限 ≈ 当前基线参考值（default 12 / wall 11 / heavy 6 / sprinter 17 / hexapod 9 / carrot 26）
-# 的 75~80%；微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
+# 路点下限 ≈ 当前基线参考值（default 12 / wall 11 / heavy 6 / sprinter 17 / hexapod 8 / carrot 26）
+# 的 75~80%；小基数向紧取整、只容 −1（heavy 参考 6 → 下限 5，hexapod 参考 8 → 下限 7——
+# 机械套 75% 会白白放宽质量门）；微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
 run default    "$HASH_DEFAULT"  10 2000 --tps=400
 run default-b  "$HASH_DEFAULT"  10 2000 --tps=400
 run default-40 "$HASH_DEFAULT"  10 2000

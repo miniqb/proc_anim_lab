@@ -180,6 +180,20 @@ public static class BodyFactory
             prev = seg;
         }
 
+        // 朝向钉定（≙ RW Lizard 最终指向 头→髋/中→髋/髋→头；显式赋值仿 RW Deer 构造后
+        // 重申指向的先例）：建连接互绑的「后建覆盖」会让髋参照尾根、指向随建链顺序漂——
+        // 尾巴是软链，摆动会污染腿的步进方向。全部钉在刚性脊柱上：
+        // · 头 → 髋：长基线 = 全身轴前向（≙ RW 头盾/嘴部判定拿头.Rotation 当全身朝向）；
+        // · 中段 → 后一节：真·本段轴（3 节脊柱时后一节即髋，与 RW 中→髋逐一对应；
+        //   四节以上仍是相邻段——统一指髋会退化成跨关节长弦，不再是「本段朝向」）；
+        // · 髋 → 头：Rotation 指向后方，消费侧翻转（Walker.TickLimbs）。尾链保持互绑自然指向。
+        head.RotationChunk = hips;
+        for (int i = 1; i < spine - 1; i++)
+        {
+            chunks[i].RotationChunk = chunks[i + 1];
+        }
+        hips.RotationChunk = head;
+
         var walker = new Walker(body, head, hips)
         {
             SpineLength = linkLen * (spine - 1),

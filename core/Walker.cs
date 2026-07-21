@@ -488,11 +488,22 @@ public sealed class Walker
 
 		Vector3 forward = Dir(Hips.Pos, Head.Pos);
 		Vector3 aim = effMove == Vector3.Zero ? forward : effMove;
-		Vector3 stepDir = forward.Lerp(aim, SteerBlend);
-		stepDir = stepDir.LengthSquared() < 1e-8f ? forward : stepDir.Normalized();
 
 		foreach (Limb limb in Limbs)
 		{
+			// 每锚点步进方向（≙ LizardLimb：a = DirVec(rotationChunk→connection)，再与目标
+			// Lerp 0.4）：头/髋锚 = 脊柱长基线轴（与旧全局 stepDir 逐位一致——负号与除法在
+			// IEEE 下可交换；重合退化时 Rotation 给零向量，下方回退 forward 与旧 Dir 的
+			// 退化分支同源，翻转不会把回退值翻成朝下），中段锚（hexapod 中腿对）= 后段轴——
+			// 脊柱弯着走时中段腿跟本段、不跟头髋弦。髋的 Rotation 指向后方，翻转回前
+			// （≙ RW LizardLimb 的 connection.index==2 时 a *= -1，按锚点判定不写死索引）。
+			Vector3 axis = limb.Anchor == Hips ? -limb.Anchor.Rotation : limb.Anchor.Rotation;
+			if (axis.LengthSquared() < 1e-8f)
+			{
+				axis = forward;
+			}
+			Vector3 stepDir = axis.Lerp(aim, SteerBlend);
+			stepDir = stepDir.LengthSquared() < 1e-8f ? forward : stepDir.Normalized();
 			limb.Tick(ctx, stepDir, SupportNormal, Limbs, SmoothGait, RunSpeed);
 		}
 

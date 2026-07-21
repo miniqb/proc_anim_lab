@@ -37,7 +37,8 @@ for (long tick = 1; ; tick++)                             // 固定 40 tick/s（
 
 ```bash
 dotnet run --project core/smoke     # 退出码 0=PASS：双跑 bit-exact + 哈希对基线（ExpectedHash）
-                                    # + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + 边界扫描
+                                    # + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + Launch 恢复
+                                    # + MoveTarget 直喂契约 + RotationChunk 拓扑 + 边界扫描
 ```
 
 改内核后先跑它，再跑仓库根的 `./tools/run_matrix.sh` 全矩阵回归（断言化，见 CLAUDE.md §5）。

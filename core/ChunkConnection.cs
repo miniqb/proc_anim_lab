@@ -47,6 +47,10 @@ public sealed class ChunkConnection
         B = b;
         RestLength = restLength;
         WeightA = weightA;
+        // ≙ RW BodyChunkConnection 构造副作用：两端无条件互设朝向参照（不分连接类型/模式），
+        // 后建连接覆盖先建。脊柱的最终指向不靠这里的建链顺序——工厂装配完显式钉定。
+        a.RotationChunk = b;
+        b.RotationChunk = a;
     }
 
     /// <summary>软弹簧：按距离误差把两端向恢复方向推（对标 ConnectToPoint 的 elasticMovement 项）。

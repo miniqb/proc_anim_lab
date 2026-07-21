@@ -21,8 +21,8 @@
 
 | 文件 | 职责 | ≙ RW |
 |------|------|------|
-| `BodyChunk.cs` | 带质量球形粒子，纯数据（Pos/LastPos/Vel/Radius/接触态） | BodyChunk |
-| `ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档） | BodyChunkConnection / ConnectToPoint |
+| `BodyChunk.cs` | 带质量球形粒子，纯数据（Pos/LastPos/Vel/Radius/接触态 + RotationChunk 朝向参照与派生 `Rotation`） | BodyChunk（含 rotationChunk/Rotation） |
+| `ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档）；构造时两端互绑 RotationChunk（后建覆盖） | BodyChunkConnection / ConnectToPoint |
 | `Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞→卡链释放 | GenericBodyPart.Update 帧序 + BodyPart.Reset |
 | `SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
 | `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
@@ -69,6 +69,15 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
 - 装配结果：脊柱 = `SpineSegments` 个 chunk 的 Rigid 链（头…髋）+ 隔节防折叠支柱
   （`BodyStiffness`，SoftOnly PushOnly）；腿对沿脊柱均匀锚定、相邻对出生错位相反
   （对角步态相位种子）；尾巴 = 渐细 PullOnly 链。
+- **朝向拓扑不变量**（smoke `[CORE-ROTATION]` 断言，宿主自装身体也应遵守）：建
+  `ChunkConnection` 时两端自动互绑 `RotationChunk`（≙ RW BodyChunkConnection 构造副作用，
+  后建覆盖）；工厂装配完**显式钉定**脊柱——头参照髋（`Rotation` = 头髋长基线 = 全身轴前向）、
+  中段参照后一节（真·本段轴；3 节脊柱时后一节即髋 ≙ RW 中→髋，四节以上仍是相邻段——
+  统一指髋会退化成跨关节长弦）、
+  髋参照头（指向后方，`Walker.TickLimbs` 翻转，≙ RW LizardLimb `connection.index==2` 补偿）。
+  腿的每锚点步进方向由此导出：头/髋锚 = 脊柱长基线轴，中段锚（hexapod 中腿对）= 本段朝向。
+  钉定不走建链顺序的巧合（RW Lizard 的 头→髋 是防折叠连接恰好最后建的副产物，我们显式化，
+  仿 RW Deer 构造后重申指向的先例）。
 
 ### 2.1 参数可行域（M4 调参教训，超出即近瘫）
 
@@ -206,7 +215,17 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 `AtMoveTarget`（直喂模式到达信号，宿主换点驱动）、`LastMoveTarget`/`LastMoveTargetKind`
 （本 tick 实际推进胡萝卜及其来源分支：Support 钉面 / Crest 翻越 / External 直喂或沿面重定向 /
 Fallback 空中退化——Fallback 长期驻留 = 方向驱动在棱边失去地形参照，可视化为红色）、
-`Limb.GripNormal`/`HasGrip`、`BodyChunk.TerrainContact`/`ContactNormal`。
+`Limb.GripNormal`/`HasGrip`、`BodyChunk.TerrainContact`/`ContactNormal`、
+`BodyChunk.Rotation`（chunk 朝向 =「参照 chunk → 自己」单位向量，≙ RW BodyChunk.Rotation。
+工厂钉定不变量：头参照髋 → Rotation = 全身轴前向；中段参照后一节 → 本段轴前向；髋参照头 →
+指向后方，消费侧翻转；尾链互绑自然指向（段 → 后一段 = 朝身体，尾尖 → 前一段）。退化：
+无参照 → Up、两点近重合（模长 ≤1e-5，Unity kEpsilon）→ **零向量**（照抄 RW/Unity
+normalized 语义），消费端自行回退。
+渲染面朝向 / 附着物局部系记忆（RW 矛/獠牙钉在身上随身转的原语）/ AI 观测都从这里读——
+插值版用 `LastPos` 自行 Lerp 后重算）。注意它在 3D 中只是 **forward 方向向量**，不是完整
+旋转或局部坐标系：渲染/附着物消费端必须再结合稳定的 up（通常取 `SupportNormal`，必要时沿用
+上一帧 up）构造正交 `Basis`/Quaternion；forward 与 up 近共线时必须显式选备用 up，避免 roll
+突跳。该补充是 3D 扩展约束——RW 的 2D 单方向向量本身即可唯一确定平面旋转。
 全部是**只读观测**；写它们后果自负。
 
 ## 6. ITerrainQuery 契约（唯一接缝的全部语义）
@@ -275,7 +294,8 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 # ① 无引擎冒烟（秒级；改内核后的最快反馈）。退出码即判定：
 #    双跑 bit-exact + 哈希对基线（钉死在 Program.cs 的 ExpectedHash，防「确定但错误」）
 #    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + Launch 恢复
-#    + MoveTarget 到达/取消/传送契约 + TypeRef 引擎边界扫描。
+#    + MoveTarget 到达/取消/传送契约 + RotationChunk 拓扑（互绑/覆盖/钉定/尾链/退化语义）
+#    + TypeRef 引擎边界扫描。
 dotnet run --project core/smoke
 
 # ② Godot 全矩阵（分钟级；改物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +

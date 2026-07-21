@@ -40,6 +40,7 @@ internal static class Program
         bool shiftOk = CheckShiftContinuity(out string shiftMsg);
         bool launchOk = CheckLaunchRecovery(out string launchMsg);
         bool carrotOk = CheckExternalTarget(out string carrotMsg);
+        bool rotationOk = CheckRotationTopology(out string rotationMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -49,6 +50,7 @@ internal static class Program
         Console.WriteLine($"[CORE-SHIFT] {shiftMsg}");
         Console.WriteLine($"[CORE-LAUNCH] {launchMsg}");
         Console.WriteLine($"[CORE-CARROT] {carrotMsg}");
+        Console.WriteLine($"[CORE-ROTATION] {rotationMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -90,6 +92,10 @@ internal static class Program
         if (!carrotOk)
         {
             reasons.Add("MoveTarget 直喂契约被破坏（到达/观测/取消/Teleport 语义不一致）");
+        }
+        if (!rotationOk)
+        {
+            reasons.Add("RotationChunk 拓扑被破坏（连接互绑/工厂脊柱钉定不变量不成立）");
         }
 
         bool pass = reasons.Count == 0;
@@ -347,6 +353,71 @@ internal static class Program
                   $"Teleport 清目标={teleportCleared}";
         return reached == route.Length && alwaysExternal && intentObservable
             && activeBeforeCancel && cleared && teleportCleared && !nan;
+    }
+
+    /// <summary>
+    /// RotationChunk 拓扑断言：① ChunkConnection 构造副作用——两端互绑、后建覆盖
+    /// （≙ RW BodyChunkConnection 无条件互设）；② 工厂钉定不变量——全品种装配后
+    /// 头参照髋、中段参照后一节、髋参照头（3 节脊柱时 ≙ RW Lizard 最终指向
+    /// 头→髋/中→髋/髋→头），尾链保持自然拓扑。腿的步进方向由锚点 Rotation 导出
+    /// （Walker.TickLimbs），指向错 =
+    /// 全身步态漂——这道结构断言把「装配顺序变动悄悄改朝向」挡在回归里。
+    /// </summary>
+    private static bool CheckRotationTopology(out string message)
+    {
+        var c1 = new BodyChunk(Vector3.Zero, 0.1f, 1f);
+        var c2 = new BodyChunk(new Vector3(1f, 0f, 0f), 0.1f, 1f);
+        var c3 = new BodyChunk(new Vector3(0f, 1f, 0f), 0.1f, 1f);
+        _ = new ChunkConnection(c1, c2, 1f, 0.5f);
+        bool bind = c1.RotationChunk == c2 && c2.RotationChunk == c1;
+        _ = new ChunkConnection(c1, c3, 1f, 0.5f);
+        bool overwrite = c1.RotationChunk == c3 && c3.RotationChunk == c1 && c2.RotationChunk == c1;
+        // 退化语义照抄 RW：近重合 → 零向量（Unity normalized 原语义，kEpsilon=1e-5——
+        // 精确重合与 1e-6~1e-5 噪声带都必须归零，带内放大成单位向量是近折叠不稳的来源）、
+        // 阈值之上正常归一化、无参照 → Up。
+        var c4 = new BodyChunk(Vector3.Zero, 0.1f, 1f);
+        _ = new ChunkConnection(c1, c4, 1f, 0.5f);
+        var near = new BodyChunk(new Vector3(5e-6f, 0f, 0f), 0.1f, 1f);
+        var above = new BodyChunk(new Vector3(1e-4f, 0f, 0f), 0.1f, 1f);
+        near.RotationChunk = c1;
+        above.RotationChunk = c1;
+        bool degenerate = c4.Rotation == Vector3.Zero
+            && near.Rotation == Vector3.Zero
+            && above.Rotation != Vector3.Zero
+            && new BodyChunk(Vector3.Zero, 0.1f, 1f).Rotation == Vector3.Up;
+
+        bool pinned = true;
+        // 四预设 + 合成 4 节脊柱（预设最多 3 节，spine≥4 才区分「中段→后一节」与「统一指髋」——
+        // 后者会把中段朝向退化成跨关节长弦）。合成品种只装配不 tick，零哈希影响。
+        var breeds = new List<BreedParams>(BodyFactory.AllBreeds())
+        {
+            new() { Name = "spine4", SpineSegments = 4, LegPairs = 3 },
+        };
+        foreach (BreedParams p in breeds)
+        {
+            Walker w = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), p);
+            int spine = Math.Max(2, p.SpineSegments);
+            List<BodyChunk> chunks = w.Body.Chunks;
+            pinned &= w.Head.RotationChunk == w.Hips; // 头 → 髋：长基线全身轴
+            for (int i = 1; i < spine - 1; i++)
+            {
+                pinned &= chunks[i].RotationChunk == chunks[i + 1]; // 中段 → 后一节：本段轴
+            }
+            pinned &= w.Hips.RotationChunk == w.Head;
+            // 尾链自然拓扑精确断言（弱化成非空 = 同义反复，互绑保证恒非空）：
+            // 段 i 参照段 i+1（朝身体，后建覆盖的结果）、尾尖参照前一段。
+            for (int i = spine; i < chunks.Count - 1; i++)
+            {
+                pinned &= chunks[i].RotationChunk == chunks[i + 1];
+            }
+            if (chunks.Count > spine)
+            {
+                pinned &= chunks[^1].RotationChunk == chunks[^2];
+            }
+        }
+        message = $"连接互绑={bind}，后建覆盖={overwrite}，退化语义={degenerate}，" +
+                  $"脊柱钉定+尾链拓扑（四预设+合成 spine4）={pinned}";
+        return bind && overwrite && degenerate && pinned;
     }
 
     /// <summary>

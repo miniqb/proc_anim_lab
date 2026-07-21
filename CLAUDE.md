@@ -88,13 +88,17 @@
 > - **抽离质量门**：9 配置全矩阵（default 双跑/40vs400Hz/perturb、wall、stand、三品种）与抽离前基线**逐字节 diff 为空**——移动文件+改命名空间+程序集拆分+哈希器下沉，零行为漂移。
 > - [`docs/porting_contract.md`](docs/porting_contract.md)：回迁契约。模块清单与依赖面、装配（品种可行域表）/驱动（40 tick 固定序、60Hz 宿主 0.025s 累加器）/输入（MoveDir/RunSpeed 两旋钮 + MoveTarget 路径点直喂可选第三旋钮，≙ RW 寻路器喂路径格的原始形态）/输出（渲染与 AI 观测面）四契约、ITerrainQuery 接缝全语义（HitFromInside 零法线、主项目掩码层 20 + RID 排除规范、射线量级与节流阀门、Jolt 验证点）、确定性守则与三层回归、**两条迁移路线**（源码拷入 ≙ 主项目惯例 / 首个 ProjectReference）与**两种集成姿态**（规格 §4.3 可替换后端·身体拴权威根拖行 / 内核位置权威·根跟随，前者默认）。主项目对接面调研快照（单程序集 60Hz Jolt、motion 子系统 Gate-C 已过待接线、MonsterMotionSnapshot 映射表）沉淀于契约 §8。
 >
+> **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `Walker.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
+>
+> **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
+>
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
 >
 > **确定性回归**（改物理内核后必跑；全部真断言——探针只打印不判定的旧形态是假绿，评审修复轮的教训）：
 > ```bash
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
 > #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
-> #    MoveTarget 直喂契约 + TypeRef 边界扫描。
+> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
 > # ② Godot 全矩阵（分钟级）。12 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查），
@@ -108,8 +112,8 @@
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
-> # 2000 tick 参考值（评审修复轮后）：default 12 路点、wall 11 翻越、heavy 6 路点/抓地 1.75、
-> #   sprinter 17 路点、hexapod 9 路点/抓地 2.41/6、carrot 26 路点。
+> # 2000 tick 参考值（RotationChunk 轮后）：default 12 路点、wall 11 翻越、heavy 6 路点/抓地 1.75、
+> #   sprinter 17 路点、hexapod 8 路点/抓地 2.27/6、carrot 26 路点。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。
