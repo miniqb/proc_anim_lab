@@ -41,6 +41,7 @@ internal static class Program
         bool launchOk = CheckLaunchRecovery(out string launchMsg);
         bool carrotOk = CheckExternalTarget(out string carrotMsg);
         bool rotationOk = CheckRotationTopology(out string rotationMsg);
+        bool recoveryOk = CheckRecoveryInvariants(out string recoveryMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -51,6 +52,7 @@ internal static class Program
         Console.WriteLine($"[CORE-LAUNCH] {launchMsg}");
         Console.WriteLine($"[CORE-CARROT] {carrotMsg}");
         Console.WriteLine($"[CORE-ROTATION] {rotationMsg}");
+        Console.WriteLine($"[CORE-RECOVERY] {recoveryMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -96,6 +98,10 @@ internal static class Program
         if (!rotationOk)
         {
             reasons.Add("RotationChunk 拓扑被破坏（连接互绑/工厂脊柱钉定不变量不成立）");
+        }
+        if (!recoveryOk)
+        {
+            reasons.Add("深卡角恢复边界失效（强度外推/接触可行锥/候选穿透）");
         }
 
         bool pass = reasons.Count == 0;
@@ -263,7 +269,12 @@ internal static class Program
             walker.RunSpeed = 1f;
             walker.Tick(new TickContext(gravityPerTick, terrain, t));
         }
+        // 恢复控制器生命周期：Launch 必须立刻撤销临时缩碰撞体与 post-contact 门控。
+        walker.Hips.TerrainSqueeze = 0.1f;
+        walker.Body.EnablePostCollisionStructureRecovery = true;
         walker.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+        bool recoveryReset = walker.Hips.TerrainSqueeze == 1f
+            && !walker.Body.EnablePostCollisionStructureRecovery;
         t++;
         walker.Tick(new TickContext(gravityPerTick, terrain, t));
         bool airborne = walker.ApplyGravity;
@@ -279,8 +290,9 @@ internal static class Program
         Vector3 d = walker.Head.Pos - start;
         d.Y = 0f;
         bool nan = !walker.Head.Pos.IsFinite();
-        message = $"Launch 后坠落={airborne}，500 tick 后回归步态={regained}，续走 {d.Length():F2}m";
-        return airborne && regained && d.Length() > 10f && !nan;
+        message = $"Launch 恢复状态清零={recoveryReset}，坠落={airborne}，" +
+                  $"500 tick 后回归步态={regained}，续走 {d.Length():F2}m";
+        return recoveryReset && airborne && regained && d.Length() > 10f && !nan;
     }
 
     /// <summary>
@@ -418,6 +430,160 @@ internal static class Program
         message = $"连接互绑={bind}，后建覆盖={overwrite}，退化语义={degenerate}，" +
                   $"脊柱钉定+尾链拓扑（四预设+合成 spine4）={pinned}";
         return bind && overwrite && degenerate && pinned;
+    }
+
+    /// <summary>恢复控制器的极端边界：InverseLerp 必须饱和；非正交接触投影必须同时满足
+    /// 全部半空间；候选位置不得写进未收集到的邻面；持续 650 tick 的人工卡角也不得让
+    /// squeeze 越界或恢复速度随计数爆炸。正常路线永远到不了 600 tick，必须定向造状态。</summary>
+    private static bool CheckRecoveryInvariants(out string message)
+    {
+        bool ramp = Walker.SaturatedInverseLerp(5f, 20f, -100f) == 0f
+            && Walker.SaturatedInverseLerp(5f, 20f, 100f) == 1f;
+
+        var manifold = new ContactManifold3D();
+        Vector3 n0 = Vector3.Right;
+        Vector3 n1 = new(-0.5f, 0.8660254f, 0f);
+        manifold.Add(n0);
+        manifold.Add(n1);
+        Vector3 projected = manifold.ProjectDisplacement(new Vector3(-1f, -1f, 0f));
+        bool cone = projected.Dot(n0) >= -1e-5f && projected.Dot(n1) >= -1e-5f;
+
+        var floor = new PlaneTerrainQuery(0f);
+        var probe = new BodyChunk(new Vector3(0f, 0.2f, 0f), 0.2f, 1f);
+        Vector3 rejected = Body.FeasibleTerrainCorrection(probe, Vector3.Down * 0.05f, floor);
+        bool terrainSafe = rejected == Vector3.Zero;
+
+        BreedParams footingBreed = BodyFactory.Heavy();
+        footingBreed.TailSegments = 0;
+        Walker footingWalker = BodyFactory.CreateWalker(new Vector3(0f, 10f, 0f), footingBreed);
+        footingWalker.BaseSpeed = 0f;
+        var emptyTerrain = new PlaneTerrainQuery(-100f);
+        for (long tick = 1; tick <= 20; tick++)
+        {
+            foreach (BodyChunk chunk in footingWalker.Body.Chunks)
+            {
+                chunk.TerrainContact = false;
+            }
+            footingWalker.Hips.TerrainContact = true;
+            footingWalker.Tick(new TickContext(Vector3.Zero, emptyTerrain, tick));
+        }
+        int footingBeforeProbe = footingWalker.FootingCounter;
+        foreach (BodyChunk chunk in footingWalker.Body.Chunks)
+        {
+            chunk.TerrainContact = false;
+        }
+        footingWalker.Hips.TerrainSqueeze = 0.05f;
+        float expectedProbeLength = footingWalker.Hips.TerrainRadius + footingWalker.NearTerrainRange;
+        float oldProbeLength = footingWalker.Hips.Radius + footingWalker.NearTerrainRange;
+        var annulusTerrain = new FirstRayLengthGateTerrain(
+            (expectedProbeLength + oldProbeLength) * 0.5f);
+        footingWalker.Tick(new TickContext(Vector3.Zero, annulusTerrain, 21));
+        bool footingProbe = footingBeforeProbe >= footingWalker.RegainFootingTicks
+            && footingWalker.FootingCounter == 0
+            && Mathf.Abs(annulusTerrain.FirstRayLength - expectedProbeLength) < 1e-6f;
+
+        BreedParams breed = BodyFactory.Heavy();
+        breed.TailSegments = 0;
+        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 10f, 0f), breed);
+        walker.BaseSpeed = 0.0001f;
+        walker.MaxMoveSpeed = 0.0001f;
+        walker.StallSpeed = 1f;
+        foreach (ChunkConnection conn in walker.Body.Connections)
+        {
+            if (conn.SoftOnly)
+            {
+                conn.Elasticity = 0f;
+            }
+        }
+        float rearLink = walker.HeadLinkLength;
+        foreach (ChunkConnection conn in walker.Body.Connections)
+        {
+            bool followerToHips = (conn.A == walker.SpineFollower && conn.B == walker.Hips)
+                || (conn.B == walker.SpineFollower && conn.A == walker.Hips);
+            if (followerToHips && !conn.SoftOnly)
+            {
+                rearLink = conn.RestLength;
+                break;
+            }
+        }
+
+        var emptyFloor = new PlaneTerrainQuery(-100f);
+        float peakSpeed = 0f;
+        for (long tick = 1; tick <= 650; tick++)
+        {
+            Vector3 origin = new(0f, 10f, 0f);
+            walker.SpineFollower.Pos = origin;
+            walker.Head.Pos = origin + Vector3.Right * walker.HeadLinkLength;
+            walker.Hips.Pos = origin + Vector3.Right * rearLink;
+            foreach (BodyChunk chunk in walker.Body.Chunks)
+            {
+                chunk.LastPos = chunk.Pos;
+                chunk.Vel = Vector3.Zero;
+                chunk.TerrainContact = false;
+            }
+            // Body.Collide 会把这次手工接触转存为 HadContactLastTick；人工几何保持 0° V 折叠。
+            walker.Hips.TerrainContact = true;
+            walker.Hips.HadContactLastTick = true;
+            walker.MoveDir = Vector3.Right;
+            walker.RunSpeed = 1f;
+            walker.Tick(new TickContext(Vector3.Zero, emptyFloor, tick));
+            foreach (BodyChunk chunk in walker.Body.Chunks)
+            {
+                peakSpeed = Mathf.Max(peakSpeed, chunk.Vel.Length());
+            }
+        }
+        bool deepBounded = walker.SpineCornerStuckTicks == 600
+            && walker.MaxSpineCornerStuckTicks == 600
+            && walker.Hips.TerrainSqueeze >= 0.05f
+            && walker.Hips.TerrainSqueeze <= 1f
+            && peakSpeed < 0.001f
+            && walker.StraightenOutNeeded is >= 0f and <= 1f;
+
+        message = $"ramp饱和={ramp}，非正交可行锥={cone}，候选穿透拒绝={terrainSafe}，" +
+                  $"squeeze近地探针={footingProbe}（len={annulusTerrain.FirstRayLength:F3}），" +
+                  $"650tick卡角 bounded={deepBounded}（stuck={walker.SpineCornerStuckTicks}, " +
+                  $"squeeze={walker.Hips.TerrainSqueeze:F2}, peakVel={peakSpeed:F6}）";
+        return ramp && cone && terrainSafe && footingProbe && deepBounded;
+    }
+
+    /// <summary>只对第一个射线按长度门控命中：把地形放在 TerrainRadius 与正式 Radius
+    /// 两条近地探针之间，钉死 squeeze 期间 UpdateFooting 不得使用旧碰撞壳。</summary>
+    private sealed class FirstRayLengthGateTerrain : ITerrainQuery
+    {
+        private readonly float _minHitLength;
+        private bool _sampled;
+
+        public float FirstRayLength { get; private set; } = -1f;
+
+        public FirstRayLengthGateTerrain(float minHitLength)
+        {
+            _minHitLength = minHitLength;
+        }
+
+        public bool Raycast(Vector3 from, Vector3 to, out TerrainHit hit)
+        {
+            hit = default;
+            if (_sampled)
+            {
+                return false;
+            }
+            _sampled = true;
+            FirstRayLength = (to - from).Length();
+            if (FirstRayLength < _minHitLength)
+            {
+                return false;
+            }
+            hit = new TerrainHit(to, Vector3.Up, 1UL);
+            return true;
+        }
+
+        public bool SpherePenetration(Vector3 center, float radius, out Vector3 pushDir,
+            out float depth)
+        {
+            pushDir = Vector3.Zero;
+            depth = 0f;
+            return false;
+        }
     }
 
     /// <summary>

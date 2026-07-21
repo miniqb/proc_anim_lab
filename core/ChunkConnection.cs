@@ -32,6 +32,10 @@ public sealed class ChunkConnection
     /// 它全部连接都是软推，本项目默认硬约束，防折叠支柱这类"姿态弹簧"才用此档）。</summary>
     public bool SoftOnly;
 
+    /// <summary>碰撞后只恢复「由碰撞新增」的结构违反。当前工厂仅给隔节 SoftOnly
+    /// 姿态支柱开启；Rigid 脊柱与尾链关闭，避免重复硬约束或让长尾反向拖死身体。</summary>
+    public bool TerrainCoupled;
+
     /// <summary>硬约束修正分配给 A 端的权重 ∈ [0,1]（0 = A 视作无限重，全部位移落在 B）。</summary>
     public float WeightA;
 
@@ -40,6 +44,10 @@ public sealed class ChunkConnection
     /// <summary>碰撞后仍深度违反的连续 tick 计数（Body.ReleaseSnags 维护）。
     /// 由轨迹确定性导出，不进状态哈希。</summary>
     public int SnagTicks;
+
+    /// <summary>该连接自身累计触发的卡链释放次数；供测试/诊断把尾链 PullOnly 释放与
+    /// 脊柱 Rigid 释放分开归因，不参与物理决策或确定性哈希。</summary>
+    public long SnagReleases { get; internal set; }
 
     public ChunkConnection(BodyChunk a, BodyChunk b, float restLength, float weightA)
     {

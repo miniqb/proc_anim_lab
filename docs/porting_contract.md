@@ -22,8 +22,9 @@
 | 文件 | 职责 | ≙ RW |
 |------|------|------|
 | `BodyChunk.cs` | 带质量球形粒子，纯数据（Pos/LastPos/Vel/Radius/接触态 + RotationChunk 朝向参照与派生 `Rotation`） | BodyChunk（含 rotationChunk/Rotation） |
-| `ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档）；构造时两端互绑 RotationChunk（后建覆盖） | BodyChunkConnection / ConnectToPoint |
-| `Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞→卡链释放 | GenericBodyPart.Update 帧序 + BodyPart.Reset |
+| `ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档）；构造时两端互绑 RotationChunk（后建覆盖）；逐连接释放诊断计数 | BodyChunkConnection / ConnectToPoint |
+| `Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞→卡角时恢复碰撞新增的姿态违反→卡链释放 | GenericBodyPart.Update 帧序 + BodyPart.Reset |
+| `ContactManifold3D.cs` | 单 tick 固定容量接触法线集合；固定迭代投影到非正交墙/地接触可行锥 | 3D 接缝扩展 |
 | `SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
 | `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
 | `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
@@ -78,6 +79,26 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
   腿的每锚点步进方向由此导出：头/髋锚 = 脊柱长基线轴，中段锚（hexapod 中腿对）= 本段朝向。
   钉定不走建链顺序的巧合（RW Lizard 的 头→髋 是防折叠连接恰好最后建的副产物，我们显式化，
   仿 RW Deer 构造后重申指向的先例）。
+- **推进追踪点不变量**（`Walker` 构造契约，2026-07 追加）：构造函数签名是
+  `Walker(body, head, hips, spineFollower)`——`spineFollower` 必须是脊柱链紧邻头部的下一节
+  （≙ RW `bodyChunks[1]`；`BodyFactory` 固定传 `chunks[1]`；spine=2 时与 `hips` 是同一 chunk）。
+  配套 `Walker.HeadLinkLength` 必须是头到 `spineFollower` 这一条连接的静止长度（单节，不是
+  脊柱全长）。`Walker.ApplyLocomotionForce` 只主动驱动 `Head`/`SpineFollower` 两点，链尾
+  `Hips`（spine≥3 时）永远被动拖行只挨 `ChunkConnection` 约束——宿主手动装配身体（不经
+  `BodyFactory`）必须遵守同一约束，否则多节脊柱会在头到髋的欠约束自由度上折叠成 V 形
+  （反编译 `Lizard.cs:2277-2293` 核实：RW 原版同样只驱动 `bodyChunks[0]`/`[1]`，`bodyChunks[2]`
+  从不被直接追踪；`straightenOut` 恢复力的判定轴与施力点同样钉在 `spineFollower`，不是 `hips`）。
+  **墙角恢复不变量**（2026-07 深挖修复）：`straightenOut` 不再把本地 V 折叠也沿目标轴推；目标误朝向
+  与局部弦向撑开分离，并用 `StraightenOutNeeded` 保存跨 tick 恢复需求。`SpineCornerStuckTicks`
+  由「髋接触 + 髋低速 + 100° 进入/120° 退出滞回」导出，不依赖仍在移动的头速；达到 10 tick 后：
+  ① 只恢复碰撞相对松弛末**新增**的 SoftOnly 支柱违反，候选位移经 `ContactManifold3D` 固定迭代
+  投影，并在写回前用 `TerrainRadius` 做最终 `SpherePenetration` 校验；不重跑整套约束、不重复表面
+  摩擦；② `Hips.TerrainSqueeze` 在 10→30 tick 从 1→0.05，地形有效
+  半径下限 0.025m，正式 `Radius`/约束/腿锚/渲染不变。`Shift` 保留恢复状态；`Teleport`/`Launch`
+  清零并立刻恢复碰撞半径。所有计数映射强度均显式饱和到 `[0,1]`（Godot `InverseLerp` 本身
+  不 clamp）；180° 辅助绕上一 tick 的 `SupportNormal`，零输入会切断旧意图方向历史。三锚六腿在
+  RW Caramel/SpitLizard 有拓扑先例，腿粒子不向身体回传
+  反力，因此不得再把该问题解释成「hexapod 第三腿对把 hips 钉住」。
 
 ### 2.1 参数可行域（M4 调参教训，超出即近瘫）
 
@@ -107,8 +128,9 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
   walker.Tick(new TickContext(gravityPerTick, terrain, tick));
   ```
 - `Walker.Tick` 内部序（勿拆开自driving，锚定 ≙ RW 帧序）：
-  站稳判定/重力开关 → 意图重定向 → 推进力 → `Body.Tick`（受力→积分→约束→碰撞→卡链释放）
-  → 顶死计数 → 腿 → 支撑法线更新。
+  站稳判定/重力开关 → 输入反转检测 → 推进力/持久拉直 → terrainSqueeze 门控 →
+  `Body.Tick`（受力→积分→约束→碰撞→卡角结构恢复→卡链释放）→ 头速顶死计数 + 局部卡角计数
+  → 腿 → 支撑法线更新 → 持久拉直需求衰减。
 
 ### 3.2 渲染插值
 
@@ -147,14 +169,17 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
   落地后步态自动重建。
 - **跳跃/击飞 = `Walker.Launch(velPerTick)`**：全 chunk 加同一速度增量，全腿强制松手、
   站稳计数清零——重力当 tick 回归，身体进入弹道，落地后 plant-and-trail 自动恢复
-  （smoke 的 [CORE-LAUNCH] 断言覆盖；沙盒 `--yank` 是它的场景版）。
+  （smoke 的 [CORE-LAUNCH] 断言覆盖；沙盒 `--yank` 是它的场景版）。Teleport/Launch 都会
+  清 `StraightenOutNeeded`/`SpineCornerStuckTicks`/`MaxSpineCornerStuckTicks`/转身辅助（含手性历史），
+  把 `TerrainSqueeze` 恢复 1，并开始新的恢复诊断生命周期；
+  Shift 则全部保留。若宿主以后做可回滚完整快照，这些动态恢复状态必须与 Pos/Vel 一起序列化。
 - 想「删掉重来」（长途瞬移后不在乎连续性）：整体重建仍然最简单。
 
 ## 4. 输入契约（AI 有两个旋钮 + 一个可选路径点直喂）
 
 | 输入 | 类型/域 | 语义 |
 |------|---------|------|
-| `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时）。`MoveTarget` 非 null 时由内核在该 tick **临时导出覆盖**，tick 末清零，不冒充下一 tick 的宿主方向。 |
+| `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时，并切断 180° 转身的旧方向历史）。`MoveTarget` 非 null 时由内核在该 tick **临时导出覆盖**，tick 末清零，不冒充下一 tick 的宿主方向。 |
 | `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。两种驱动模式共用（油门始终归宿主）。 |
 | `Walker.MoveTarget` | `Vector3?`，默认 null | **可选第三旋钮：路径点直喂**（≙ RW 寻路器给 FollowConnection 的下一路径格中心——RW 的原始形态）。非 null 时进入直喂模式：MoveDir 由内核导出（头→点方向，撞墙仍走重定向涌现）；到点基准是喂点沿 `SupportNormal` 抬 `RideHeight`，实际推进胡萝卜**跳过射线构造**，意图顶住支撑面时会沿面旋转，因此重定向窗口里不一定与到点基准重合。External 模式始终没有方向驱动在棱边/悬崖处的 Fallback 空中退化分支。**契约**：喂点必须是**邻近的可达路径点**（导航网格/路径采样贴地；与头之间无墙阻隔——隔墙远点 RW 同样走不过去）；喂点与换点节奏归宿主（≙ 寻路器逐格递进），`AtMoveTarget` 到达即换下一点或清 null（到点即视为无意图，停下/闲置涌现）。`Shift` 随世界平移它；`Teleport` 作废并清 null。 |
 | `Walker.MoveTargetArriveRadius` | 米，默认 0.4 | 直喂模式到点判定半径（头到到点基准「喂点+法线抬升」的 3D 距离）。按寻路格距/路径点密度调。 |
@@ -212,6 +237,8 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 
 `Walker.LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
 （支撑面法线：平地≈上、爬墙≈墙法线——可判「正在爬墙」）、`StallTicks`（顶死程度）、
+`StraightenOutNeeded` / `SpineCornerStuckTicks` / `MaxSpineCornerStuckTicks`（姿态恢复需求、
+局部髋部卡角与本次恢复生命周期峰值；Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
 `AtMoveTarget`（直喂模式到达信号，宿主换点驱动）、`LastMoveTarget`/`LastMoveTargetKind`
 （本 tick 实际推进胡萝卜及其来源分支：Support 钉面 / Crest 翻越 / External 直喂或沿面重定向 /
 Fallback 空中退化——Fallback 长期驻留 = 方向驱动在棱边失去地形参照，可视化为红色）、
@@ -252,7 +279,11 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
    含法线缺失时「接触点→球心」的确定性兜底），Jolt 4.7 实证可用。
    为什么必须有它：三根「球心射线」对与运动平行的墙面擦边侵入全盲（实测穿墙 5cm
    无接触）——球形碰撞的承诺由这条原语兜底，砍掉它 = 回到评审 P1-2/P1-3 的坑。
-4. **只打「可站立的静态地形」**：不含生物自身、道具、门等动态物。
+4. **radius 是当 tick 的地形有效半径**：正常等于 `BodyChunk.Radius`；局部卡角触发
+   `TerrainSqueeze` 时可缩小，但不得低于 0.025m。运动扫掠延长、Body 的重力/旧法线探针、
+   `Walker.UpdateFooting` 的髋部近地宽限探针、`SphereTerrain.Resolve` 与 `SpherePenetration`
+   必须统一使用它；正式半径、约束和渲染不变。
+5. **只打「可站立的静态地形」**：不含生物自身、道具、门等动态物。
    - 本仓库：碰撞掩码层 1（白盒全在层 1）。
    - 主项目：掩码 = `PhysicsCollisionLayers.ProceduralContactGround`（层 20，1<<19；
      由 RoomBuilder/LadderBuilder 附着于可行走静态几何）+ **排除宿主自身 RID**
@@ -261,8 +292,8 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
      `CollisionMask` 属性 + `SetExclusions(rids)`。
    - 查询参数对象**复用实例**（参考实现即此；射线参数/球形参数/球 shape 各一份常驻。
      `IntersectRay/GetRestInfo` 返回的 Dictionary 是引擎 API 固有分配，无非分配变体）。
-5. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。
-6. **Jolt 验证点**：本仓库 `project.godot` 已启用 Jolt——零法线 HitFromInside、
+6. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。
+7. **Jolt 验证点**：本仓库 `project.godot` 已启用 Jolt——零法线 HitFromInside、
    斜坡/棱线法线连续、`GetRestInfo` 的 MTD 语义**均已在 Jolt 上实证**（全矩阵 +
    embed/wallside 配置）。主项目同为 Jolt，后端语义风险已消除；接入时跑一遍
    `--route=stand`/`--route=wall` 等价场景做环境级确认即可。
@@ -305,6 +336,18 @@ dotnet run --project core/smoke
 # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
+
+当前 20 配置除原有时基/品种/嵌入/擦墙门外，固定包含多节脊柱的 `wall-heavy`、
+`wall-hexapod` 路点下限，以及四条事件相对回归：`turn-hexapod`（平地 180° 反转后 25 tick 内
+展开并对准）、`wall-turn-hexapod`（竖墙上沿面反转，钉死转轴必须是 `SupportNormal`，恢复期间
+离开目标墙不得连续超过 2 tick）、`wall-tail`（按逐连接计数只归因 PullOnly 尾链；连续逐节释放
+合并为同一脱困 episode，首释放到稳定的最大耗时 ≤40 tick，结束时不得仍卡链）、
+`wall-corner`（只认 x=-5.8 目标墙的正确朝向脊柱接触，检查换面/Fallback/抬升；不再误把出生点旁
+Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 穿透。跨品种统一 `<100°` 已删除；
+通用姿态硬门改为 SoftOnly 支柱低于静止长度 10% 的最长连续 run。
+`carrot-turn-heavy`/`carrot-turn-hexapod` 另在纯平地稳定行进中把 External 目标侧转约 90°（实际方向点积门控）：
+头—SpineFollower 前向构型、全身轴与展开姿态必须在 25 tick 内恢复；中段局部轴相对头部局部轴的
+最大角度领先、连续领先 tick 与过 60° 对齐阈值的时间差只作诊断输出，尚不以任意审美阈值判红。
 
 **基线哈希只存两处**（有意改内核后同步更新，别处一律引用）：
 `tools/run_matrix.sh` 顶部的哈希表（Godot 全矩阵）与 `core/smoke/Program.cs` 的

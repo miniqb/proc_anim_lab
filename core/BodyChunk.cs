@@ -18,6 +18,12 @@ public sealed class BodyChunk
 
     public bool CollideWithTerrain = true;
 
+    /// <summary>卡住时仅缩小地形接触半径（≙ RW terrainSqueeze），默认 1。正式 Radius、
+    /// 约束、腿锚和渲染不变；有效半径始终保留 0.025m（1 RW px）下限。</summary>
+    public float TerrainSqueeze = 1f;
+
+    public float TerrainRadius => Mathf.Max(Radius * Mathf.Clamp(TerrainSqueeze, 0.05f, 1f), 0.025f);
+
     /// <summary>本 tick 是否接触地形（碰撞阶段开头清 false，命中后置 true）。</summary>
     public bool TerrainContact;
 
@@ -26,6 +32,10 @@ public sealed class BodyChunk
 
     /// <summary>上一 tick 是否有接触（触发接触法向探针射线）。</summary>
     public bool HadContactLastTick;
+
+    /// <summary>本 tick 固定顺序收集的接触法线；只供 Body 内部的碰撞后可行位移投影，
+    /// 不进入公开状态、渲染或确定性哈希。</summary>
+    internal ContactManifold3D ContactManifold;
 
     /// <summary>朝向参照 chunk（≙ RW BodyChunk.rotationChunk）。建 <see cref="ChunkConnection"/> 时
     /// 两端自动互绑、后建连接覆盖先建（≙ RW BodyChunkConnection 构造副作用）；装配完成后

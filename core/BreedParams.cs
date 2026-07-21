@@ -5,7 +5,8 @@ namespace ProcAnim.Core;
 /// 工厂读它装配 Body/Walker/Limb，内核运行时不再回读——纯出生配置，零行为分支。
 /// 字段名尽量镜像 RW 便于对照调参（反编译 LizardBreeds 各品种的取值差异就是手感差异）；
 /// 单位全部本项目制：米 / 米每tick，1 RW tile = 0.5 m。
-/// SpineSegments/LegPairs 是本项目的 3D 扩展（RW 蜥蜴固定 2 锚 4 腿）。
+/// SpineSegments/LegPairs 的任意数量参数化是本项目扩展；RW 常见蜥蜴为四腿，
+/// Caramel/SpitLizard 已有 chunk 0/1/2 三锚六腿的拓扑先例。
 /// </summary>
 public sealed class BreedParams
 {

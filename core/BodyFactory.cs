@@ -78,7 +78,8 @@ public static class BodyFactory
         TailTipStiffness = 0.1f,
     };
 
-    /// <summary>六足（本项目扩展，RW 无对照）：3 节脊柱 3 腿对，抓地冗余高、推进平顺。</summary>
+    /// <summary>六足：3 节脊柱 3 腿对，抓地冗余高、推进平顺；三锚六腿拓扑在 RW
+    /// Caramel/SpitLizard 有直接先例，本项目只扩展为 3D 落脚几何与参数化装配。</summary>
     public static BreedParams Hexapod() => new()
     {
         Name = "hexapod",
@@ -156,6 +157,7 @@ public static class BodyFactory
                 ConstraintMode = ChunkConnection.Mode.PushOnly,
                 Elasticity = 1f - Mathf.Lerp(0.9f, 0.5f, p.BodyStiffness),
                 SoftOnly = true,
+                TerrainCoupled = true,
             });
         }
 
@@ -194,9 +196,9 @@ public static class BodyFactory
         }
         hips.RotationChunk = head;
 
-        var walker = new Walker(body, head, hips)
+        var walker = new Walker(body, head, hips, chunks[1])
         {
-            SpineLength = linkLen * (spine - 1),
+            HeadLinkLength = linkLen,
             BaseSpeed = p.BaseSpeed,
             MaxMoveSpeed = p.MaxMoveSpeed,
             NoGripSpeed = p.NoGripSpeed,

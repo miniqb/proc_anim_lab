@@ -47,8 +47,19 @@ public sealed class Walker
 	public readonly BodyChunk Head;
 	public readonly BodyChunk Hips;
 
-	/// <summary>脊柱总长（米，= 头到髋各连接 RestLength 之和）：推进拖尾点在目标身后这个距离。</summary>
-	public float SpineLength = 0.3f;
+	/// <summary>脊柱头后紧邻一节（≙ RW bodyChunks[1]）：与头共同承担推进追踪力的唯一另一点。
+	/// 链尾（Hips）永远不直接追目标，只靠连接约束被动拖行（≙ RW bodyChunks[2] 从不直接追
+	/// FollowConnection 目标）——多节脊柱下要是反过来直接拖 Hips，中间节没有任何驱动力，
+	/// 两条独立刚性连接会在「头到髋」欠约束的自由度上折成 V 形（M4 遗留 bug，2026-07 修，
+	/// 反编译 Lizard.cs 核实：p = vector2 + DirVec(vector2,bodyChunks[0].pos) *
+	/// bodyChunkConnections[0].distance 驱动的是 bodyChunks[1]，偏移量是单节长度）。
+	/// spine=2 时与 Hips 是同一个 chunk，退化为原双点驱动，行为不变。</summary>
+	public readonly BodyChunk SpineFollower;
+
+	/// <summary>头到 <see cref="SpineFollower"/> 的连接静止长度（米，≙ RW
+	/// bodyChunkConnections[0].distance）：推进拖尾点在目标身后这个距离——只算头到紧邻
+	/// 下一节的单节长度，不是脊柱全长。</summary>
+	public float HeadLinkLength = 0.3f;
 
 	/// <summary>移动意图方向（单位向量或零向量）。由输入/AI 每 tick 写入；
 	/// <see cref="MoveTarget"/> 非 null 时改由内核每 tick 导出（宿主写入被覆盖）。</summary>
@@ -155,6 +166,22 @@ public sealed class Walker
 	/// <summary>顶死持续 tick 数（推着走且头部几乎不动）。</summary>
 	public int StallTicks { get; private set; }
 
+	/// <summary>持续拉直需求 ∈[0,1]（≙ RW Lizard.straightenOutNeeded）：深度误朝向会逐 tick
+	/// 累积，姿态短暂越过阈值也不会立即丢失恢复力；无需求时平滑衰减。</summary>
+	public float StraightenOutNeeded { get; private set; }
+
+	/// <summary>局部脊柱卡角计数：不看仍在移动的头，而看髋部接触、低速与弯折的组合。
+	/// 在后续 tick 提升拉直力，并驱动只缩地形接触半径的 terrainSqueeze 逃生口。</summary>
+	public int SpineCornerStuckTicks { get; private set; }
+	public int MaxSpineCornerStuckTicks { get; private set; }
+
+	/// <summary>最近一次 180° 输入反转触发的确定性侧向转身剩余 tick。只绕支撑法线施力，
+	/// 不引入显式走/爬状态。</summary>
+	public int TurnAssistTicks { get; private set; }
+
+	private Vector3 _lastIntentDir;
+	private float _turnSign = 1f;
+
 	/// <summary>当前抓地腿数（≙ legsGrabbing，每 tick 腿更新后重算）。</summary>
 	public int LegsGripping { get; private set; }
 
@@ -176,11 +203,12 @@ public sealed class Walker
 	/// <summary>本 tick 的推进目标点（仅 <see cref="LastMoveTargetKind"/> ≠ None 时有效）。</summary>
 	public Vector3 LastMoveTarget { get; private set; }
 
-	public Walker(Body body, BodyChunk head, BodyChunk hips)
+	public Walker(Body body, BodyChunk head, BodyChunk hips, BodyChunk spineFollower)
 	{
 		Body = body;
 		Head = head;
 		Hips = hips;
+		SpineFollower = spineFollower;
 	}
 
 	/// <summary>rebase：身体、腿、腿的追逐目标、直喂目标整体平移，速度/抓握/站稳状态
@@ -215,6 +243,7 @@ public sealed class Walker
 		}
 		FootingCounter = 0;
 		NoGripCounter = LoseGripTicks + 1;
+		ResetRecoveryState();
 		MoveTarget = null;
 		AtMoveTarget = false;
 		LastMoveTargetKind = MoveTargetKind.None;
@@ -235,6 +264,7 @@ public sealed class Walker
 		}
 		FootingCounter = 0;
 		NoGripCounter = LoseGripTicks + 1;
+		ResetRecoveryState();
 	}
 
 	/// <summary>
@@ -257,12 +287,17 @@ public sealed class Walker
 			AtMoveTarget = false;
 		}
 		UpdateFooting(ctx);
+		UpdateTurnAssist();
 		Vector3 effMove = HasMoveIntent ? RedirectMove(up) : Vector3.Zero;
 		ApplyLocomotionForce(ctx, effMove, up);
+		UpdateTerrainSqueeze();
+		Body.EnablePostCollisionStructureRecovery = SpineCornerStuckTicks >= 10;
 		Body.Tick(ctx);
 		StallTicks = HasMoveIntent && Head.Vel.Length() < StallSpeed ? StallTicks + 1 : 0;
+		UpdateSpineCornerStuck();
 		TickLimbs(ctx, effMove);
 		UpdateSupportNormal(up);
+		StraightenOutNeeded = LerpAndTick(StraightenOutNeeded, 0f, 0.1f, 0.05f);
 
 		if (derivedMove)
 		{
@@ -314,7 +349,7 @@ public sealed class Walker
 			FootingCounter = Mathf.Min(FootingCounter + 1, 100);
 		}
 		else if (ctx.Terrain.Raycast(Hips.Pos,
-					 Hips.Pos - SupportNormal * (Hips.Radius + NearTerrainRange), out _))
+					 Hips.Pos - SupportNormal * (Hips.TerrainRadius + NearTerrainRange), out _))
 		{
 			// 悬空但支撑面就在附近（迈步腾空/小颠簸）：缓扣不清零，免得重力闪开又闪关。
 			FootingCounter = Mathf.Max(0, FootingCounter - 10);
@@ -368,8 +403,11 @@ public sealed class Walker
 	}
 
 	/// <summary>
-	/// 推进力（≙ Lizard.FollowConnection）：头朝目标点、髋朝「目标点身后一节」，
-	/// 双点施力让身体沿移动方向拉直。力按抓地腿数缩放——腿是引擎。
+	/// 推进力（≙ Lizard.FollowConnection）：头朝目标点、SpineFollower（脊柱头后紧邻一节）朝
+	/// 「目标点身后一节」，双点施力让身体前段沿移动方向拉直；链尾（Hips）不直接受力，
+	/// 靠连接约束被动拖行（≙ RW bodyChunks[2] 从不直接追 FollowConnection 目标——多节脊柱下
+	/// 若改成直接拖链尾，中间节无驱动力，两条独立刚性连接会在欠约束的自由度上折成 V 形）。
+	/// 力按抓地腿数缩放——腿是引擎。
 	/// </summary>
 	private void ApplyLocomotionForce(in TickContext ctx, Vector3 effMove, Vector3 up)
 	{
@@ -402,28 +440,236 @@ public sealed class Walker
 			Head.Vel += (target - Head.Pos) * CrestCentering;
 		}
 
-		Vector3 trail = target + Dir(target, Head.Pos) * SpineLength;
-		Vector3 hipsDir = Dir(Hips.Pos, trail);
-		// 身体折叠（髋看目标与看拖尾点方向相反）时衰减髋部力，防止两点对拉（≙ RW 的 dot LerpMap）。
-		float fold = Mathf.Remap(Dir(Hips.Pos, target).Dot(hipsDir), -1f, 1f, 0.5f, 1f);
-		float hipsHeadroom = MaxMoveSpeed - Hips.Vel.Dot(hipsDir);
-		if (hipsHeadroom > 0f)
+		Vector3 trail = target + Dir(target, Head.Pos) * HeadLinkLength;
+		Vector3 followerDir = Dir(SpineFollower.Pos, trail);
+		// 身体折叠（follower 看目标与看拖尾点方向相反）时衰减力，防止两点对拉（≙ RW 的 dot LerpMap）。
+		float fold = Mathf.Remap(Dir(SpineFollower.Pos, target).Dot(followerDir), -1f, 1f, 0.5f, 1f);
+		float followerHeadroom = MaxMoveSpeed - SpineFollower.Vel.Dot(followerDir);
+		if (followerHeadroom > 0f)
 		{
-			Hips.Vel += hipsDir * Mathf.Min(frameSpeed * fold, hipsHeadroom);
+			SpineFollower.Vel += followerDir * Mathf.Min(frameSpeed * fold, followerHeadroom);
 		}
 
-		// 拉直（≙ RW straightenOut）：身体轴线背对目标（正面撞墙翻倒、头折叠到髋后）时，
-		// 头沿「髋→目标」强拉、髋反向推，把身体甩回朝向目标——卡越久（StallTicks）力越大。
-		// 没有它，翻倒姿态会让 stepDir 被反向身体轴污染，腿全部背着目标迈步，永久瘫死。
-		float mis = Mathf.InverseLerp(0f, -1f, Dir(Head.Pos, target).Dot(Dir(Hips.Pos, Head.Pos)));
-		if (mis > 0f)
+		// 拉直（≙ RW Lizard.cs:2283-2293）：目标误朝向负责把身体前段转回目标；局部 V 折叠
+		// 另沿 Head-Hips 弦向撑开，不能也沿目标轴推——180° 掉头时后者会让头、髋试图从彼此
+		// 中间穿过去。StraightenOutNeeded 保留跨 tick 的恢复需求；SpineCornerStuckTicks 即使头仍
+		// 在墙上移动，也能按局部髋部卡角持续升级，而不是被只看 Head.Vel 的 StallTicks 清零。
+		float misTarget = SaturatedInverseLerp(0f, -1f,
+			Dir(Head.Pos, target).Dot(Dir(SpineFollower.Pos, Head.Pos)));
+		if (Hips == SpineFollower)
 		{
-			mis *= Mathf.Max(0.2f, Mathf.InverseLerp(5f, 20f, StallTicks));
-			Vector3 straight = Dir(Hips.Pos, target);
-			Head.Vel += straight * (mis * 2f * frameSpeed);
-			Hips.Vel -= straight * (mis * frameSpeed);
+			// 双点脊柱没有局部 V 折叠自由度，严格保留既有 RW 对照路径与确定性基线。
+			float legacyMis = misTarget * Mathf.Max(0.2f,
+				SaturatedInverseLerp(5f, 20f, StallTicks));
+			if (legacyMis > 0f)
+			{
+				Vector3 straight = Dir(SpineFollower.Pos, target);
+				Head.Vel += straight * (legacyMis * 2f * frameSpeed);
+				SpineFollower.Vel -= straight * (legacyMis * frameSpeed);
+			}
+			return;
+		}
+
+		// 本地折叠触发：从 SpineFollower 看 Head 与 Hips 是否落到同侧（<120° 开始介入）。
+		// RW 的六足 Caramel/SpitLizard 同样把三对腿锚在 chunk 0/1/2；腿粒子本身不向身体回传
+		// 反力，因此这里处理的是身体局部几何，不是假设「第三腿对把髋钉住」。
+		float misLocal = 0f;
+		if (Hips != SpineFollower)
+		{
+			float side = Dir(SpineFollower.Pos, Head.Pos).Dot(Dir(SpineFollower.Pos, Hips.Pos));
+			if (side > -0.5f)
+			{
+				misLocal = SaturatedInverseLerp(-0.5f, 1f, side);
+			}
+		}
+
+		float rawMis = Mathf.Max(misTarget, misLocal);
+		if (rawMis > 0.5f)
+		{
+			StraightenOutNeeded = LerpAndTick(StraightenOutNeeded, 1f, 0.1f, 0.1f);
+		}
+
+		int attemptTicks = Mathf.Max(StallTicks, SpineCornerStuckTicks);
+		float escalation = SaturatedInverseLerp(5f, 20f, attemptTicks);
+		float forceFull = SaturatedInverseLerp(20f, 40f, attemptTicks);
+		float gain = Mathf.Max(0.2f, Mathf.Max(escalation, StraightenOutNeeded));
+		// 正常推进仍由腿当引擎；姿态恢复随持续需求逐步摆脱抓地衰减，否则尾链松开后正是
+		// 最缺抓地的窗口，frameSpeed 只有正常值约十分之一，永远来不及在再次撞墙前展开。
+		float recoverySpeed = Mathf.Lerp(frameSpeed, BaseSpeed * RunSpeed,
+			Mathf.Max(StraightenOutNeeded, escalation));
+
+		float targetMis = Mathf.Lerp(misTarget, 1f, forceFull) * gain;
+		if (targetMis > 0f)
+		{
+			Vector3 straight = Dir(SpineFollower.Pos, target);
+			Head.Vel += straight * (targetMis * 2f * recoverySpeed);
+			SpineFollower.Vel -= straight * (targetMis * recoverySpeed);
+			// spine=2 时 SpineFollower 与 Hips 是同一 chunk：再减一次会把修正力翻倍、
+			// 偏离 spine=2 的既有基线——只在链尾是独立第三节时才追加这一推（≙ RW bodyChunks[2]）。
+			if (Hips != SpineFollower)
+			{
+				Hips.Vel -= straight * (targetMis * recoverySpeed);
+			}
+		}
+
+		float localForce = Mathf.Lerp(misLocal, 1f, forceFull) * gain;
+		if (localForce > 0f && Hips != SpineFollower)
+		{
+			Vector3 chord = Head.Pos - Hips.Pos;
+			Vector3 open = chord.LengthSquared() > 1e-10f
+				? chord.Normalized()
+				: StableTurnTangent(up, effMove);
+			Head.Vel += open * (localForce * recoverySpeed);
+			Hips.Vel -= open * (localForce * recoverySpeed);
+		}
+
+		Vector3 turnUp = SupportNormal.LengthSquared() > 1e-10f
+			? SupportNormal.Normalized()
+			: up;
+		ApplyTurnAssist(effMove, turnUp, recoverySpeed);
+	}
+
+	private void UpdateTurnAssist()
+	{
+		if (!HasMoveIntent || Hips == SpineFollower || MoveDir.LengthSquared() < 1e-10f)
+		{
+			TurnAssistTicks = 0;
+			_lastIntentDir = Vector3.Zero;
+			return;
+		}
+
+		Vector3 intent = MoveDir.Normalized();
+		if (_lastIntentDir.LengthSquared() > 1e-10f && intent.Dot(_lastIntentDir) < -0.8f)
+		{
+			// 180° 时左右两条转弯路径完全等价；固定交替手性打破平面对称，既确定又不长期偏一侧。
+			_turnSign = -_turnSign;
+			TurnAssistTicks = 16;
+		}
+		_lastIntentDir = intent;
+	}
+
+	private void ApplyTurnAssist(Vector3 desired, Vector3 up, float recoverySpeed)
+	{
+		if (TurnAssistTicks <= 0 || desired.LengthSquared() < 1e-10f)
+		{
+			return;
+		}
+
+		Vector3 forward = Head.Pos - Hips.Pos;
+		forward -= up * forward.Dot(up);
+		Vector3 target = desired - up * desired.Dot(up);
+		if (forward.LengthSquared() < 1e-10f || target.LengthSquared() < 1e-10f)
+		{
+			TurnAssistTicks--;
+			return;
+		}
+		forward = forward.Normalized();
+		target = target.Normalized();
+
+		float signed = up.Dot(forward.Cross(target));
+		if (Mathf.Abs(signed) > 0.02f)
+		{
+			_turnSign = Mathf.Sign(signed);
+		}
+		Vector3 turn = up.Cross(forward) * _turnSign;
+		if (turn.LengthSquared() < 1e-10f)
+		{
+			turn = StableTurnTangent(up, target);
+		}
+		else
+		{
+			turn = turn.Normalized();
+		}
+
+		float turnSpeed = Mathf.Max(recoverySpeed * 0.35f, BaseSpeed * RunSpeed * 0.25f);
+		Head.Vel += turn * turnSpeed;
+		SpineFollower.Vel -= turn * (turnSpeed * 0.5f);
+		if (Hips != SpineFollower)
+		{
+			Hips.Vel -= turn * (turnSpeed * 0.5f);
+		}
+		TurnAssistTicks--;
+	}
+
+	private Vector3 StableTurnTangent(Vector3 up, Vector3 desired)
+	{
+		Vector3 basis = desired - up * desired.Dot(up);
+		if (basis.LengthSquared() < 1e-10f)
+		{
+			Vector3 fallback = Mathf.Abs(up.Dot(Vector3.Up)) < 0.9f ? Vector3.Up : Vector3.Right;
+			basis = fallback - up * fallback.Dot(up);
+		}
+		Vector3 tangent = up.Cross(basis.Normalized());
+		return tangent.LengthSquared() < 1e-10f
+			? Vector3.Right * _turnSign
+			: tangent.Normalized() * _turnSign;
+	}
+
+	private void UpdateSpineCornerStuck()
+	{
+		if (!HasMoveIntent || Hips == SpineFollower)
+		{
+			SpineCornerStuckTicks = 0;
+			return;
+		}
+
+		Vector3 toHead = Head.Pos - SpineFollower.Pos;
+		Vector3 toHips = Hips.Pos - SpineFollower.Pos;
+		if (toHead.LengthSquared() < 1e-10f || toHips.LengthSquared() < 1e-10f)
+		{
+			SpineCornerStuckTicks = Mathf.Max(0, SpineCornerStuckTicks - 2);
+			return;
+		}
+
+		float side = toHead.Normalized().Dot(toHips.Normalized());
+		float bendThreshold = SpineCornerStuckTicks > 0 ? -0.5f : -0.17364818f; // 120° / 100°
+		bool contact = Hips.TerrainContact || Hips.HadContactLastTick;
+		bool pinned = Hips.Vel.Length() < StallSpeed;
+		if (contact && pinned && side > bendThreshold)
+		{
+			SpineCornerStuckTicks = Mathf.Min(600, SpineCornerStuckTicks + 1);
+			MaxSpineCornerStuckTicks = Mathf.Max(MaxSpineCornerStuckTicks, SpineCornerStuckTicks);
+		}
+		else
+		{
+			SpineCornerStuckTicks = Mathf.Max(0, SpineCornerStuckTicks - 2);
 		}
 	}
+
+	private void UpdateTerrainSqueeze()
+	{
+		if (Hips == SpineFollower)
+		{
+			return;
+		}
+		if (!HasMoveIntent)
+		{
+			SpineCornerStuckTicks = 0;
+		}
+		Hips.TerrainSqueeze = Mathf.Lerp(1f, 0.05f,
+			SaturatedInverseLerp(10f, 30f, SpineCornerStuckTicks));
+	}
+
+	private void ResetRecoveryState()
+	{
+		StallTicks = 0;
+		StraightenOutNeeded = 0f;
+		SpineCornerStuckTicks = 0;
+		MaxSpineCornerStuckTicks = 0;
+		Hips.TerrainSqueeze = 1f;
+		Body.EnablePostCollisionStructureRecovery = false;
+		TurnAssistTicks = 0;
+		_lastIntentDir = Vector3.Zero;
+		_turnSign = 1f;
+	}
+
+	/// <summary>Godot Mathf.InverseLerp 不会自行钳位；恢复计数可持续到 600 tick，所有用它
+	/// 驱动的强度都必须显式限制在 [0,1]，否则 Lerp 会外推并随卡住时长放大。</summary>
+	internal static float SaturatedInverseLerp(float from, float to, float value) =>
+		Mathf.Clamp(Mathf.InverseLerp(from, to, value), 0f, 1f);
+
+	private static float LerpAndTick(float value, float target, float lerp, float tick) =>
+		Mathf.MoveToward(Mathf.Lerp(value, target, lerp), target, tick);
 
 	/// <summary>
 	/// 推进目标钉在支撑面上（≙ RW 瞄路径格中心——格中心天然贴着地形）：

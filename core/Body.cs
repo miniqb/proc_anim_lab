@@ -1,10 +1,12 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 
 namespace ProcAnim.Core;
 
 /// <summary>
-/// chunk + 连接的容器；每 tick 按固定顺序推进：受力 → 积分 → 约束松弛 → 地形碰撞。
+/// chunk + 连接的容器；每 tick 按固定顺序推进：受力 → 积分 → 约束松弛 → 地形碰撞
+/// → 卡角时恢复碰撞新增的姿态违反 → 卡链释放。
 /// 积分是显式存 Vel 的半隐式欧拉（反编译 GenericBodyPart.Update 的确切顺序），
 /// 不是经典 position-Verlet：LastPos 只用于渲染插值与碰撞方向判定。
 /// 整个类不读 delta、不读引擎状态——确定性由固定顺序 + 常量步长保证。
@@ -41,13 +43,21 @@ public sealed class Body
     /// <summary>累计卡链释放次数（回归指标：健康路线应为个位数——每次翻墙尾链至多逐节各释放一次）。</summary>
     public long SnagReleases { get; private set; }
 
+    /// <summary>由 Walker 的局部卡角状态门控：只在确有墙角僵持时恢复碰撞新增的脊柱违反，
+    /// 普通落地/行走保持原求解轨迹，避免姿态支柱等效刚度变化污染 heavy 手感。</summary>
+    public bool EnablePostCollisionStructureRecovery;
+
+    private float[] _preCollisionDistances = Array.Empty<float>();
+
     /// <summary>唯一入口：推进一个物理 tick。</summary>
     public void Tick(in TickContext ctx)
     {
         ApplyForces(ctx);
         Integrate();
         RelaxConstraints();
+        CaptureTerrainCoupledDistances();
         Collide(ctx);
+        RestoreCollisionDamagedStructure(ctx.Terrain);
         ReleaseSnags(ctx);
     }
 
@@ -151,6 +161,7 @@ public sealed class Body
         {
             c.HadContactLastTick = c.TerrainContact;
             c.TerrainContact = false;
+            c.ContactManifold.Clear();
             if (c.CollideWithTerrain)
             {
                 CollideChunk(c, ctx);
@@ -169,6 +180,7 @@ public sealed class Body
     private void CollideChunk(BodyChunk c, in TickContext ctx)
     {
         Vector3 gravity = ctx.GravityPerTick;
+        float terrainRadius = c.TerrainRadius;
         // down 取自重力方向而非硬编码 -Y：M3 换重力方向时支撑射线自动换向。
         Vector3 down = gravity.LengthSquared() > 1e-12f ? gravity.Normalized() : Vector3.Down;
 
@@ -177,30 +189,157 @@ public sealed class Body
         if (motionLen > 1e-6f)
         {
             Vector3 dir = motion / motionLen;
-            if (ctx.Terrain.Raycast(c.LastPos, c.Pos + dir * c.Radius, out TerrainHit hit1))
+            if (ctx.Terrain.Raycast(c.LastPos, c.Pos + dir * terrainRadius, out TerrainHit hit1))
             {
-                Resolve(c, hit1);
+                Resolve(c, hit1, terrainRadius);
             }
         }
 
-        if (ctx.Terrain.Raycast(c.Pos, c.Pos + down * (c.Radius + Skin), out TerrainHit hit2))
+        if (ctx.Terrain.Raycast(c.Pos, c.Pos + down * (terrainRadius + Skin), out TerrainHit hit2))
         {
-            Resolve(c, hit2);
+            Resolve(c, hit2, terrainRadius);
         }
 
         if (c.HadContactLastTick && c.ContactNormal.Dot(-down) < 0.99f
-            && ctx.Terrain.Raycast(c.Pos, c.Pos - c.ContactNormal * (c.Radius + Skin), out TerrainHit hit3))
+            && ctx.Terrain.Raycast(c.Pos, c.Pos - c.ContactNormal * (terrainRadius + Skin), out TerrainHit hit3))
         {
-            Resolve(c, hit3);
+            Resolve(c, hit3, terrainRadius);
         }
 
-        if (ctx.Terrain.SpherePenetration(c.Pos, c.Radius, out Vector3 pushDir, out float depth))
+        if (ctx.Terrain.SpherePenetration(c.Pos, terrainRadius, out Vector3 pushDir, out float depth))
         {
             c.Pos += pushDir * depth;
             SphereTerrain.RespondVelocity(pushDir, SurfaceFriction, ref c.Vel);
             c.TerrainContact = true;
             c.ContactNormal = pushDir;
+            c.ContactManifold.Add(pushDir);
         }
+
+    }
+
+    private void CaptureTerrainCoupledDistances()
+    {
+        if (!EnablePostCollisionStructureRecovery)
+        {
+            return;
+        }
+        if (_preCollisionDistances.Length != Connections.Count)
+        {
+            _preCollisionDistances = new float[Connections.Count];
+        }
+        for (int i = 0; i < Connections.Count; i++)
+        {
+            ChunkConnection conn = Connections[i];
+            if (conn.TerrainCoupled)
+            {
+                _preCollisionDistances[i] = (conn.B.Pos - conn.A.Pos).Length();
+            }
+        }
+    }
+
+    /// <summary>只恢复地形碰撞相对松弛末新增的脊柱违反，不再执行一遍完整约束：SoftOnly
+    /// 已在碰撞前按 Elasticity 生效，若按 RestLength 重推会把有效刚度翻倍并让 heavy 僵死。
+    /// 两端候选位移先投影到本 tick 接触可行锥；一端被墙地夹角锁住时，把剩余份额转给另一端。</summary>
+    private void RestoreCollisionDamagedStructure(ITerrainQuery terrain)
+    {
+        if (!EnablePostCollisionStructureRecovery)
+        {
+            return;
+        }
+        for (int i = 0; i < Connections.Count; i++)
+        {
+            ChunkConnection conn = Connections[i];
+            if (!conn.TerrainCoupled)
+            {
+                continue;
+            }
+
+            Vector3 delta = conn.B.Pos - conn.A.Pos;
+            float currentDistance = delta.Length();
+            float preDistance = _preCollisionDistances[i];
+            float preViolation = ConstraintViolation(conn, preDistance);
+            float currentViolation = ConstraintViolation(conn, currentDistance);
+            if (currentViolation <= preViolation + 1e-6f)
+            {
+                continue;
+            }
+
+            float targetDistance = conn.ConstraintMode switch
+            {
+                ChunkConnection.Mode.PushOnly => conn.RestLength - preViolation,
+                ChunkConnection.Mode.PullOnly => conn.RestLength + preViolation,
+                _ => preDistance,
+            };
+            float distanceError = currentDistance - targetDistance;
+            float maxCorrection = conn.RestLength * 0.1f;
+            distanceError = Mathf.Clamp(distanceError, -maxCorrection, maxCorrection);
+            if (Mathf.Abs(distanceError) < 1e-6f)
+            {
+                continue;
+            }
+
+            Vector3 dir = currentDistance < 1e-6f ? Vector3.Up : delta / currentDistance;
+            Vector3 moveA = FeasibleTerrainCorrection(conn.A,
+                dir * (distanceError * conn.WeightA), terrain);
+            Vector3 moveB = FeasibleTerrainCorrection(conn.B,
+                -dir * (distanceError * (1f - conn.WeightA)), terrain);
+
+            float desiredRelative = -distanceError;
+            float achievedRelative = (moveB - moveA).Dot(dir);
+            float remaining = desiredRelative - achievedRelative;
+            if (Mathf.Abs(remaining) > 1e-6f)
+            {
+                Vector3 candidateB = FeasibleTerrainCorrection(conn.B, moveB + dir * remaining, terrain);
+                Vector3 candidateA = FeasibleTerrainCorrection(conn.A, moveA - dir * remaining, terrain);
+                float effectB = (candidateB - moveB).Dot(dir);
+                float effectA = -(candidateA - moveA).Dot(dir);
+                float residualB = Mathf.Abs(remaining - effectB);
+                float residualA = Mathf.Abs(remaining - effectA);
+                if (residualB < Mathf.Abs(remaining) && residualB <= residualA)
+                {
+                    moveB = candidateB;
+                }
+                else if (residualA < Mathf.Abs(remaining))
+                {
+                    moveA = candidateA;
+                }
+            }
+
+            // ProjectDisplacement 是固定 8 遍的近似投影；再跑一次可继续收紧容差带内的
+            // 非正交半空间残差，并对微调后的终点重查地形。这里不是“分段相加后再验证”——
+            // moveA/moveB 的每个候选在上方都已按完整位移检查过。
+            moveA = FeasibleTerrainCorrection(conn.A, moveA, terrain);
+            moveB = FeasibleTerrainCorrection(conn.B, moveB, terrain);
+            conn.A.Pos += moveA;
+            conn.B.Pos += moveB;
+        }
+    }
+
+    /// <summary>把结构修正限制到已知接触可行锥，并用有效地形半径查询最终候选点。
+    /// 候选撞入本 tick 未收集到的邻面时保守拒绝；下一端的剩余份额转移仍有机会完成修正。</summary>
+    internal static Vector3 FeasibleTerrainCorrection(BodyChunk chunk, Vector3 displacement,
+        ITerrainQuery terrain)
+    {
+        displacement = chunk.ContactManifold.ProjectDisplacement(displacement);
+        if (displacement.LengthSquared() < 1e-12f)
+        {
+            return Vector3.Zero;
+        }
+        Vector3 candidate = chunk.Pos + displacement;
+        return terrain.SpherePenetration(candidate, chunk.TerrainRadius, out _, out _)
+            ? Vector3.Zero
+            : displacement;
+    }
+
+    private static float ConstraintViolation(ChunkConnection conn, float distance)
+    {
+        float err = distance - conn.RestLength;
+        return conn.ConstraintMode switch
+        {
+            ChunkConnection.Mode.PullOnly => Mathf.Max(0f, err),
+            ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -err),
+            _ => Mathf.Abs(err),
+        };
     }
 
     /// <summary>
@@ -237,6 +376,7 @@ public sealed class Body
             }
             conn.SnagTicks = 0;
             SnagReleases++;
+            conn.SnagReleases++;
 
             // WeightA 是 A 端的修正份额：份额小 = 惯性权威大 = 当锚（并列取 A，保确定性）。
             bool anchorIsA = conn.WeightA <= 0.5f;
@@ -248,7 +388,7 @@ public sealed class Body
             // 落点校验（终审 C3）：RestLength 大于「锚到墙面距离 + 半墙厚」时目标点可能已在
             // 地形内——MTD 会把它弹回墙的另一侧，卡链原样重建，形成 0.25s 周期的传送震荡。
             // 此时直接叠到锚点（≙ RW Reset 的 pos=connectedPos），下 tick 约束+碰撞自然铺开。
-            if (ctx.Terrain.SpherePenetration(target, mover.Radius, out _, out _))
+            if (ctx.Terrain.SpherePenetration(target, mover.TerrainRadius, out _, out _))
             {
                 target = anchor.Pos;
             }
@@ -262,12 +402,13 @@ public sealed class Body
     /// 解穿透 + 速度响应：法向速度清零（无反弹，雨世界手感）、切向乘 SurfaceFriction。
     /// 与硬约束不同，这里只推 Pos 不同步改 Vel——否则静息接触时反复注入向上速度产生抖动。
     /// </summary>
-    private void Resolve(BodyChunk c, in TerrainHit hit)
+    private void Resolve(BodyChunk c, in TerrainHit hit, float terrainRadius)
     {
-        if (SphereTerrain.Resolve(hit, c.Radius, SurfaceFriction, ref c.Pos, ref c.Vel, out Vector3 n))
+        if (SphereTerrain.Resolve(hit, terrainRadius, SurfaceFriction, ref c.Pos, ref c.Vel, out Vector3 n))
         {
             c.TerrainContact = true;
             c.ContactNormal = n;
+            c.ContactManifold.Add(n);
         }
     }
 }

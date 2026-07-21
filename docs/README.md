@@ -6,6 +6,7 @@
 |------|------|
 | [rainworld_procedural_animation_research.md](rainworld_procedural_animation_research.md) | **核心参考**：《雨世界》程序化生物动画/运动系统深度研究。含开发者一手资料、社区反编译整理，以及**本机反编译实证**（§11：`BodyPart`/`Limb`/`LizardLimb`/`TailSegment`/`TerrainCurve` 等真实实现，代码级）与 **Godot(C#) 移植策略**（§12：为什么用射线而不是细网格）。 |
 | [porting_contract.md](porting_contract.md) | **M5 产物**：`ProcAnim.Core` → `random-room-runtime` 回迁契约。模块清单与依赖面、装配/驱动/输入/输出四契约、`ITerrainQuery` 接缝语义（射线 + 球体穿透两原语）、宿主 tether 配方（`Shift`/`Launch`）、确定性守则与三层回归、两条迁移路线与两种集成姿态（含 60Hz 宿主累加器与 `MonsterMotionSnapshot` 映射表）、单位常量表。 |
+| [known_issue_three_chunk_turn_response.md](known_issue_three_chunk_turn_response.md) | **已知问题（暂缓）**：`heavy`/`hexapod` 行进中切换胡萝卜时，中段局部轴明显领先头段。含确定性复现、量化基线、远距胡萝卜假设、当前回归边界与未来验证/优化顺序。 |
 
 ## 快速定位（研究文档内锚点）
 

@@ -3,6 +3,8 @@
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
 > 当前状态：**M5 移植接口完成 + 外部评审修复轮（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`（TypeRef 边界扫描 + 无引擎冒烟双重解耦实证），回迁契约就位（[`docs/porting_contract.md`](docs/porting_contract.md)）。评审修复轮补齐：球体穿透碰撞语义（接缝第二原语）、卡链释放、输入死区/抓握/限速语义统一、宿主 Shift/Teleport/Launch 接线 API、断言化回归矩阵（`tools/run_matrix.sh`）。准确状态：**内核抽离完成 + 集成契约就位**；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
+>
+> 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
 
 ---
 
@@ -77,7 +79,7 @@
 >
 > **M4 产物**：手感全部收拢到一张品种参数表。
 > - `scripts/physics/BreedParams.cs`（≙ `LizardBreedParams` 运动子集）：字段名镜像 RW（`BodySizeFac`/`LimbSpeed`/`LimbQuickness`/`StepLength`/`LiftFeet`/`FeetDown`/`LegPairDisplacement`/`LimbGripDelay`/`SmoothenLegMovement`/`NoGripSpeed`/`TailSegments`/`TailStiffness`+`TailTipStiffness`（tailStiffnessDecline 的端点式）/`TailLengthFactor`），单位全部本项目制；`SpineSegments`/`LegPairs` 为 3D 扩展（RW 蜥蜴固定 2 锚 4 腿）。纯出生配置——工厂读表装配，内核运行时不回读、零行为分支。
-> - `BodyFactory`（≙ `LizardBreeds`）重写为通用装配器：脊柱 = N chunk 的 Rigid 链（头…中段…髋，`Walker` 构造改显式 head/hips 引用 + `SpineLength`）、腿对沿脊柱均匀分布锚定（相邻对出生错位相反 = 对角步态相位种子）、尾巴 = 渐细 PullOnly 链（WeightA 沿链递减）。四预设：**default**（M2~M3 调教的基线四腿，取值与旧硬编码逐位一致）、**heavy**（绿蜥系：3 节脊柱×1.2 体格、宽站距、硬长尾、`SmoothenLegMovement=false`）、**sprinter**（黄蜥系：0.85 体格快腿短尾）、**hexapod**（3 脊柱 3 腿对，RW 无对照）。沙盒数字键 1~4 现场换品种、`--breed=` 供无头回归。
+> - `BodyFactory`（≙ `LizardBreeds`）重写为通用装配器：脊柱 = N chunk 的 Rigid 链（头…中段…髋，`Walker` 构造改显式 head/hips/spineFollower 三点引用 + `HeadLinkLength`——2026-07 SpineFollower 修复轮改名，详见下方段落）、腿对沿脊柱均匀分布锚定（相邻对出生错位相反 = 对角步态相位种子）、尾巴 = 渐细 PullOnly 链（WeightA 沿链递减）。四预设：**default**（M2~M3 调教的基线四腿，取值与旧硬编码逐位一致）、**heavy**（绿蜥系：3 节脊柱×1.2 体格、宽站距、硬长尾、`SmoothenLegMovement=false`）、**sprinter**（黄蜥系：0.85 体格快腿短尾）、**hexapod**（3 脊柱 3 腿对；三锚六腿拓扑有 RW Caramel/SpitLizard 先例，3D 参数为本项目调教）。沙盒数字键 1~4 现场换品种、`--breed=` 供无头回归。
 > - **闲置休息姿态**（≙ RW `Limb.Mode.HuntRelativePosition`，清偿 M3 遗留）：连续 `IdleAfterTicks` 找不到落点且 RunSpeed≈0 → `IdlePose`，追逐目标每 tick 切「锚点沿支撑方向垂下、向本侧微撇」的休息位，脚垂回身侧；有输入立即恢复迈步。`HasGrip` 恒 false 不骗重力开关；有移动意图时整套逻辑休眠（默认路线哈希不变）。回归：`--route=stand --spawn=-6,3.7,0` 空降墙顶站桩，悬空侧双脚应 `idle=True` 收拢。
 > - **防折叠支柱**（≙ RW `Lizard.bodyChunkConnections[2]`，用户实测逼出来的）：距离约束链没有弯曲刚度——头-中、中-髋两条距离都满足时链条照样可 180° 对折，heavy 刚上墙时头会折到中段下面钻着爬。RW 蜥蜴的对策是第三条「头↔第三节」Push-only 连接：`RestLength = 节长×(1+bodyStiffnes)`，伸直（2 节长）永不触发、折叠低于下限才软推撑开 = 参数化的最大折角钳制。移植为 `BreedParams.BodyStiffness`（粉蜥 0.2/绿蜥 0.5/蓝蜥 0 直取 RW 品种表）+ 工厂对每对隔一节 chunk 加 `SoftOnly` PushOnly 连接（弹性走 RW 原公式 `1-Lerp(0.9,0.5,stiffness)`，Pos/Vel 同步修正 ≙ RW BodyChunkConnection.Update 原语义——只写 Vel 的弱推压不住抓地腿锚定的折叠）。`SoftOnly` 连接不进硬求解器、不计 `LastRelaxDeviation`、渲染不画线。指标 `maxFoldIntrusion`/`foldTicks` 进 [METRIC]：深折叠只剩落地瞬态（heavy wall 全程 56 tick 且分散在 3 次翻越里）。2 节脊柱无隔节对，default/sprinter 哈希不受影响。
 > - **调参教训（heavy 第一版近瘫的根因）**：腿慢（LimbSpeed 0.10）+ 步幅大（StepLength 0.85）+ 外撇远（0.7）三者叠加会让脚永远追不上身体，平均抓地 0.6/4 → 重力开关长期打开。腿参数必须留在可行域（速度 ≥0.12、步幅 ≤0.75）附近，「笨重感」交给脊柱节数/体格缩放/站距/尾巴刚度表达——它们不碰抓地循环。
@@ -90,6 +92,12 @@
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `Walker.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
+> **SpineFollower 修复（RotationChunk 轮后追加，2026-07；多节脊柱爬墙 V 形折叠 bug）**：`Walker.ApplyLocomotionForce` 原先让链尾 `Hips` 直接追「目标点身后一节」，偏移量取 `SpineLength`（= 脊柱**全长**，头到髋各连接 RestLength 之和）——两节脊柱（Head/Hips 相邻）时这恰好退化成正确语义，三节以上（heavy/hexapod）时中间节完全没有驱动力，两条独立刚性连接在「头到髋直线距离 < 脊柱全长」的欠约束自由度上被动折成 V 形，且抓稳后重力关闭，错误姿态可稳定维持（反编译 `Lizard.cs:2277-2280` 核实根因：RW 原版只用 `bodyChunkConnections[0].distance`——**单节**长度——驱动 `bodyChunks[1]`，链尾 `bodyChunks[2]` 从不被直接追踪，只靠连接约束被动拖行）。修复：新增 `Walker.SpineFollower`（≙ `bodyChunks[1]`，工厂钉定为 `chunks[1]`）与 `HeadLinkLength`（单节长度）承接这个追踪力，`Hips` 恢复纯被动拖行。两节脊柱下 `SpineFollower` 与 `Hips` 是同一 chunk 且 `HeadLinkLength` 数值与原 `SpineLength` 相同——`default`/`sprinter`/`wall`/`stand`/`carrot`/`embed`/`wallside` 七条矩阵配置与 smoke 哈希逐位不变（no-op 有数学证明，非仅回归验证）；`heavy`/`hexapod`（三节脊柱）换新基线：路点数 heavy 6→8、hexapod 8→9（同 2000 tick），官方巡逻路线下头-中-髋夹角由折叠态稳定 ~53° 回升到稳态 ~177°（转弯/翻越瞬态低至 116°~151°，但数百 tick 内自行回直，不再像修复前那样滞留）。
+>
+> **SpineFollower 修复轮二（外部评审追加，2026-07；历史红灯记录）**：该轮完成 `straightenOut` 的 RW 对齐（判轴/施力点切到 `SpineFollower`）、补齐多节脊柱 wall 组合与文档契约，并由真断言暴露 `wall-hexapod` 的 82 tick 持续折叠。轮二当时关于「单纯 Hips 被地面钉住」「hexapod 腿拓扑无 RW 先例」的归因随后被逐 tick 证据反证；以下轮三记录为当前结论与已落地修复。
+>
+> **SpineFollower 修复轮三（墙角残留深挖与修复，2026-07）**：上一段保留的是修复前红灯记录；逐 tick 重跑后纠正了三点误判：当前最长窗口实际从墙边 180° 掉头开始，不是单一「t1290-1372 髋部钉地」；腿粒子不向身体回传反力，不会直接钉住 Hips；RW Caramel/SpitLizard 本就有 chunk 0/1/2 三锚六腿拓扑。真实链路是「尾链跨墙卡链点火 + 平面 180° 掉头 + `misLocal` 沿目标轴促使头髋互穿 + 拉直力受低抓地衰减 + 约束修正被墙地碰撞覆盖」。修复分层落地：① `misTarget` 只做目标对齐，本地折叠改沿 Head-Hips 弦向撑开；输入反转追加绕 `SupportNormal` 的确定性侧向转身，零输入清旧意图；② 移植 RW `straightenOutNeeded` 跨 tick 记忆，并新增独立于头速的 `SpineCornerStuckTicks`，所有计数强度显式 clamp；③ 接触法线用固定容量 `ContactManifold3D` 收集，非正交法线固定迭代投影，卡角 ≥10 tick 时只恢复碰撞相对松弛末**新增**的 SoftOnly 支柱违反，最终候选再做 MTD 穿透校验，不重跑整套约束、不重复摩擦；④ 同阈值启用 RW 式 `TerrainSqueeze`（只缩 Hips 地形有效半径，1→0.05，下限 0.025m）；⑤ 回归不再用跨品种统一 `<100°` 假门槛，改查支柱实际违反，并拆出 `turn-hexapod`/`wall-turn-hexapod`/`wall-tail`/`wall-corner` 四个事件相对场景；墙面掉头恢复期间必须留在目标墙，尾链逐节释放按首释放起算整个 episode，墙角接触只认目标墙的正确朝向脊柱 chunk，不再误把 Step 侧面算墙。两节脊柱走显式 legacy 分支，default/sprinter/smoke 基线不受新恢复控制器影响。
+>
 > **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
@@ -98,22 +106,26 @@
 > ```bash
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
 > #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
-> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + TypeRef 边界扫描。
+> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + 深卡角/非正交接触边界 + TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
-> # ② Godot 全矩阵（分钟级）。12 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查），
-> #    pipefail + 退出码聚合，任何一项红 → 非零退出；结尾打 MATRIX GREEN/RED：
+> # ② Godot 全矩阵（分钟级）。20 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
+> #    防折叠支柱持续违反与事件相对恢复门），pipefail + 退出码聚合，任何一项红 → 非零退出；
+> #    结尾打 MATRIX GREEN/RED：
 > ./tools/run_matrix.sh [输出目录]
 > # 配置：default ×2（双跑 diff）、default 40Hz（时基不变性）、perturb（灵敏度：哈希必须变）、
-> #   wall（正面推墙翻越 ≥9）、stand（站桩+闲置姿态）、carrot（MoveTarget 路径点直喂通路）、
-> #   heavy/sprinter/hexapod（品种路线）、embed（出生嵌入 60 tick 必须脱困）、
-> #   wallside（贴墙擦边不得穿墙）。
+> #   wall（正面推墙翻越 ≥9）、wall-heavy/wall-hexapod（多节脊柱贴墙且分别 ≥7/≥9 路点）、
+> #   turn-hexapod（平地 180° 掉头）、wall-turn-hexapod（竖墙沿面掉头）、wall-tail（尾链释放后身体恢复）、
+> #   carrot-turn-heavy/carrot-turn-hexapod（行进中 External 胡萝卜侧转约 90°，量化中段领先）、
+> #   wall-corner（目标墙首次接触换面）、stand（站桩+闲置姿态）、
+> #   carrot（MoveTarget 路径点直喂通路）、heavy/sprinter/hexapod（品种默认巡逻路线）、
+> #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）。
 > # [RESULT] 在进程 teardown 之前打印；已知 Godot 4.7 macOS 偶发退场 mutex 崩溃（exit 134），
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
-> # 2000 tick 参考值（RotationChunk 轮后）：default 12 路点、wall 11 翻越、heavy 6 路点/抓地 1.75、
-> #   sprinter 17 路点、hexapod 8 路点/抓地 2.27/6、carrot 26 路点。
+> # 2000 tick 参考值（墙角修复轮后）：default 12 路点、wall 11 翻越、heavy 8 路点、
+> #   sprinter 17 路点、hexapod 11 路点、carrot 26 路点；wall-heavy 9、wall-hexapod 11。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。
