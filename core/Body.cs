@@ -96,25 +96,8 @@ public sealed class Body
             }
         }
 
-        LastRelaxDeviation = 0f;
-        foreach (ChunkConnection conn in Connections)
-        {
-            if (conn.SoftOnly)
-            {
-                continue; // 姿态弹簧不归硬求解器管，常态就有"距离误差"，不计入求解质量
-            }
-            float err = (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength;
-            float dev = conn.ConstraintMode switch
-            {
-                ChunkConnection.Mode.PullOnly => Mathf.Max(0f, err),
-                ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -err),
-                _ => Mathf.Abs(err),
-            };
-            if (dev > LastRelaxDeviation)
-            {
-                LastRelaxDeviation = dev;
-            }
-        }
+        // 松弛刚结束时的快照；碰撞之后要用 CurrentMaxDeviation() 再量一次才看得见破坏。
+        LastRelaxDeviation = CurrentMaxDeviation();
     }
 
     /// <summary>整体平移（宿主 teleport/rebase 用）：Pos/LastPos 同步移动，速度与约束状态
