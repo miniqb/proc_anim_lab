@@ -485,7 +485,11 @@ public partial class SandboxWorld : Node3D
             return;
         }
 
-        if (++_wallTurnPhaseTicks > 30)
+        // 与 carrot-turn 同一预算门：恢复观测要 ~20 tick（对齐+3 tick 稳定），窗口尾部
+        // 点火的掉头必然 pending 假红——相位运气曾让 400 tick 恰好放完 11 次（2026-07
+        // 拖尾点修复后相位前移即红）。预算不足时维持当前方向，断言保持严格。
+        bool hasRecoveryBudget = _determinismTicks <= 0 || _tick <= _determinismTicks - 45;
+        if (++_wallTurnPhaseTicks > 30 && hasRecoveryBudget)
         {
             _wallTurnPhaseTicks = 1;
             _wallTurnVertical = -_wallTurnVertical;

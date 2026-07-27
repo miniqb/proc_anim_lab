@@ -15,21 +15,21 @@ OUT="${1:-/private/tmp/proc_anim_matrix}"
 LOG=/private/tmp/godot_codex.log
 
 # —— 基线哈希（400Hz/2000tick；真相源两处之一，另一处是 smoke 的 ExpectedHash）——
-HASH_DEFAULT=2467A2B2D5511AF4
-HASH_WALL=62D10580D4B0FEE2
+HASH_DEFAULT=EE1CD7D5CB648C9B
+HASH_WALL=7A8169F9D9389F86
 HASH_STAND=D9F94BB9262BD2ED
-HASH_HEAVY=A127F27226F76368
-HASH_SPRINTER=168EC2C94EE347A7
-HASH_HEXAPOD=773BFBB10BC6AD9F
-HASH_CARROT=C8F0C6D87F99C21F
-HASH_WALL_HEAVY=1C6D77417CE629FB
-HASH_WALL_HEXAPOD=5F9912477B19D5AB
-HASH_TURN_HEXAPOD=CD0AD0BCD4CE2CB1
-HASH_WALL_TURN_HEXAPOD=56598F7E78961C11
-HASH_CARROT_TURN_HEAVY=EBEAB28E63458318
-HASH_CARROT_TURN_HEXAPOD=8314E80AD9F5B43C
-HASH_WALL_TAIL=113EC101D6F07EE1
-HASH_WALL_CORNER=A2CCCC6AF8B9A49B
+HASH_HEAVY=F1BC94197382DF1A
+HASH_SPRINTER=60BF6780B4011C22
+HASH_HEXAPOD=64E5409012F13C4E
+HASH_CARROT=F03E9DA79674A7C4
+HASH_WALL_HEAVY=8FE0128B30647C61
+HASH_WALL_HEXAPOD=793B258493A112DC
+HASH_TURN_HEXAPOD=82B5C4C4F123AA14
+HASH_WALL_TURN_HEXAPOD=66B57A14556701E7
+HASH_CARROT_TURN_HEAVY=F69571BC2104F78C
+HASH_CARROT_TURN_HEXAPOD=549C9830D4D98B8C
+HASH_WALL_TAIL=20B5CE11B5D0A817
+HASH_WALL_CORNER=DE4BD6E741B490E9
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -77,15 +77,15 @@ final_hash() { grep '^\[DET\]' "$OUT/$1.txt" | tail -1 | sed 's/.*hash=//'; }
 
 # 路点下限取当前参考值约 75~80%；小基数向紧取整（heavy 参考 8 → 下限 7），
 # 微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
-run default    "$HASH_DEFAULT"  10 2000 --tps=400
-run default-b  "$HASH_DEFAULT"  10 2000 --tps=400
-run default-40 "$HASH_DEFAULT"  10 2000
+run default    "$HASH_DEFAULT"  9  2000 --tps=400
+run default-b  "$HASH_DEFAULT"  9  2000 --tps=400
+run default-40 "$HASH_DEFAULT"  9  2000
 run perturb    -                6  2000 --tps=400 --perturb=0.001
-run wall       "$HASH_WALL"     9  2000 --tps=400 --route=wall --spawn=-4,0.5,0
+run wall       "$HASH_WALL"     11 2000 --tps=400 --route=wall --spawn=-4,0.5,0
 # 评审 P1 复现固化:三节脊柱贴墙——之前只有二节 default 跑过 wall 路线，heavy/hexapod
 # 从未在实际墙面几何下验证过姿态，讲白了矩阵曾经"绿"是因为压根没跑过这个组合。
 run wall-heavy   "$HASH_WALL_HEAVY"   7  2000 --tps=400 --route=wall --spawn=-4,0.5,0 --breed=heavy
-run wall-hexapod "$HASH_WALL_HEXAPOD" 9  2000 --tps=400 --route=wall --spawn=-4,0.5,0 --breed=hexapod
+run wall-hexapod "$HASH_WALL_HEXAPOD" 10 2000 --tps=400 --route=wall --spawn=-4,0.5,0 --breed=hexapod
 # 复合 wall 路线拆出的事件相对回归：平地/墙面 180° 掉头、尾链释放后恢复、首次目标墙换面。
 # 不依赖历史绝对 tick；[SCENARIO] 的覆盖与耗时均由 SandboxWorld 真断言。
 run turn-hexapod "$HASH_TURN_HEXAPOD" 12 800 --tps=400 --route=turn --spawn=0,0.5,5 --breed=hexapod
@@ -99,8 +99,8 @@ run wall-corner  "$HASH_WALL_CORNER"  - 180 --tps=400 --route=wall-corner --spaw
 run stand      "$HASH_STAND"    -  2000 --tps=400 --route=stand --spawn=-6,3.7,0
 run carrot     "$HASH_CARROT"   20 2000 --tps=400 --route=carrot
 run heavy      "$HASH_HEAVY"    7  2000 --tps=400 --breed=heavy
-run sprinter   "$HASH_SPRINTER" 14 2000 --tps=400 --breed=sprinter
-run hexapod    "$HASH_HEXAPOD"  8  2000 --tps=400 --breed=hexapod
+run sprinter   "$HASH_SPRINTER" 12 2000 --tps=400 --breed=sprinter
+run hexapod    "$HASH_HEXAPOD"  7  2000 --tps=400 --breed=hexapod
 # 评审复现固化:嵌入脱困（P1-3）与贴墙擦边（P1-2），位置断言在下方
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0

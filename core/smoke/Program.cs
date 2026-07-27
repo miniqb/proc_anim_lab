@@ -14,7 +14,7 @@ namespace ProcAnim.Core.Smoke;
 /// 纯解析平面地形 + default 品种平地巡走（前半直行、后半 45° 转向）。
 /// 断言：双跑 bit-exact、哈希对基线（防「确定但错误」）、里程过阈、终态约束收敛、
 /// 无 NaN、嵌入恢复、Shift 连续性、Launch 恢复、MoveTarget 直喂契约、
-/// 内核程序集引擎边界干净（TypeRef 扫描）。
+/// 墙顶顶死姿态稳定、内核程序集引擎边界干净（TypeRef 扫描）。
 /// </summary>
 internal static class Program
 {
@@ -26,7 +26,7 @@ internal static class Program
 
     /// <summary>基线哈希 = 内核行为的指纹。**只有有意改物理时才允许更新**（与 CLAUDE.md §5
     /// 的哈希表同步改）——只比双跑一致会漏掉「确定但错误」的行为漂移。</summary>
-    private const ulong ExpectedHash = 0x653886DEBB5B3F60UL;
+    private const ulong ExpectedHash = 0xAAA0E4963668E5DCUL;
 
     private static int Main()
     {
@@ -42,6 +42,7 @@ internal static class Program
         bool carrotOk = CheckExternalTarget(out string carrotMsg);
         bool rotationOk = CheckRotationTopology(out string rotationMsg);
         bool recoveryOk = CheckRecoveryInvariants(out string recoveryMsg);
+        bool wallPoseOk = CheckWallPoseStability(out string wallPoseMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -53,6 +54,7 @@ internal static class Program
         Console.WriteLine($"[CORE-CARROT] {carrotMsg}");
         Console.WriteLine($"[CORE-ROTATION] {rotationMsg}");
         Console.WriteLine($"[CORE-RECOVERY] {recoveryMsg}");
+        Console.WriteLine($"[CORE-WALL-POSE] {wallPoseMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -102,6 +104,10 @@ internal static class Program
         if (!recoveryOk)
         {
             reasons.Add("深卡角恢复边界失效（强度外推/接触可行锥/候选穿透）");
+        }
+        if (!wallPoseOk)
+        {
+            reasons.Add("墙顶顶死时髋部侧摆失稳或未回到头后方");
         }
 
         bool pass = reasons.Count == 0;
@@ -432,6 +438,79 @@ internal static class Program
         return bind && overwrite && degenerate && pinned;
     }
 
+    /// <summary>wall-pose 回归：墙+天花板把头顶死后，旧拖尾点会把 1cm 髋部侧扰动
+    /// 在约 40 tick 内放大到约 80°，并让身体持续横向滑移；无扰动对照也会把髋冻结在
+    /// 头侧。新拖尾点必须让两种场景都回到头后方。平面对称巡走测不到这个失稳，必须
+    /// 显式保留侧向种子。</summary>
+    private static bool CheckWallPoseStability(out string message)
+    {
+        (float MaxSide, float FinalSide, float FinalRelY, float Drift, bool Finite) seeded =
+            RunWallPose(seedSidePerturbation: true);
+        (float MaxSide, float FinalSide, float FinalRelY, float Drift, bool Finite) symmetric =
+            RunWallPose(seedSidePerturbation: false);
+
+        bool seededStable = seeded.Finite
+            && seeded.MaxSide <= 10f
+            && seeded.FinalSide <= 5f
+            && seeded.FinalRelY <= -0.15f
+            && seeded.Drift <= 0.10f;
+        bool symmetricStable = symmetric.Finite
+            && symmetric.MaxSide <= 5f
+            && symmetric.FinalSide <= 5f
+            && symmetric.FinalRelY <= -0.15f
+            && symmetric.Drift <= 0.05f;
+
+        message = $"1cm侧扰 max/final={seeded.MaxSide:F1}/{seeded.FinalSide:F1}deg，" +
+                  $"relY={seeded.FinalRelY:F3}m，横漂={seeded.Drift:F3}m，稳定={seededStable}；" +
+                  $"无扰动 max/final={symmetric.MaxSide:F1}/{symmetric.FinalSide:F1}deg，" +
+                  $"relY={symmetric.FinalRelY:F3}m，稳定={symmetricStable}";
+        return seededStable && symmetricStable;
+    }
+
+    private static (float MaxSide, float FinalSide, float FinalRelY, float Drift, bool Finite)
+        RunWallPose(bool seedSidePerturbation)
+    {
+        var terrain = new WallPoseTerrain(floorY: 0f, wallX: -5f, ceilingY: 3f);
+        Walker walker = BodyFactory.CreateWalker(
+            new Vector3(-4f, 0.6f, 0f), BodyFactory.Default());
+        var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+
+        float maxSide = 0f;
+        float finalSide = 0f;
+        float finalRelY = 0f;
+        float headZAtPerturbation = 0f;
+        bool finite = true;
+        for (long tick = 1; tick <= 900; tick++)
+        {
+            walker.MoveDir = Vector3.Left;
+            walker.RunSpeed = 1f;
+            if (tick == 260)
+            {
+                headZAtPerturbation = walker.Head.Pos.Z;
+                if (seedSidePerturbation)
+                {
+                    walker.Hips.Pos.Z += 0.01f;
+                }
+            }
+            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+
+            Vector3 relative = walker.Hips.Pos - walker.Head.Pos;
+            float side = Mathf.RadToDeg(MathF.Atan2(MathF.Abs(relative.Z), -relative.Y));
+            if (tick >= 260)
+            {
+                maxSide = Mathf.Max(maxSide, side);
+            }
+            finalSide = side;
+            finalRelY = relative.Y;
+            finite &= walker.Head.Pos.IsFinite() && walker.Head.Vel.IsFinite()
+                && walker.Hips.Pos.IsFinite() && walker.Hips.Vel.IsFinite()
+                && float.IsFinite(side);
+        }
+
+        float drift = Mathf.Abs(walker.Head.Pos.Z - headZAtPerturbation);
+        return (maxSide, finalSide, finalRelY, drift, finite);
+    }
+
     /// <summary>恢复控制器的极端边界：InverseLerp 必须饱和；非正交接触投影必须同时满足
     /// 全部半空间；候选位置不得写进未收集到的邻面；持续 650 tick 的人工卡角也不得让
     /// squeeze 越界或恢复速度随计数爆炸。正常路线永远到不了 600 tick，必须定向造状态。</summary>
@@ -583,6 +662,87 @@ internal static class Program
             pushDir = Vector3.Zero;
             depth = 0f;
             return false;
+        }
+    }
+
+    /// <summary>wall-pose 专用解析地形：地板 y≤floor、墙 x≤wall、天花板 y≥ceiling
+    /// 三个半空间的并集。提供 Raycast 的 HitFromInside 零法线与球体 MTD，复现墙顶内角。</summary>
+    private sealed class WallPoseTerrain : ITerrainQuery
+    {
+        private readonly float _floorY;
+        private readonly float _wallX;
+        private readonly float _ceilingY;
+
+        public WallPoseTerrain(float floorY, float wallX, float ceilingY)
+        {
+            _floorY = floorY;
+            _wallX = wallX;
+            _ceilingY = ceilingY;
+        }
+
+        private bool Inside(Vector3 point) =>
+            point.Y < _floorY || point.X < _wallX || point.Y > _ceilingY;
+
+        public bool Raycast(Vector3 from, Vector3 to, out TerrainHit hit)
+        {
+            hit = default;
+            if (Inside(from))
+            {
+                hit = new TerrainHit(from, Vector3.Zero, 1UL);
+                return true;
+            }
+
+            float best = float.MaxValue;
+            if (to.Y < _floorY)
+            {
+                float t = (from.Y - _floorY) / (from.Y - to.Y);
+                if (t is >= 0f and <= 1f && t < best)
+                {
+                    best = t;
+                    hit = new TerrainHit(from.Lerp(to, t), Vector3.Up, 1UL);
+                }
+            }
+            if (to.Y > _ceilingY)
+            {
+                float t = (_ceilingY - from.Y) / (to.Y - from.Y);
+                if (t is >= 0f and <= 1f && t < best)
+                {
+                    best = t;
+                    hit = new TerrainHit(from.Lerp(to, t), Vector3.Down, 2UL);
+                }
+            }
+            if (to.X < _wallX)
+            {
+                float t = (_wallX - from.X) / (to.X - from.X);
+                if (t is >= 0f and <= 1f && t < best)
+                {
+                    best = t;
+                    hit = new TerrainHit(from.Lerp(to, t), Vector3.Right, 3UL);
+                }
+            }
+            return best != float.MaxValue;
+        }
+
+        public bool SpherePenetration(Vector3 center, float radius, out Vector3 pushDir,
+            out float depth)
+        {
+            pushDir = Vector3.Up;
+            depth = _floorY - (center.Y - radius);
+
+            float wallDepth = radius - (center.X - _wallX);
+            if (wallDepth > depth)
+            {
+                pushDir = Vector3.Right;
+                depth = wallDepth;
+            }
+
+            float ceilingDepth = center.Y + radius - _ceilingY;
+            if (ceilingDepth > depth)
+            {
+                pushDir = Vector3.Down;
+                depth = ceilingDepth;
+            }
+            return depth > 0f;
         }
     }
 

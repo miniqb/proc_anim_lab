@@ -86,7 +86,7 @@
 >
 > **M5 产物**：内核抽离为独立程序集——回迁 = 拷走 `core/` 一个文件夹。
 > - `core/ProcAnim.Core.csproj`：内核 classlib（BodyChunk/ChunkConnection/Body/SphereTerrain/ITerrainQuery/TickContext/Limb/Walker/BreedParams/BodyFactory + DeterminismHasher/PlaneTerrainQuery），**只使用 GodotSharp NuGet 的纯托管数学结构**——不引 Godot.NET.Sdk（挡住场景树源生成器；注意 GodotSharp 包里 GD/Node 仍编译期可达，真正的强制是 smoke 的 TypeRef 边界扫描：允许清单 Vector3/Mathf 之外的 Godot.* 引用即回归 FAIL）。命名空间去 Lab 化：`ProcAnimLab.{Physics,Sandbox,Terrain}` → `ProcAnim.Core`。`core/godot/RaycastTerrainQuery.cs` 引擎适配器随文件夹走、归游戏程序集编译（游戏 csproj `Compile Remove core/**` 后单独 Include 它）。BodyFactory 进内核并去掉唯一 GD 调用（未知品种名静默回落 default）。
-> - `core/smoke/`：**无引擎冒烟回归**（纯 .NET console，`dotnet run --project core/smoke`，退出码判定）：解析平面地形（PlaneTerrainQuery，含 HitFromInside 零法线语义）+ default 平地巡走 1000 tick（直行+45° 转向进哈希），进程内双跑 bit-exact 且哈希钉死基线（值以 `core/smoke/Program.cs` 的 `ExpectedHash` 为唯一真相源）——「与引擎解耦」的运行时实证，也是回迁后目标仓库的秒级内核回归。评审修复轮追加断言：嵌入恢复、Shift 连续性、Launch 恢复、MoveTarget 到达/取消/传送契约、TypeRef 引擎边界扫描。哈希折叠下沉为内核 `DeterminismHasher`，沙盒探针与冒烟共用同一实现（两边哈希可互证）。
+> - `core/smoke/`：**无引擎冒烟回归**（纯 .NET console，`dotnet run --project core/smoke`，退出码判定）：解析平面地形（PlaneTerrainQuery，含 HitFromInside 零法线语义）+ default 平地巡走 1000 tick（直行+45° 转向进哈希），进程内双跑 bit-exact 且哈希钉死基线（值以 `core/smoke/Program.cs` 的 `ExpectedHash` 为唯一真相源）——「与引擎解耦」的运行时实证，也是回迁后目标仓库的秒级内核回归。评审修复轮追加断言：嵌入恢复、Shift 连续性、Launch 恢复、MoveTarget 到达/取消/传送契约、wall-pose 墙顶顶死+侧扰动稳定性、TypeRef 引擎边界扫描。哈希折叠下沉为内核 `DeterminismHasher`，沙盒探针与冒烟共用同一实现（两边哈希可互证）。
 > - **抽离质量门**：9 配置全矩阵（default 双跑/40vs400Hz/perturb、wall、stand、三品种）与抽离前基线**逐字节 diff 为空**——移动文件+改命名空间+程序集拆分+哈希器下沉，零行为漂移。
 > - [`docs/porting_contract.md`](docs/porting_contract.md)：回迁契约。模块清单与依赖面、装配（品种可行域表）/驱动（40 tick 固定序、60Hz 宿主 0.025s 累加器）/输入（MoveDir/RunSpeed 两旋钮 + MoveTarget 路径点直喂可选第三旋钮，≙ RW 寻路器喂路径格的原始形态）/输出（渲染与 AI 观测面）四契约、ITerrainQuery 接缝全语义（HitFromInside 零法线、主项目掩码层 20 + RID 排除规范、射线量级与节流阀门、Jolt 验证点）、确定性守则与三层回归、**两条迁移路线**（源码拷入 ≙ 主项目惯例 / 首个 ProjectReference）与**两种集成姿态**（规格 §4.3 可替换后端·身体拴权威根拖行 / 内核位置权威·根跟随，前者默认）。主项目对接面调研快照（单程序集 60Hz Jolt、motion 子系统 Gate-C 已过待接线、MonsterMotionSnapshot 映射表）沉淀于契约 §8。
 >
@@ -98,6 +98,8 @@
 >
 > **SpineFollower 修复轮三（墙角残留深挖与修复，2026-07）**：上一段保留的是修复前红灯记录；逐 tick 重跑后纠正了三点误判：当前最长窗口实际从墙边 180° 掉头开始，不是单一「t1290-1372 髋部钉地」；腿粒子不向身体回传反力，不会直接钉住 Hips；RW Caramel/SpitLizard 本就有 chunk 0/1/2 三锚六腿拓扑。真实链路是「尾链跨墙卡链点火 + 平面 180° 掉头 + `misLocal` 沿目标轴促使头髋互穿 + 拉直力受低抓地衰减 + 约束修正被墙地碰撞覆盖」。修复分层落地：① `misTarget` 只做目标对齐，本地折叠改沿 Head-Hips 弦向撑开；输入反转追加绕 `SupportNormal` 的确定性侧向转身，零输入清旧意图；② 移植 RW `straightenOutNeeded` 跨 tick 记忆，并新增独立于头速的 `SpineCornerStuckTicks`，所有计数强度显式 clamp；③ 接触法线用固定容量 `ContactManifold3D` 收集，非正交法线固定迭代投影，卡角 ≥10 tick 时只恢复碰撞相对松弛末**新增**的 SoftOnly 支柱违反，最终候选再做 MTD 穿透校验，不重跑整套约束、不重复摩擦；④ 同阈值启用 RW 式 `TerrainSqueeze`（只缩 Hips 地形有效半径，1→0.05，下限 0.025m）；⑤ 回归不再用跨品种统一 `<100°` 假门槛，改查支柱实际违反，并拆出 `turn-hexapod`/`wall-turn-hexapod`/`wall-tail`/`wall-corner` 四个事件相对场景；墙面掉头恢复期间必须留在目标墙，尾链逐节释放按首释放起算整个 episode，墙角接触只认目标墙的正确朝向脊柱 chunk，不再误把 Step 侧面算墙。两节脊柱走显式 legacy 分支，default/sprinter/smoke 基线不受新恢复控制器影响。
 >
+> **拖尾点失稳修复（wall-pose，2026-07）**：症状 = 上墙后髋不贴墙水平悬空、顶死推墙时髋摆到正侧方 ~80° 锁死成横向滑移步态（无引擎复现场景：顶死 + 1cm 侧向种子 40 tick 指数发散；顶死无种子则水平悬空姿态无限期冻结）。根因 = 推进拖尾点 `target + Dir(target→Head)×节长` 在 LookAhead(0.5) > 节长(0.3) 时**恒在头前 ~0.2m**：follower 注入是方向性定幅（不随距离缩放），刚性连接把 follower 锁在头周围一节长球面上，吸引子在球面内前侧 → 稳定平衡位是「髋在头前」，我们要的拖尾位是反平衡点，只靠头部运动的拖行（~v/L，满速时约失稳泵 3 倍）压制——头一顶死失稳泵独大。修复 = 拖尾点挪到头后：`Head + Dir(target→Head)×半节长`（吸引子挪进球面内背离目标侧，拖尾位变成稳定极点；系数不取 1.0 防 Dir 两点重合退化）。顶死时髋自行垂回拖尾位，正常拖尾姿态下 followerDir 几乎不变：平地 smoke 走距仅 -1.4%，wall 翻越 11→14、wall-hexapod 11→13 反升，default/sprinter/hexapod/carrot 路点同量级微降（新参考值见上方矩阵注释）。stand/embed/wallside 无移动意图不触推进力，哈希不变。同轮把 wall-turn 场景补上 carrot-turn 同款 45 tick 恢复预算门（修复后爬墙相位前移，第 11 次掉头挤进窗口尾部形成 pending 假红；墙顶棱线附近的 7 tick 离墙观测为髋搭上墙顶的过渡瞬态，非失稳），并把顶死+1cm 侧扰动与无扰动对照固化为 smoke `[CORE-WALL-POSE]` 真断言。复现中确认的两个次级问题（Fallback 胡萝卜可达性校验、站稳态雕像化）未修，独立成后续工作。
+>
 > **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
@@ -106,7 +108,8 @@
 > ```bash
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
 > #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
-> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + 深卡角/非正交接触边界 + TypeRef 边界扫描。
+> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
+> #    深卡角/非正交接触边界 + TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
 > # ② Godot 全矩阵（分钟级）。20 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
@@ -124,8 +127,8 @@
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
-> # 2000 tick 参考值（墙角修复轮后）：default 12 路点、wall 11 翻越、heavy 8 路点、
-> #   sprinter 17 路点、hexapod 11 路点、carrot 26 路点；wall-heavy 9、wall-hexapod 11。
+> # 2000 tick 参考值（拖尾点失稳修复轮后）：default 11 路点、wall 14 翻越、heavy 8 路点、
+> #   sprinter 15 路点、hexapod 9 路点、carrot 25 路点；wall-heavy 9、wall-hexapod 13。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。

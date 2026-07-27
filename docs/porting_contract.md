@@ -326,7 +326,7 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 #    双跑 bit-exact + 哈希对基线（钉死在 Program.cs 的 ExpectedHash，防「确定但错误」）
 #    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + Launch 恢复
 #    + MoveTarget 到达/取消/传送契约 + RotationChunk 拓扑（互绑/覆盖/钉定/尾链/退化语义）
-#    + TypeRef 引擎边界扫描。
+#    + wall-pose 墙顶顶死+侧扰动稳定性 + TypeRef 引擎边界扫描。
 dotnet run --project core/smoke
 
 # ② Godot 全矩阵（分钟级；改物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +

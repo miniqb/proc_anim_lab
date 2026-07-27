@@ -57,8 +57,8 @@ public sealed class Walker
 	public readonly BodyChunk SpineFollower;
 
 	/// <summary>头到 <see cref="SpineFollower"/> 的连接静止长度（米，≙ RW
-	/// bodyChunkConnections[0].distance）：推进拖尾点在目标身后这个距离——只算头到紧邻
-	/// 下一节的单节长度，不是脊柱全长。</summary>
+	/// bodyChunkConnections[0].distance）：只算头到紧邻下一节的单节长度，不是脊柱全长。
+	/// 推进拖尾点取头后（背离目标侧）此长度之半——见 ApplyLocomotionForce 内注释。</summary>
 	public float HeadLinkLength = 0.3f;
 
 	/// <summary>移动意图方向（单位向量或零向量）。由输入/AI 每 tick 写入；
@@ -404,7 +404,8 @@ public sealed class Walker
 
 	/// <summary>
 	/// 推进力（≙ Lizard.FollowConnection）：头朝目标点、SpineFollower（脊柱头后紧邻一节）朝
-	/// 「目标点身后一节」，双点施力让身体前段沿移动方向拉直；链尾（Hips）不直接受力，
+	/// 「头后（背离目标侧）半节长」的拖尾点，双点施力让身体前段沿移动方向拉直；
+	/// 链尾（Hips）不直接受力，
 	/// 靠连接约束被动拖行（≙ RW bodyChunks[2] 从不直接追 FollowConnection 目标——多节脊柱下
 	/// 若改成直接拖链尾，中间节无驱动力，两条独立刚性连接会在欠约束的自由度上折成 V 形）。
 	/// 力按抓地腿数缩放——腿是引擎。
@@ -440,7 +441,15 @@ public sealed class Walker
 			Head.Vel += (target - Head.Pos) * CrestCentering;
 		}
 
-		Vector3 trail = target + Dir(target, Head.Pos) * HeadLinkLength;
+		// 拖尾点必须在头的「背离目标」一侧：follower 的注入是方向性定幅（不随距离缩放），
+		// 且刚性连接把 follower 锁在头周围一节长的球面上——吸引子落在球面内哪一侧，哪一侧
+		// 的极点就是稳定平衡。旧式 target + Dir(target→Head)·节长 在 LookAhead(0.5) > 节长(0.3)
+		// 时恒在头前 ~0.2m：稳定位变成「髋在头前」，我们要的拖尾位是反平衡点，只靠头的运动
+		// 拖行（~v/L）压制；头一顶死（墙角/顶死换步窗口）失稳泵独大，1cm 侧偏 40 tick 指数
+		// 摆到 ~80° 并锁死成横向滑移步态（wall_pose 失稳，2026-07）。挪到头后半节长：顶死时
+		// 髋自己垂回拖尾位，正常拖尾姿态下 followerDir 几乎不变。系数不取 1.0——那会让拖尾
+		// 点恰落在 follower 静息位上，两点重合时 Dir 退化回固定 Up。
+		Vector3 trail = Head.Pos + Dir(target, Head.Pos) * (HeadLinkLength * 0.5f);
 		Vector3 followerDir = Dir(SpineFollower.Pos, trail);
 		// 身体折叠（follower 看目标与看拖尾点方向相反）时衰减力，防止两点对拉（≙ RW 的 dot LerpMap）。
 		float fold = Mathf.Remap(Dir(SpineFollower.Pos, target).Dot(followerDir), -1f, 1f, 0.5f, 1f);
