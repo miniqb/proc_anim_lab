@@ -49,7 +49,7 @@ public sealed class BodyChunk
     /// 退化语义照抄 RW：无参照 → Up（RW null 显式回落 (0,1)）；两点近重合 → **零向量**
     /// （Unity normalized 原语义，阈值取 Unity kEpsilon：模长 ≤ 1e-5 即归零——放宽到这里
     /// 才不会把近折叠时 1e-6~1e-5 的数值噪声放大成乱摆的单位方向）——消费端自行回退
-    /// （Walker.TickLimbs 回退整体轴；翻转会把非零回退值翻成反向，零向量不会）。</summary>
+    /// （LizardLocomotionController.TickLimbs 回退整体轴；翻转会把非零回退值翻成反向，零向量不会）。</summary>
     public Vector3 Rotation
     {
         get

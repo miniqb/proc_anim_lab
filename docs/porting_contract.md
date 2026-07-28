@@ -12,7 +12,7 @@
 1. **拷 `core/` 一个文件夹**进主项目（两条路线见 §8.2；命名空间归化 = 一次 sed）。
 2. **按主项目射线规范实现 `ITerrainQuery`**（§6 有对照模板；`core/godot/RaycastTerrainQuery.cs`
    是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
-3. **宿主 tick 里装 0.025s 累加器**驱动 `Walker.Tick`，渲染读 `LerpPos(插值分数)`（§3）；
+3. **宿主 tick 里装 0.025s 累加器**驱动 `LizardLocomotionController.Tick`，渲染读 `LerpPos(插值分数)`（§3）；
    回归先跑 `core/smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
@@ -29,7 +29,7 @@
 | `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
 | `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
 | `Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
-| `Walker.cs` | 行走驱动：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
+| `LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
 | `BreedParams.cs` | 品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
 | `BodyFactory.cs` | 通用装配器 + 四预设（default/heavy/sprinter/hexapod） | LizardBreeds |
 | `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
@@ -61,7 +61,7 @@
 
 ```csharp
 BreedParams p = BodyFactory.Heavy();            // 或 Default/Sprinter/Hexapod/ByName(name)
-Walker walker = BodyFactory.CreateWalker(origin, p);
+LizardLocomotionController controller = BodyFactory.CreateLizardController(origin, p);
 ```
 
 - `BreedParams` 是**纯出生配置**：工厂读表装配，内核运行时不回读、零行为分支。
@@ -75,15 +75,15 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
   后建覆盖）；工厂装配完**显式钉定**脊柱——头参照髋（`Rotation` = 头髋长基线 = 全身轴前向）、
   中段参照后一节（真·本段轴；3 节脊柱时后一节即髋 ≙ RW 中→髋，四节以上仍是相邻段——
   统一指髋会退化成跨关节长弦）、
-  髋参照头（指向后方，`Walker.TickLimbs` 翻转，≙ RW LizardLimb `connection.index==2` 补偿）。
+  髋参照头（指向后方，`LizardLocomotionController.TickLimbs` 翻转，≙ RW LizardLimb `connection.index==2` 补偿）。
   腿的每锚点步进方向由此导出：头/髋锚 = 脊柱长基线轴，中段锚（hexapod 中腿对）= 本段朝向。
   钉定不走建链顺序的巧合（RW Lizard 的 头→髋 是防折叠连接恰好最后建的副产物，我们显式化，
   仿 RW Deer 构造后重申指向的先例）。
-- **推进追踪点不变量**（`Walker` 构造契约，2026-07 追加）：构造函数签名是
-  `Walker(body, head, hips, spineFollower)`——`spineFollower` 必须是脊柱链紧邻头部的下一节
+- **推进追踪点不变量**（`LizardLocomotionController` 构造契约，2026-07 追加）：构造函数签名是
+  `LizardLocomotionController(body, head, hips, spineFollower)`——`spineFollower` 必须是脊柱链紧邻头部的下一节
   （≙ RW `bodyChunks[1]`；`BodyFactory` 固定传 `chunks[1]`；spine=2 时与 `hips` 是同一 chunk）。
-  配套 `Walker.HeadLinkLength` 必须是头到 `spineFollower` 这一条连接的静止长度（单节，不是
-  脊柱全长）。`Walker.ApplyLocomotionForce` 只主动驱动 `Head`/`SpineFollower` 两点，链尾
+  配套 `LizardLocomotionController.HeadLinkLength` 必须是头到 `spineFollower` 这一条连接的静止长度（单节，不是
+  脊柱全长）。`LizardLocomotionController.ApplyLocomotionForce` 只主动驱动 `Head`/`SpineFollower` 两点，链尾
   `Hips`（spine≥3 时）永远被动拖行只挨 `ChunkConnection` 约束——宿主手动装配身体（不经
   `BodyFactory`）必须遵守同一约束，否则多节脊柱会在头到髋的欠约束自由度上折叠成 V 形
   （反编译 `Lizard.cs:2277-2293` 核实：RW 原版同样只驱动 `bodyChunks[0]`/`[1]`，`bodyChunks[2]`
@@ -133,11 +133,11 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
 - 每 tick 固定顺序：
   ```csharp
   terrain.Bind(space);                        // 仅 Godot 适配器需要（物理帧内合法）
-  walker.MoveDir = …; walker.RunSpeed = …;    // 输入（§4；也可改写 MoveTarget）
+  controller.MoveDir = …; controller.RunSpeed = …;    // 输入（§4；也可改写 MoveTarget）
   chunk.Vel += …;                             // 可选：外力（拖拽/击退），只许写 Vel
-  walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+  controller.Tick(new TickContext(gravityPerTick, terrain, tick));
   ```
-- `Walker.Tick` 内部序（勿拆开自driving，锚定 ≙ RW 帧序）：
+- `LizardLocomotionController.Tick` 内部序（勿拆开自driving，锚定 ≙ RW 帧序）：
   站稳判定/重力开关 → 输入反转检测 → 推进力/持久拉直 → terrainSqueeze 门控 →
   `Body.Tick`（受力→积分→约束→碰撞→卡角结构恢复→卡链释放）→ 头速顶死计数 + 局部卡角计数
   → 腿 → 支撑法线更新 → 持久拉直需求衰减。
@@ -167,17 +167,17 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 
 ### 3.4 出生 / 传送 / 冲量
 
-- 出生 = `CreateWalker(origin, p)`（沙盒热切换品种即整体替换）。
-- **rebase = `Walker.Shift(delta)`**：整体平移，速度/抓握/站稳状态**原样保留**——
+- 出生 = `CreateLizardController(origin, p)`（沙盒热切换品种即整体替换）。
+- **rebase = `LizardLocomotionController.Shift(delta)`**：整体平移，速度/抓握/站稳状态**原样保留**——
   只适用于「地形随你一起平移」的场景（浮点原点重置、整个世界搬家）。不要手写逐字段
   平移：漏掉 `LastPos` 会让运动扫掠射线扫过整张地图，漏掉 `HuntPos` 会让脚飞回旧落点，
   漏掉世界系 `MoveTarget` 会让身体转头追旧原点。`LastMoveTarget` 观测量也同步平移
   （smoke 的 [CORE-SHIFT] 逐字段精确断言钉死了这份完备性）。
-- **瞬移/复位/换房 = `Walker.Teleport(delta)`**：Shift + 全腿强制松手 + 站稳清零——
+- **瞬移/复位/换房 = `LizardLocomotionController.Teleport(delta)`**：Shift + 全腿强制松手 + 站稳清零——
   地形不动时旧抓握点在新位置是空气，保留它们会悬空关重力永久漂浮；旧 `MoveTarget`
   也不再满足「邻近可达点」契约，因此 Teleport 会清 null，宿主须按新位置重喂。
   落地后步态自动重建。
-- **跳跃/击飞 = `Walker.Launch(velPerTick)`**：全 chunk 加同一速度增量，全腿强制松手、
+- **跳跃/击飞 = `LizardLocomotionController.Launch(velPerTick)`**：全 chunk 加同一速度增量，全腿强制松手、
   站稳计数清零——重力当 tick 回归，身体进入弹道，落地后 plant-and-trail 自动恢复
   （smoke 的 [CORE-LAUNCH] 断言覆盖；沙盒 `--yank` 是它的场景版）。Teleport/Launch 都会
   清 `StraightenOutNeeded`/`SpineCornerStuckTicks`/`MaxSpineCornerStuckTicks`/转身辅助（含手性历史），
@@ -189,13 +189,13 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 
 | 输入 | 类型/域 | 语义 |
 |------|---------|------|
-| `Walker.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时，并切断 180° 转身的旧方向历史）。`MoveTarget` 非 null 时由内核在该 tick **临时导出覆盖**，tick 末清零，不冒充下一 tick 的宿主方向。 |
-| `Walker.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。两种驱动模式共用（油门始终归宿主）。 |
-| `Walker.MoveTarget` | `Vector3?`，默认 null | **可选第三旋钮：路径点直喂**（≙ RW 寻路器给 FollowConnection 的下一路径格中心——RW 的原始形态）。非 null 时进入直喂模式：MoveDir 由内核导出（头→点方向，撞墙仍走重定向涌现）；到点基准是喂点沿 `SupportNormal` 抬 `RideHeight`，实际推进胡萝卜**跳过射线构造**，意图顶住支撑面时会沿面旋转，因此重定向窗口里不一定与到点基准重合。External 模式始终没有方向驱动在棱边/悬崖处的 Fallback 空中退化分支。**契约**：喂点必须是**邻近的可达路径点**（导航网格/路径采样贴地；与头之间无墙阻隔——隔墙远点 RW 同样走不过去）；喂点与换点节奏归宿主（≙ 寻路器逐格递进），`AtMoveTarget` 到达即换下一点或清 null（到点即视为无意图，停下/闲置涌现）。`Shift` 随世界平移它；`Teleport` 作废并清 null。 |
-| `Walker.MoveTargetArriveRadius` | 米，默认 0.4 | 直喂模式到点判定半径（头到到点基准「喂点+法线抬升」的 3D 距离）。按寻路格距/路径点密度调。 |
-| `Walker.Shift(delta)` | 方法 | rebase：地形随体平移时用（§3.4）。 |
-| `Walker.Teleport(delta)` | 方法 | 瞬移：地形不动时用（Shift + 松手 + 站稳清零 + 清 `MoveTarget`，§3.4）。 |
-| `Walker.Launch(velPerTick)` | 方法 | 跳跃/击飞冲量（§3.4）。 |
+| `LizardLocomotionController.MoveDir` | 世界系单位向量或零 | 移动**意图**方向。给 XZ 平面意图即可：撞墙/上坡时被支撑系自动重定向为沿面上爬（走/爬无模式键）。零 = 无意图（触发闲置姿态计时，并切断 180° 转身的旧方向历史）。`MoveTarget` 非 null 时由内核在该 tick **临时导出覆盖**，tick 末清零，不冒充下一 tick 的宿主方向。 |
+| `LizardLocomotionController.RunSpeed` | [0,1] | 意图强度（≙ AI.runSpeed）。**统一死区 `MoveIntentDeadzone = 0.1`**：≤0.1 时推进/步态/顶死检测/闲置退出全部视为零输入——不存在「推着走但腿不迈」的半激活带。有效输入域实为 {0} ∪ (0.1, 1]。两种驱动模式共用（油门始终归宿主）。 |
+| `LizardLocomotionController.MoveTarget` | `Vector3?`，默认 null | **可选第三旋钮：路径点直喂**（≙ RW 寻路器给 FollowConnection 的下一路径格中心——RW 的原始形态）。非 null 时进入直喂模式：MoveDir 由内核导出（头→点方向，撞墙仍走重定向涌现）；到点基准是喂点沿 `SupportNormal` 抬 `RideHeight`，实际推进胡萝卜**跳过射线构造**，意图顶住支撑面时会沿面旋转，因此重定向窗口里不一定与到点基准重合。External 模式始终没有方向驱动在棱边/悬崖处的 Fallback 空中退化分支。**契约**：喂点必须是**邻近的可达路径点**（导航网格/路径采样贴地；与头之间无墙阻隔——隔墙远点 RW 同样走不过去）；喂点与换点节奏归宿主（≙ 寻路器逐格递进），`AtMoveTarget` 到达即换下一点或清 null（到点即视为无意图，停下/闲置涌现）。`Shift` 随世界平移它；`Teleport` 作废并清 null。 |
+| `LizardLocomotionController.MoveTargetArriveRadius` | 米，默认 0.4 | 直喂模式到点判定半径（头到到点基准「喂点+法线抬升」的 3D 距离）。按寻路格距/路径点密度调。 |
+| `LizardLocomotionController.Shift(delta)` | 方法 | rebase：地形随体平移时用（§3.4）。 |
+| `LizardLocomotionController.Teleport(delta)` | 方法 | 瞬移：地形不动时用（Shift + 松手 + 站稳清零 + 清 `MoveTarget`，§3.4）。 |
+| `LizardLocomotionController.Launch(velPerTick)` | 方法 | 跳跃/击飞冲量（§3.4）。 |
 
 - 每 tick 写入（不写则保持上次值——AI 决策频率可以低于 tick 频率）。
 - **两种驱动模式怎么选**：宿主有寻路器/贴地路径点 → 用 `MoveTarget` 直喂（到点基准贴地、
@@ -239,13 +239,13 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 |------|------|
 | `Body.Chunks[i].LerpPos(t)` / `.Radius` | 身体球体 |
 | `Body.Connections`（跳过 `SoftOnly`） | 骨架连线（防折叠支柱是姿态弹簧，不是骨头，不画） |
-| `Walker.ApplyGravity` | 身体色：true 红=坠落 / false 青=抓稳（站/爬涌现态的唯一可视开关） |
+| `LizardLocomotionController.ApplyGravity` | 身体色：true 红=坠落 / false 青=抓稳（站/爬涌现态的唯一可视开关） |
 | `Limb.LerpPos(t)` / `.Radius` / `.Anchor` | 脚球 + 腿线 |
 | `Limb.Gripping` / `.ReachingForTerrain` / `.IdlePose` | 脚色：绿=抓稳推进 / 橙=迈步找落点 / 灰蓝=摆动或闲置 |
 
 ### 5.2 AI / 游戏逻辑可读
 
-`Walker.LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
+`LizardLocomotionController.LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
 （支撑面法线：平地≈上、爬墙≈墙法线——可判「正在爬墙」）、`StallTicks`（顶死程度）、
 `StraightenOutNeeded` / `SpineCornerStuckTicks` / `MaxSpineCornerStuckTicks`（姿态恢复需求、
 局部髋部卡角与本次恢复生命周期峰值；Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
@@ -291,7 +291,7 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
    无接触）——球形碰撞的承诺由这条原语兜底，砍掉它 = 回到评审 P1-2/P1-3 的坑。
 4. **radius 是当 tick 的地形有效半径**：正常等于 `BodyChunk.Radius`；局部卡角触发
    `TerrainSqueeze` 时可缩小，但不得低于 0.025m。运动扫掠延长、Body 的重力/旧法线探针、
-   `Walker.UpdateFooting` 的髋部近地宽限探针、`SphereTerrain.Resolve` 与 `SpherePenetration`
+   `LizardLocomotionController.UpdateFooting` 的髋部近地宽限探针、`SphereTerrain.Resolve` 与 `SpherePenetration`
    必须统一使用它；正式半径、约束和渲染不变。
 5. **只打「可站立的静态地形」**：不含生物自身、道具、门等动态物。
    - 本仓库：碰撞掩码层 1（白盒全在层 1）。
@@ -411,8 +411,8 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 | `Speed01` | `RunSpeed` |
 | `LookDirection` | 不进内核（头部朝向属渲染层修饰） |
 | `Grounded=false`（走空/坠落） | 放空输入即可（重力开关自然坠落，落地自恢复） |
-| 跳跃/击飞/弹射事件 | `Walker.Launch(冲量)`——只放空输入不会给向上冲量（§4.1） |
-| 根瞬移/复位/换房 | `Walker.Teleport(rootDelta)`（§4.1；Shift 仅用于地形随体平移的 rebase） |
+| 跳跃/击飞/弹射事件 | `LizardLocomotionController.Launch(冲量)`——只放空输入不会给向上冲量（§4.1） |
+| 根瞬移/复位/换房 | `LizardLocomotionController.Teleport(rootDelta)`（§4.1；Shift 仅用于地形随体平移的 rebase） |
 | `VariantSeed` | 出生时微调 `BreedParams`（纯装配期，运行时仍零随机） |
 | `Mode`/`Alertness`/`Health01` | 映射到品种/`RunSpeed` 上限等出生或输入参数 |
 
@@ -441,4 +441,4 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 | 时基 | 40 tick/s，dt = 0.025 s（仅存在于宿主换算层，内核不见 dt） |
 | 重力 | 默认 36 m/s²（≙ RW 0.9px/tick²）→ `gravityPerTick = 36×0.025² = 0.0225` |
 | 基准体 | 头 0.20m / 髋 0.25m / 脊柱节长 0.3m / 腿长 0.55m / 脚 0.06m / 尾节 0.15m（缩放因子全 1 时） |
-| 摩擦双档 | 抓稳 0.8/0.5、坠落 0.999/0.3（AirFriction/SurfaceFriction，数值直取 RW，Walker 按重力开关切换） |
+| 摩擦双档 | 抓稳 0.8/0.5、坠落 0.999/0.3（AirFriction/SurfaceFriction，数值直取 RW，LizardLocomotionController 按重力开关切换） |

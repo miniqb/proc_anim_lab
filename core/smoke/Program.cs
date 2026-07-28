@@ -126,43 +126,43 @@ internal static class Program
     private static (ulong, float, float, float, bool, float) Run()
     {
         var terrain = new PlaneTerrainQuery(0f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
         var hasher = new DeterminismHasher();
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
 
         float walk = 0f;
         long gripSum = 0;
-        Vector3 lastHead = walker.Head.Pos;
+        Vector3 lastHead = controller.Head.Pos;
         for (long tick = 1; tick <= Ticks; tick++)
         {
             // 脚本化路线：把「直行步态」与「转弯换步」都纳入哈希。
-            walker.MoveDir = tick <= Ticks / 2
+            controller.MoveDir = tick <= Ticks / 2
                 ? new Vector3(1f, 0f, 0f)
                 : new Vector3(1f, 0f, 1f).Normalized();
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, tick));
 
-            hasher.FoldBody(walker.Body);
-            hasher.FoldLimbs(walker.Limbs);
+            hasher.FoldBody(controller.Body);
+            hasher.FoldLimbs(controller.Limbs);
 
-            Vector3 step = walker.Head.Pos - lastHead;
+            Vector3 step = controller.Head.Pos - lastHead;
             step.Y = 0f;
             walk += step.Length();
-            lastHead = walker.Head.Pos;
-            gripSum += walker.LegsGripping;
+            lastHead = controller.Head.Pos;
+            gripSum += controller.LegsGripping;
         }
 
         bool nan = false;
-        foreach (BodyChunk c in walker.Body.Chunks)
+        foreach (BodyChunk c in controller.Body.Chunks)
         {
             nan |= !c.Pos.IsFinite();
         }
-        foreach (Limb l in walker.Limbs)
+        foreach (Limb l in controller.Limbs)
         {
             nan |= !l.Pos.IsFinite();
         }
         return (hasher.Value, walk, (float)gripSum / Ticks, (float)terrain.RayCount / Ticks,
-            nan, walker.Body.CurrentMaxDeviation());
+            nan, controller.Body.CurrentMaxDeviation());
     }
 
     /// <summary>
@@ -172,16 +172,16 @@ internal static class Program
     private static bool CheckEmbedRecovery(out string message)
     {
         var terrain = new PlaneTerrainQuery(0f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, -0.1f, 0f), BodyFactory.Default());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(0f, -0.1f, 0f), BodyFactory.Default());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         for (long tick = 1; tick <= 50; tick++)
         {
-            walker.MoveDir = Vector3.Zero;
-            walker.RunSpeed = 0f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+            controller.MoveDir = Vector3.Zero;
+            controller.RunSpeed = 0f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, tick));
         }
         float minY = float.MaxValue;
-        foreach (BodyChunk c in walker.Body.Chunks)
+        foreach (BodyChunk c in controller.Body.Chunks)
         {
             minY = Math.Min(minY, c.Pos.Y);
         }
@@ -199,66 +199,66 @@ internal static class Program
     private static bool CheckShiftContinuity(out string message)
     {
         var terrain = new PlaneTerrainQuery(0f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         long t = 0;
         for (int i = 0; i < 300; i++)
         {
             t++;
-            walker.MoveDir = new Vector3(1f, 0f, 0f);
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+            controller.MoveDir = new Vector3(1f, 0f, 0f);
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, t));
         }
 
-        walker.MoveTarget = new Vector3(walker.Head.Pos.X + 100f, 0f, walker.Head.Pos.Z + 10f);
-        walker.RunSpeed = 1f;
+        controller.MoveTarget = new Vector3(controller.Head.Pos.X + 100f, 0f, controller.Head.Pos.Z + 10f);
+        controller.RunSpeed = 1f;
         t++;
-        walker.Tick(new TickContext(gravityPerTick, terrain, t));
+        controller.Tick(new TickContext(gravityPerTick, terrain, t));
 
         var delta = new Vector3(512f, 0f, 512f);
-        var prevChunks = new (Vector3 Pos, Vector3 LastPos)[walker.Body.Chunks.Count];
+        var prevChunks = new (Vector3 Pos, Vector3 LastPos)[controller.Body.Chunks.Count];
         for (int i = 0; i < prevChunks.Length; i++)
         {
-            prevChunks[i] = (walker.Body.Chunks[i].Pos, walker.Body.Chunks[i].LastPos);
+            prevChunks[i] = (controller.Body.Chunks[i].Pos, controller.Body.Chunks[i].LastPos);
         }
-        var prevLimbs = new (Vector3 Pos, Vector3 LastPos, Vector3 HuntPos)[walker.Limbs.Count];
+        var prevLimbs = new (Vector3 Pos, Vector3 LastPos, Vector3 HuntPos)[controller.Limbs.Count];
         for (int i = 0; i < prevLimbs.Length; i++)
         {
-            prevLimbs[i] = (walker.Limbs[i].Pos, walker.Limbs[i].LastPos, walker.Limbs[i].HuntPos);
+            prevLimbs[i] = (controller.Limbs[i].Pos, controller.Limbs[i].LastPos, controller.Limbs[i].HuntPos);
         }
-        Vector3 prevMoveTarget = walker.MoveTarget!.Value;
-        Vector3 prevLastMoveTarget = walker.LastMoveTarget;
-        MoveTargetKind prevTargetKind = walker.LastMoveTargetKind;
+        Vector3 prevMoveTarget = controller.MoveTarget!.Value;
+        Vector3 prevLastMoveTarget = controller.LastMoveTarget;
+        MoveTargetKind prevTargetKind = controller.LastMoveTargetKind;
 
-        walker.Shift(delta);
+        controller.Shift(delta);
         bool exact = true;
         for (int i = 0; i < prevChunks.Length; i++)
         {
-            exact &= walker.Body.Chunks[i].Pos == prevChunks[i].Pos + delta
-                && walker.Body.Chunks[i].LastPos == prevChunks[i].LastPos + delta;
+            exact &= controller.Body.Chunks[i].Pos == prevChunks[i].Pos + delta
+                && controller.Body.Chunks[i].LastPos == prevChunks[i].LastPos + delta;
         }
         for (int i = 0; i < prevLimbs.Length; i++)
         {
-            exact &= walker.Limbs[i].Pos == prevLimbs[i].Pos + delta
-                && walker.Limbs[i].LastPos == prevLimbs[i].LastPos + delta
-                && walker.Limbs[i].HuntPos == prevLimbs[i].HuntPos + delta;
+            exact &= controller.Limbs[i].Pos == prevLimbs[i].Pos + delta
+                && controller.Limbs[i].LastPos == prevLimbs[i].LastPos + delta
+                && controller.Limbs[i].HuntPos == prevLimbs[i].HuntPos + delta;
         }
-        exact &= walker.MoveTarget == prevMoveTarget + delta
-            && walker.LastMoveTarget == prevLastMoveTarget + delta
-            && walker.LastMoveTargetKind == prevTargetKind;
+        exact &= controller.MoveTarget == prevMoveTarget + delta
+            && controller.LastMoveTarget == prevLastMoveTarget + delta
+            && controller.LastMoveTargetKind == prevTargetKind;
 
-        Vector3 start = walker.Head.Pos;
+        Vector3 start = controller.Head.Pos;
         for (int i = 0; i < 300; i++)
         {
             t++;
-            walker.MoveDir = new Vector3(1f, 0f, 0f);
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+            controller.MoveDir = new Vector3(1f, 0f, 0f);
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, t));
         }
-        Vector3 d = walker.Head.Pos - start;
+        Vector3 d = controller.Head.Pos - start;
         d.Y = 0f;
-        bool nan = !walker.Head.Pos.IsFinite();
-        float dev = walker.Body.CurrentMaxDeviation();
+        bool nan = !controller.Head.Pos.IsFinite();
+        float dev = controller.Body.CurrentMaxDeviation();
         message = $"Shift(+512,0,+512) 含直喂目标逐字段精确={exact}，" +
                   $"续走 {d.Length():F2}m，endDev={dev:F4}m";
         return exact && d.Length() > 15f && !nan && dev < 0.05f;
@@ -271,37 +271,37 @@ internal static class Program
     private static bool CheckLaunchRecovery(out string message)
     {
         var terrain = new PlaneTerrainQuery(0f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         long t = 0;
         for (int i = 0; i < 300; i++)
         {
             t++;
-            walker.MoveDir = new Vector3(1f, 0f, 0f);
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+            controller.MoveDir = new Vector3(1f, 0f, 0f);
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, t));
         }
         // 恢复控制器生命周期：Launch 必须立刻撤销临时缩碰撞体与 post-contact 门控。
-        walker.Hips.TerrainSqueeze = 0.1f;
-        walker.Body.EnablePostCollisionStructureRecovery = true;
-        walker.Launch(new Vector3(0.1f, 0.4f, 0.15f));
-        bool recoveryReset = walker.Hips.TerrainSqueeze == 1f
-            && !walker.Body.EnablePostCollisionStructureRecovery;
+        controller.Hips.TerrainSqueeze = 0.1f;
+        controller.Body.EnablePostCollisionStructureRecovery = true;
+        controller.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+        bool recoveryReset = controller.Hips.TerrainSqueeze == 1f
+            && !controller.Body.EnablePostCollisionStructureRecovery;
         t++;
-        walker.Tick(new TickContext(gravityPerTick, terrain, t));
-        bool airborne = walker.ApplyGravity;
-        Vector3 start = walker.Head.Pos;
+        controller.Tick(new TickContext(gravityPerTick, terrain, t));
+        bool airborne = controller.ApplyGravity;
+        Vector3 start = controller.Head.Pos;
         for (int i = 0; i < 500; i++)
         {
             t++;
-            walker.MoveDir = new Vector3(1f, 0f, 0f);
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, t));
+            controller.MoveDir = new Vector3(1f, 0f, 0f);
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, t));
         }
-        bool regained = !walker.ApplyGravity;
-        Vector3 d = walker.Head.Pos - start;
+        bool regained = !controller.ApplyGravity;
+        Vector3 d = controller.Head.Pos - start;
         d.Y = 0f;
-        bool nan = !walker.Head.Pos.IsFinite();
+        bool nan = !controller.Head.Pos.IsFinite();
         message = $"Launch 恢复状态清零={recoveryReset}，坠落={airborne}，" +
                   $"500 tick 后回归步态={regained}，续走 {d.Length():F2}m";
         return recoveryReset && airborne && regained && d.Length() > 10f && !nan;
@@ -316,7 +316,7 @@ internal static class Program
     private static bool CheckExternalTarget(out string message)
     {
         var terrain = new PlaneTerrainQuery(0f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(0f, 0.6f, 0f), BodyFactory.Default());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         var route = new[] { new Vector3(3f, 0f, 0f), new Vector3(5f, 0f, 2f), new Vector3(2f, 0f, 4f) };
 
@@ -328,18 +328,18 @@ internal static class Program
         for (int i = 0; i < 1500 && reached < route.Length; i++)
         {
             t++;
-            walker.MoveTarget = route[reached];
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, t));
-            if (walker.LastMoveTargetKind is not (MoveTargetKind.External or MoveTargetKind.None))
+            controller.MoveTarget = route[reached];
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, t));
+            if (controller.LastMoveTargetKind is not (MoveTargetKind.External or MoveTargetKind.None))
             {
                 alwaysExternal = false;
             }
-            if (!walker.AtMoveTarget && !walker.HasMoveIntent)
+            if (!controller.AtMoveTarget && !controller.HasMoveIntent)
             {
                 intentObservable = false;
             }
-            if (walker.AtMoveTarget)
+            if (controller.AtMoveTarget)
             {
                 reached++;
                 arriveTick = t;
@@ -348,28 +348,28 @@ internal static class Program
 
         // 不在到点 tick 上取消，且故意保留油门：若派生 MoveDir 跨 tick 残留，
         // 清 null 后会立刻掉回方向驱动继续走，旧断言把 RunSpeed 同时清零因此测不出来。
-        walker.MoveTarget = walker.Head.Pos + new Vector3(10f, -walker.Head.Pos.Y, 0f);
-        walker.RunSpeed = 1f;
+        controller.MoveTarget = controller.Head.Pos + new Vector3(10f, -controller.Head.Pos.Y, 0f);
+        controller.RunSpeed = 1f;
         t++;
-        walker.Tick(new TickContext(gravityPerTick, terrain, t));
-        bool activeBeforeCancel = walker.HasMoveIntent
-            && walker.LastMoveTargetKind == MoveTargetKind.External
-            && walker.MoveDir == Vector3.Zero;
-        walker.MoveTarget = null;
+        controller.Tick(new TickContext(gravityPerTick, terrain, t));
+        bool activeBeforeCancel = controller.HasMoveIntent
+            && controller.LastMoveTargetKind == MoveTargetKind.External
+            && controller.MoveDir == Vector3.Zero;
+        controller.MoveTarget = null;
         t++;
-        walker.Tick(new TickContext(gravityPerTick, terrain, t));
-        bool cleared = !walker.AtMoveTarget && !walker.HasMoveIntent
-            && walker.LastMoveTargetKind == MoveTargetKind.None
-            && walker.MoveDir == Vector3.Zero;
+        controller.Tick(new TickContext(gravityPerTick, terrain, t));
+        bool cleared = !controller.AtMoveTarget && !controller.HasMoveIntent
+            && controller.LastMoveTargetKind == MoveTargetKind.None
+            && controller.MoveDir == Vector3.Zero;
 
-        walker.MoveTarget = walker.Head.Pos + new Vector3(10f, -walker.Head.Pos.Y, 0f);
+        controller.MoveTarget = controller.Head.Pos + new Vector3(10f, -controller.Head.Pos.Y, 0f);
         t++;
-        walker.Tick(new TickContext(gravityPerTick, terrain, t));
-        walker.Teleport(new Vector3(2f, 0f, 0f));
-        bool teleportCleared = walker.MoveTarget is null
-            && !walker.AtMoveTarget
-            && walker.LastMoveTargetKind == MoveTargetKind.None;
-        bool nan = !walker.Head.Pos.IsFinite();
+        controller.Tick(new TickContext(gravityPerTick, terrain, t));
+        controller.Teleport(new Vector3(2f, 0f, 0f));
+        bool teleportCleared = controller.MoveTarget is null
+            && !controller.AtMoveTarget
+            && controller.LastMoveTargetKind == MoveTargetKind.None;
+        bool nan = !controller.Head.Pos.IsFinite();
 
         message = $"直喂 {route.Length} 路径点：到达 {reached}（末点 tick={arriveTick}），" +
                   $"分支恒 External={alwaysExternal}，意图观测={intentObservable}，" +
@@ -384,7 +384,7 @@ internal static class Program
     /// （≙ RW BodyChunkConnection 无条件互设）；② 工厂钉定不变量——全品种装配后
     /// 头参照髋、中段参照后一节、髋参照头（3 节脊柱时 ≙ RW Lizard 最终指向
     /// 头→髋/中→髋/髋→头），尾链保持自然拓扑。腿的步进方向由锚点 Rotation 导出
-    /// （Walker.TickLimbs），指向错 =
+    /// （LizardLocomotionController.TickLimbs），指向错 =
     /// 全身步态漂——这道结构断言把「装配顺序变动悄悄改朝向」挡在回归里。
     /// </summary>
     private static bool CheckRotationTopology(out string message)
@@ -419,7 +419,7 @@ internal static class Program
         };
         foreach (BreedParams p in breeds)
         {
-            Walker w = BodyFactory.CreateWalker(new Vector3(0f, 0.6f, 0f), p);
+            LizardLocomotionController w = BodyFactory.CreateLizardController(new Vector3(0f, 0.6f, 0f), p);
             int spine = Math.Max(2, p.SpineSegments);
             List<BodyChunk> chunks = w.Body.Chunks;
             pinned &= w.Head.RotationChunk == w.Hips; // 头 → 髋：长基线全身轴
@@ -576,7 +576,7 @@ internal static class Program
             float spawnX, float yawDegrees, float runSpeed, int maxTicks)
     {
         var terrain = new WallPoseTerrain(floorY: 0f, wallX: -5f, ceilingY: 100f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(spawnX, 0.4f, 0f), BodyFactory.Heavy());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(spawnX, 0.4f, 0f), BodyFactory.Heavy());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         float yaw = Mathf.DegToRad(yawDegrees);
         Vector3 move = new(-Mathf.Cos(yaw), 0f, Mathf.Sin(yaw));
@@ -589,20 +589,20 @@ internal static class Program
         bool finite = true;
         for (long tick = 1; tick <= maxTicks; tick++)
         {
-            walker.MoveDir = move;
-            walker.RunSpeed = runSpeed;
-            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+            controller.MoveDir = move;
+            controller.RunSpeed = runSpeed;
+            controller.Tick(new TickContext(gravityPerTick, terrain, tick));
 
-            bool frontWallContact = walker.Head.TerrainContact
-                && walker.Head.ContactNormal.X > 0.7f;
+            bool frontWallContact = controller.Head.TerrainContact
+                && controller.Head.ContactNormal.X > 0.7f;
             bool frontWall = false, rearWall = false;
-            foreach (Limb limb in walker.Limbs)
+            foreach (Limb limb in controller.Limbs)
             {
                 if (limb.GripNormal.X <= 0.7f)
                 {
                     continue;
                 }
-                if (limb.Anchor == walker.Head)
+                if (limb.Anchor == controller.Head)
                 {
                     frontWallContact |= limb.GripCounter > 0;
                     frontWall |= limb.Gripping;
@@ -612,13 +612,13 @@ internal static class Program
                     rearWall = true;
                 }
             }
-            float angle = SpineAngleDeg(walker);
+            float angle = SpineAngleDeg(controller);
             finalAngle = angle;
             if (tick > maxTicks - 20)
             {
                 minAngleFinalWindow = Mathf.Min(minAngleFinalWindow, angle);
             }
-            Vector3 frontAxis = walker.Head.Pos - walker.SpineFollower.Pos;
+            Vector3 frontAxis = controller.Head.Pos - controller.SpineFollower.Pos;
             Vector3 wallClimb = new(0f, Mathf.Cos(yaw), Mathf.Sin(yaw));
             float frontAngle = frontAxis.LengthSquared() < 1e-10f
                 ? 180f
@@ -652,7 +652,7 @@ internal static class Program
                 frontUpAtMount = frontAxis.LengthSquared() < 1e-10f
                     ? -1f
                     : frontAxis.Normalized().Dot(wallClimb);
-                Vector3 frontRear = walker.SpineFollower.Pos - walker.Head.Pos;
+                Vector3 frontRear = controller.SpineFollower.Pos - controller.Head.Pos;
                 frontNormalAtMount = frontRear.LengthSquared() < 1e-10f
                     ? 1f
                     : Mathf.Abs(frontRear.Normalized().Dot(Vector3.Right));
@@ -673,7 +673,7 @@ internal static class Program
                     minAngleAfterSettle = Mathf.Min(minAngleAfterSettle, angle);
                 }
             }
-            finite &= walker.Head.Pos.IsFinite() && walker.Hips.Pos.IsFinite();
+            finite &= controller.Head.Pos.IsFinite() && controller.Hips.Pos.IsFinite();
         }
         int settleDelta = minAngle >= 160f
             ? 0
@@ -693,7 +693,7 @@ internal static class Program
     private static (int, float, float, float, int, bool, bool) RunHeavyMountStopped(int stopAfterMount)
     {
         var terrain = new WallPoseTerrain(floorY: 0f, wallX: -5f, ceilingY: 100f);
-        Walker walker = BodyFactory.CreateWalker(new Vector3(-3f, 0.4f, 0f), BodyFactory.Heavy());
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(-3f, 0.4f, 0f), BodyFactory.Heavy());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
         float yaw = Mathf.DegToRad(10f);
         Vector3 move = new(-Mathf.Cos(yaw), 0f, Mathf.Sin(yaw));
@@ -705,15 +705,15 @@ internal static class Program
         for (long tick = 1; tick <= 700; tick++)
         {
             bool stop = mount > 0 && tick > mount + stopAfterMount;
-            walker.MoveDir = stop ? Vector3.Zero : move;
-            walker.RunSpeed = stop ? 0f : 1f;
-            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+            controller.MoveDir = stop ? Vector3.Zero : move;
+            controller.RunSpeed = stop ? 0f : 1f;
+            controller.Tick(new TickContext(gravityPerTick, terrain, tick));
 
             if (mount < 0)
             {
-                foreach (Limb limb in walker.Limbs)
+                foreach (Limb limb in controller.Limbs)
                 {
-                    if (limb.Anchor == walker.Head && limb.Gripping && limb.GripNormal.X > 0.7f)
+                    if (limb.Anchor == controller.Head && limb.Gripping && limb.GripNormal.X > 0.7f)
                     {
                         mount = (int)tick;
                         break;
@@ -722,26 +722,26 @@ internal static class Program
             }
             if (stop)
             {
-                minWallGap = Mathf.Min(minWallGap, walker.Hips.Pos.X - (-5f));
+                minWallGap = Mathf.Min(minWallGap, controller.Hips.Pos.X - (-5f));
             }
-            finalAngle = SpineAngleDeg(walker);
-            finalHeadHeight = walker.Head.Pos.Y;
+            finalAngle = SpineAngleDeg(controller);
+            finalHeadHeight = controller.Head.Pos.Y;
             finalAttached = false;
-            foreach (Limb limb in walker.Limbs)
+            foreach (Limb limb in controller.Limbs)
             {
                 finalAttached |= limb.Gripping && limb.GripNormal.X > 0.7f;
             }
             finalGripRun = finalAttached ? finalGripRun + 1 : 0;
-            finite &= walker.Head.Pos.IsFinite() && walker.Hips.Pos.IsFinite();
+            finite &= controller.Head.Pos.IsFinite() && controller.Hips.Pos.IsFinite();
         }
         return (mount, finalAngle, minWallGap, finalHeadHeight,
             finalGripRun, finalAttached, finite);
     }
 
-    private static float SpineAngleDeg(Walker walker)
+    private static float SpineAngleDeg(LizardLocomotionController controller)
     {
-        Vector3 toHead = walker.Head.Pos - walker.SpineFollower.Pos;
-        Vector3 toHips = walker.Hips.Pos - walker.SpineFollower.Pos;
+        Vector3 toHead = controller.Head.Pos - controller.SpineFollower.Pos;
+        Vector3 toHips = controller.Hips.Pos - controller.SpineFollower.Pos;
         if (toHead.LengthSquared() < 1e-10f || toHips.LengthSquared() < 1e-10f)
         {
             return 0f;
@@ -783,7 +783,7 @@ internal static class Program
         RunWallPose(bool seedSidePerturbation)
     {
         var terrain = new WallPoseTerrain(floorY: 0f, wallX: -5f, ceilingY: 3f);
-        Walker walker = BodyFactory.CreateWalker(
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(
             new Vector3(-4f, 0.6f, 0f), BodyFactory.Default());
         var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
 
@@ -794,19 +794,19 @@ internal static class Program
         bool finite = true;
         for (long tick = 1; tick <= 900; tick++)
         {
-            walker.MoveDir = Vector3.Left;
-            walker.RunSpeed = 1f;
+            controller.MoveDir = Vector3.Left;
+            controller.RunSpeed = 1f;
             if (tick == 260)
             {
-                headZAtPerturbation = walker.Head.Pos.Z;
+                headZAtPerturbation = controller.Head.Pos.Z;
                 if (seedSidePerturbation)
                 {
-                    walker.Hips.Pos.Z += 0.01f;
+                    controller.Hips.Pos.Z += 0.01f;
                 }
             }
-            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+            controller.Tick(new TickContext(gravityPerTick, terrain, tick));
 
-            Vector3 relative = walker.Hips.Pos - walker.Head.Pos;
+            Vector3 relative = controller.Hips.Pos - controller.Head.Pos;
             float side = Mathf.RadToDeg(MathF.Atan2(MathF.Abs(relative.Z), -relative.Y));
             if (tick >= 260)
             {
@@ -814,12 +814,12 @@ internal static class Program
             }
             finalSide = side;
             finalRelY = relative.Y;
-            finite &= walker.Head.Pos.IsFinite() && walker.Head.Vel.IsFinite()
-                && walker.Hips.Pos.IsFinite() && walker.Hips.Vel.IsFinite()
+            finite &= controller.Head.Pos.IsFinite() && controller.Head.Vel.IsFinite()
+                && controller.Hips.Pos.IsFinite() && controller.Hips.Vel.IsFinite()
                 && float.IsFinite(side);
         }
 
-        float drift = Mathf.Abs(walker.Head.Pos.Z - headZAtPerturbation);
+        float drift = Mathf.Abs(controller.Head.Pos.Z - headZAtPerturbation);
         return (maxSide, finalSide, finalRelY, drift, finite);
     }
 
@@ -828,8 +828,8 @@ internal static class Program
     /// squeeze 越界或恢复速度随计数爆炸。正常路线永远到不了 600 tick，必须定向造状态。</summary>
     private static bool CheckRecoveryInvariants(out string message)
     {
-        bool ramp = Walker.SaturatedInverseLerp(5f, 20f, -100f) == 0f
-            && Walker.SaturatedInverseLerp(5f, 20f, 100f) == 1f;
+        bool ramp = LizardLocomotionController.SaturatedInverseLerp(5f, 20f, -100f) == 0f
+            && LizardLocomotionController.SaturatedInverseLerp(5f, 20f, 100f) == 1f;
 
         var manifold = new ContactManifold3D();
         Vector3 n0 = Vector3.Right;
@@ -846,51 +846,51 @@ internal static class Program
 
         BreedParams footingBreed = BodyFactory.Heavy();
         footingBreed.TailSegments = 0;
-        Walker footingWalker = BodyFactory.CreateWalker(new Vector3(0f, 10f, 0f), footingBreed);
-        footingWalker.BaseSpeed = 0f;
+        LizardLocomotionController footingController = BodyFactory.CreateLizardController(new Vector3(0f, 10f, 0f), footingBreed);
+        footingController.BaseSpeed = 0f;
         var emptyTerrain = new PlaneTerrainQuery(-100f);
         for (long tick = 1; tick <= 20; tick++)
         {
-            foreach (BodyChunk chunk in footingWalker.Body.Chunks)
+            foreach (BodyChunk chunk in footingController.Body.Chunks)
             {
                 chunk.TerrainContact = false;
             }
-            footingWalker.Hips.TerrainContact = true;
-            footingWalker.Tick(new TickContext(Vector3.Zero, emptyTerrain, tick));
+            footingController.Hips.TerrainContact = true;
+            footingController.Tick(new TickContext(Vector3.Zero, emptyTerrain, tick));
         }
-        int footingBeforeProbe = footingWalker.FootingCounter;
-        foreach (BodyChunk chunk in footingWalker.Body.Chunks)
+        int footingBeforeProbe = footingController.FootingCounter;
+        foreach (BodyChunk chunk in footingController.Body.Chunks)
         {
             chunk.TerrainContact = false;
         }
-        footingWalker.Hips.TerrainSqueeze = 0.05f;
-        float expectedProbeLength = footingWalker.Hips.TerrainRadius + footingWalker.NearTerrainRange;
-        float oldProbeLength = footingWalker.Hips.Radius + footingWalker.NearTerrainRange;
+        footingController.Hips.TerrainSqueeze = 0.05f;
+        float expectedProbeLength = footingController.Hips.TerrainRadius + footingController.NearTerrainRange;
+        float oldProbeLength = footingController.Hips.Radius + footingController.NearTerrainRange;
         var annulusTerrain = new FirstRayLengthGateTerrain(
             (expectedProbeLength + oldProbeLength) * 0.5f);
-        footingWalker.Tick(new TickContext(Vector3.Zero, annulusTerrain, 21));
-        bool footingProbe = footingBeforeProbe >= footingWalker.RegainFootingTicks
-            && footingWalker.FootingCounter == 0
+        footingController.Tick(new TickContext(Vector3.Zero, annulusTerrain, 21));
+        bool footingProbe = footingBeforeProbe >= footingController.RegainFootingTicks
+            && footingController.FootingCounter == 0
             && Mathf.Abs(annulusTerrain.FirstRayLength - expectedProbeLength) < 1e-6f;
 
         BreedParams breed = BodyFactory.Heavy();
         breed.TailSegments = 0;
-        Walker walker = BodyFactory.CreateWalker(new Vector3(0f, 10f, 0f), breed);
-        walker.BaseSpeed = 0.0001f;
-        walker.MaxMoveSpeed = 0.0001f;
-        walker.StallSpeed = 1f;
-        foreach (ChunkConnection conn in walker.Body.Connections)
+        LizardLocomotionController controller = BodyFactory.CreateLizardController(new Vector3(0f, 10f, 0f), breed);
+        controller.BaseSpeed = 0.0001f;
+        controller.MaxMoveSpeed = 0.0001f;
+        controller.StallSpeed = 1f;
+        foreach (ChunkConnection conn in controller.Body.Connections)
         {
             if (conn.SoftOnly)
             {
                 conn.Elasticity = 0f;
             }
         }
-        float rearLink = walker.HeadLinkLength;
-        foreach (ChunkConnection conn in walker.Body.Connections)
+        float rearLink = controller.HeadLinkLength;
+        foreach (ChunkConnection conn in controller.Body.Connections)
         {
-            bool followerToHips = (conn.A == walker.SpineFollower && conn.B == walker.Hips)
-                || (conn.B == walker.SpineFollower && conn.A == walker.Hips);
+            bool followerToHips = (conn.A == controller.SpineFollower && conn.B == controller.Hips)
+                || (conn.B == controller.SpineFollower && conn.A == controller.Hips);
             if (followerToHips && !conn.SoftOnly)
             {
                 rearLink = conn.RestLength;
@@ -903,37 +903,37 @@ internal static class Program
         for (long tick = 1; tick <= 650; tick++)
         {
             Vector3 origin = new(0f, 10f, 0f);
-            walker.SpineFollower.Pos = origin;
-            walker.Head.Pos = origin + Vector3.Right * walker.HeadLinkLength;
-            walker.Hips.Pos = origin + Vector3.Right * rearLink;
-            foreach (BodyChunk chunk in walker.Body.Chunks)
+            controller.SpineFollower.Pos = origin;
+            controller.Head.Pos = origin + Vector3.Right * controller.HeadLinkLength;
+            controller.Hips.Pos = origin + Vector3.Right * rearLink;
+            foreach (BodyChunk chunk in controller.Body.Chunks)
             {
                 chunk.LastPos = chunk.Pos;
                 chunk.Vel = Vector3.Zero;
                 chunk.TerrainContact = false;
             }
             // Body.Collide 会把这次手工接触转存为 HadContactLastTick；人工几何保持 0° V 折叠。
-            walker.Hips.TerrainContact = true;
-            walker.Hips.HadContactLastTick = true;
-            walker.MoveDir = Vector3.Right;
-            walker.RunSpeed = 1f;
-            walker.Tick(new TickContext(Vector3.Zero, emptyFloor, tick));
-            foreach (BodyChunk chunk in walker.Body.Chunks)
+            controller.Hips.TerrainContact = true;
+            controller.Hips.HadContactLastTick = true;
+            controller.MoveDir = Vector3.Right;
+            controller.RunSpeed = 1f;
+            controller.Tick(new TickContext(Vector3.Zero, emptyFloor, tick));
+            foreach (BodyChunk chunk in controller.Body.Chunks)
             {
                 peakSpeed = Mathf.Max(peakSpeed, chunk.Vel.Length());
             }
         }
-        bool deepBounded = walker.SpineCornerStuckTicks == 600
-            && walker.MaxSpineCornerStuckTicks == 600
-            && walker.Hips.TerrainSqueeze >= 0.05f
-            && walker.Hips.TerrainSqueeze <= 1f
+        bool deepBounded = controller.SpineCornerStuckTicks == 600
+            && controller.MaxSpineCornerStuckTicks == 600
+            && controller.Hips.TerrainSqueeze >= 0.05f
+            && controller.Hips.TerrainSqueeze <= 1f
             && peakSpeed < 0.001f
-            && walker.StraightenOutNeeded is >= 0f and <= 1f;
+            && controller.StraightenOutNeeded is >= 0f and <= 1f;
 
         message = $"ramp饱和={ramp}，非正交可行锥={cone}，候选穿透拒绝={terrainSafe}，" +
                   $"squeeze近地探针={footingProbe}（len={annulusTerrain.FirstRayLength:F3}），" +
-                  $"650tick卡角 bounded={deepBounded}（stuck={walker.SpineCornerStuckTicks}, " +
-                  $"squeeze={walker.Hips.TerrainSqueeze:F2}, peakVel={peakSpeed:F6}）";
+                  $"650tick卡角 bounded={deepBounded}（stuck={controller.SpineCornerStuckTicks}, " +
+                  $"squeeze={controller.Hips.TerrainSqueeze:F2}, peakVel={peakSpeed:F6}）";
         return ramp && cone && terrainSafe && footingProbe && deepBounded;
     }
 

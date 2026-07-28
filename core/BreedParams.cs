@@ -2,7 +2,7 @@ namespace ProcAnim.Core;
 
 /// <summary>
 /// 品种参数表（≙ LizardBreedParams 的运动子集）：一个生物的"手感"全部收拢在这一张表上，
-/// 工厂读它装配 Body/Walker/Limb，内核运行时不再回读——纯出生配置，零行为分支。
+/// 工厂读它装配 Body/LizardLocomotionController/Limb，内核运行时不再回读——纯出生配置，零行为分支。
 /// 字段名尽量镜像 RW 便于对照调参（反编译 LizardBreeds 各品种的取值差异就是手感差异）；
 /// 单位全部本项目制：米 / 米每tick，1 RW tile = 0.5 m。
 /// SpineSegments/LegPairs 的任意数量参数化是本项目扩展；RW 常见蜥蜴为四腿，
@@ -30,7 +30,7 @@ public sealed class BreedParams
     /// 伸直时隔节距离 = 2 节长，支柱永不触发；只在链条折起来时软推撑开。2 节脊柱无隔节对，无效。</summary>
     public float BodyStiffness = 0.2f;
 
-    // —— 推进（Walker，≙ baseSpeed / noGripSpeed）——
+    // —— 推进（LizardLocomotionController，≙ baseSpeed / noGripSpeed）——
     /// <summary>满抓地满速每 tick 注入速度（≙ baseSpeed；RW 粉蜥 4.1 ↔ 0.06）。</summary>
     public float BaseSpeed = 0.06f;
 

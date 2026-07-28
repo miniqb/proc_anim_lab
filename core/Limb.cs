@@ -8,10 +8,10 @@ namespace ProcAnim.Core;
 /// 不是解析式多关节 IK：vel = Lerp(vel, 朝目标*HuntSpeed, Quickness)，够近吸附。
 /// 步态是 plant-and-trail：脚踩住不动 → 身体前移 → 腿拉伸到极限 → 松开 → 摆到前方
 /// 超过 StepLength 阈值 → FindGrip 射线找新落点 → 再踩住。腿长由单侧距离钳制维持，
-/// 腿不反推身体——推进力在 Walker 层按抓地腿数另行施加（RW：锚与引擎分离）。
+/// 腿不反推身体——推进力在 LizardLocomotionController 层按抓地腿数另行施加（RW：锚与引擎分离）。
 /// 脚不进 Body.Chunks：它是独立受力点，会碰地形但不参与 chunk 间物理（≙ RW 图形层 BodyPart）。
 ///
-/// M3：整套步进几何跑在「支撑系」里——up 参数 = Walker 的支撑法线，不再是重力反方向。
+/// M3：整套步进几何跑在「支撑系」里——up 参数 = LizardLocomotionController 的支撑法线，不再是重力反方向。
 /// 平地 up=世界上（与 M2 全等），爬墙 up=墙法线：落脚射线自动从「朝下」换成「朝墙」，
 /// 走/爬同一条代码（研究文档 §12.3「爬墙 = 换射线方向，逻辑一模一样」）。
 /// </summary>
@@ -52,7 +52,7 @@ public sealed class Limb
 	/// 而是垂回锚点身侧。纯姿态——HasGrip 恒 false，不计抓地、不影响重力开关。</summary>
 	public bool IdlePose { get; private set; }
 
-	/// <summary>当前抓握面的法线（FindGrip 命中时记录）。Walker 平均它得到支撑法线。</summary>
+	/// <summary>当前抓握面的法线（FindGrip 命中时记录）。LizardLocomotionController 平均它得到支撑法线。</summary>
 	public Vector3 GripNormal = Vector3.Up;
 
 	/// <summary>连续踩稳的 tick 数；≥ GripDelay 才算「抓地」计入推进力。</summary>
@@ -110,7 +110,7 @@ public sealed class Limb
 	/// <summary>连续 FindGrip 失败计数（找到落点或有移动意图即清零）。</summary>
 	private int _gripFailTicks;
 
-	/// <summary>抓地中：这条腿正为身体提供锚点/推进（Walker 按此计数施力）。</summary>
+	/// <summary>抓地中：这条腿正为身体提供锚点/推进（LizardLocomotionController 按此计数施力）。</summary>
 	public bool Gripping => GripCounter >= GripDelay;
 
 	private const float Skin = 0.02f;
@@ -172,9 +172,9 @@ public sealed class Limb
 		{
 			// 闲置休息位：有移动意图立即退出恢复迈步；闲置中目标每 tick 跟着锚点重算
 			// （≙ relativeHuntPos 旋进身体系），脚自然垂在身侧随身体漂移。
-			// 意图判定统一走 Walker.MoveIntentDeadzone——曾经推进层用 >0、这里用 >0.1，
+			// 意图判定统一走 LizardLocomotionController.MoveIntentDeadzone——曾经推进层用 >0、这里用 >0.1，
 			// 0.05 的输入会推着一具永远退不出 IdlePose 的身体滑行（评审 P1-5）。
-			if (IdlePose && runSpeed > Walker.MoveIntentDeadzone)
+			if (IdlePose && runSpeed > LizardLocomotionController.MoveIntentDeadzone)
 			{
 				IdlePose = false;
 				_gripFailTicks = 0;
@@ -187,7 +187,7 @@ public sealed class Limb
 			else if (!HasGrip || !OverlappingHuntPos())
 			{
 				FindGrip(ctx, stepDir, up);
-				if (HasGrip || runSpeed > Walker.MoveIntentDeadzone)
+				if (HasGrip || runSpeed > LizardLocomotionController.MoveIntentDeadzone)
 				{
 					_gripFailTicks = 0;
 				}
@@ -210,7 +210,7 @@ public sealed class Limb
 				}
 
 				// 步态错开：跑动中若本腿抓得最久且其余腿都已抓稳 → 主动松开迈步。
-				if (ReachingForTerrain && runSpeed > Walker.MoveIntentDeadzone && smoothGait)
+				if (ReachingForTerrain && runSpeed > LizardLocomotionController.MoveIntentDeadzone && smoothGait)
 				{
 					bool oldestGrip = true;
 					foreach (Limb other in allLimbs)
@@ -258,7 +258,7 @@ public sealed class Limb
 		}
 	}
 
-	/// <summary>整体平移（Walker.Shift 的腿部分）：位置、插值历史、追逐目标同步移动。</summary>
+	/// <summary>整体平移（LizardLocomotionController.Shift 的腿部分）：位置、插值历史、追逐目标同步移动。</summary>
 	public void Shift(Vector3 delta)
 	{
 		Pos += delta;
@@ -266,7 +266,7 @@ public sealed class Limb
 		HuntPos += delta;
 	}
 
-	/// <summary>强制松开重迈步（Walker 顶死解锁 / Launch 击飞用，≙ RW timeSpentTryingThisMove
+	/// <summary>强制松开重迈步（LizardLocomotionController 顶死解锁 / Launch 击飞用，≙ RW timeSpentTryingThisMove
 	/// 的升级动作）。GripCounter 必须当场清零：Launch 在两个 tick 之间调用，下个 tick 的
 	/// UpdateFooting 先于腿更新读 Gripping——残留旧计数会把刚写好的站稳清零又冲掉（终审 C10）。</summary>
 	public void ForceRelease()

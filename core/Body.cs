@@ -43,7 +43,7 @@ public sealed class Body
     /// <summary>累计卡链释放次数（回归指标：健康路线应为个位数——每次翻墙尾链至多逐节各释放一次）。</summary>
     public long SnagReleases { get; private set; }
 
-    /// <summary>由 Walker 的局部卡角状态门控：只在确有墙角僵持时恢复碰撞新增的脊柱违反，
+    /// <summary>由 LizardLocomotionController 的局部卡角状态门控：只在确有墙角僵持时恢复碰撞新增的脊柱违反，
     /// 普通落地/行走保持原求解轨迹，避免姿态支柱等效刚度变化污染 heavy 手感。</summary>
     public bool EnablePostCollisionStructureRecovery;
 

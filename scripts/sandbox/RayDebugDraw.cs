@@ -93,14 +93,14 @@ public sealed class RayDebugDraw : ITerrainQuery
         parent.AddChild(node);
     }
 
-    public void Draw(Camera3D camera, Walker walker)
+    public void Draw(Camera3D camera, LizardLocomotionController controller)
     {
         if (_mesh is null)
         {
             return;
         }
         _mesh.ClearSurfaces();
-        bool hasCarrot = walker.LastMoveTargetKind != MoveTargetKind.None;
+        bool hasCarrot = controller.LastMoveTargetKind != MoveTargetKind.None;
         if (!Enabled || (_rays.Count == 0 && !hasCarrot))
         {
             return;
@@ -117,15 +117,15 @@ public sealed class RayDebugDraw : ITerrainQuery
         }
         if (hasCarrot)
         {
-            Color c = walker.LastMoveTargetKind switch
+            Color c = controller.LastMoveTargetKind switch
             {
                 MoveTargetKind.Support => CarrotSupportColor,
                 MoveTargetKind.Crest => CarrotCrestColor,
                 MoveTargetKind.External => CarrotExternalColor,
                 _ => CarrotFallbackColor,
             };
-            AddRibbon(walker.Head.Pos, walker.LastMoveTarget, c, camPos);
-            AddMarker(walker.LastMoveTarget, camPos, c, CarrotMarkerSize);
+            AddRibbon(controller.Head.Pos, controller.LastMoveTarget, c, camPos);
+            AddMarker(controller.LastMoveTarget, camPos, c, CarrotMarkerSize);
         }
         _mesh.SurfaceEnd();
     }

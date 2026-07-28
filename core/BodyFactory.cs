@@ -112,14 +112,15 @@ public static class BodyFactory
         return Default();
     }
 
-    public static Walker CreateWalker(Vector3 origin) => CreateWalker(origin, Default());
+    public static LizardLocomotionController CreateLizardController(Vector3 origin) =>
+        CreateLizardController(origin, Default());
 
     /// <summary>
     /// 按品种参数装配行走体。出生姿态：脊柱竖叠（头在上）、尾巴沿 +X 伸展、
     /// 脚按对角步态错开（步态错开逻辑用 gripCounter 严格比较打破平局，
     /// 完全对称落地会同抬同落，出生错位给它一个确定性的相位种子）。
     /// </summary>
-    public static Walker CreateWalker(Vector3 origin, BreedParams p)
+    public static LizardLocomotionController CreateLizardController(Vector3 origin, BreedParams p)
     {
         var body = new Body();
         int spine = Mathf.Max(2, p.SpineSegments);
@@ -188,7 +189,7 @@ public static class BodyFactory
         // · 头 → 髋：长基线 = 全身轴前向（≙ RW 头盾/嘴部判定拿头.Rotation 当全身朝向）；
         // · 中段 → 后一节：真·本段轴（3 节脊柱时后一节即髋，与 RW 中→髋逐一对应；
         //   四节以上仍是相邻段——统一指髋会退化成跨关节长弦，不再是「本段朝向」）；
-        // · 髋 → 头：Rotation 指向后方，消费侧翻转（Walker.TickLimbs）。尾链保持互绑自然指向。
+        // · 髋 → 头：Rotation 指向后方，消费侧翻转（LizardLocomotionController.TickLimbs）。尾链保持互绑自然指向。
         head.RotationChunk = hips;
         for (int i = 1; i < spine - 1; i++)
         {
@@ -196,7 +197,7 @@ public static class BodyFactory
         }
         hips.RotationChunk = head;
 
-        var walker = new Walker(body, head, hips, chunks[1])
+        var controller = new LizardLocomotionController(body, head, hips, chunks[1])
         {
             HeadLinkLength = linkLen,
             BaseSpeed = p.BaseSpeed,
@@ -229,13 +230,13 @@ public static class BodyFactory
                     FeetDown = p.FeetDown,
                     PairLateral = p.LegPairDisplacement,
                 };
-                walker.Limbs.Add(limb);
+                controller.Limbs.Add(limb);
             }
-            Limb left = walker.Limbs[^2];
-            Limb right = walker.Limbs[^1];
+            Limb left = controller.Limbs[^2];
+            Limb right = controller.Limbs[^1];
             left.Pair = right;
             right.Pair = left;
         }
-        return walker;
+        return controller;
     }
 }

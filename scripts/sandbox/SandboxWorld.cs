@@ -10,7 +10,7 @@ namespace ProcAnimLab.Sandbox;
 /// 在 _Process 里按物理插值分数渲染。逻辑一律不读 delta——步长恒为 1 tick，
 /// 内核里所有速度/力的单位都是「米/tick」（确定性来源，也与雨世界参数表同构）。
 ///
-/// M3：场景主体是四腿 Walker。WASD 给移动意图（世界 XZ 轴）——推着墙走会被支撑系
+/// M3：场景主体是四腿 LizardLocomotionController。WASD 给移动意图（世界 XZ 轴）——推着墙走会被支撑系
 /// 重定向为向上爬（走/爬涌现，无模式键）；左键拖拽任意 chunk。
 /// 确定性回归：--determinism=N 模式禁用输入，改跑脚本化路点巡走（上坡→下坡→撞墙爬墙
 /// 全部进哈希），提速到 400Hz 跑 N tick 打印状态哈希后退出。40Hz 与 400Hz 哈希必须一致。
@@ -20,7 +20,7 @@ public partial class SandboxWorld : Node3D
     /// <summary>重力（米/秒²，人类可读单位）。默认 36 = 雨世界 0.9px/tick² 的直接换算。</summary>
     [Export] public float GravityMps2 = 36f;
 
-    // 空气/表面摩擦由 Walker 按重力开关双档切换（≙ RW），不再由场景导出参数控制。
+    // 空气/表面摩擦由 LizardLocomotionController 按重力开关双档切换（≙ RW），不再由场景导出参数控制。
     [Export] public int ConstraintIterations = 3;
     [Export] public float DragSpring = 0.2f;
     [Export] public float DragDamping = 0.3f;
@@ -34,7 +34,7 @@ public partial class SandboxWorld : Node3D
 
     private float _perturb; // --perturb=x 灵敏度自检：初始位置微扰 → 哈希必须变
     private Vector3 _spawn = new(0f, 2f, 0f); // --spawn=x,y,z 覆盖出生点（坡上/墙边测试用）
-    private long _yankTick = -1; // --yank=T：T tick 调 Walker.Launch 抛掷（「拎起再摔」+击飞 API 的实际覆盖）
+    private long _yankTick = -1; // --yank=T：T tick 调 LizardLocomotionController.Launch 抛掷（「拎起再摔」+击飞 API 的实际覆盖）
     private int _determinismTicks; // 场景事件在结束前预留恢复预算，避免最后一帧新开事件形成假红
     private ulong? _expectHash; // --expect-hash=X16：终值哈希对基线断言（回归脚本传文档基线，防「确定但错误」）
     private bool _fatal; // CLI 畸形等致命错：停帧防 NRE 无限刷屏，退出码 2
@@ -114,7 +114,7 @@ public partial class SandboxWorld : Node3D
     private bool _wallTurnDrive;
 
     private readonly List<Body> _bodies = new();
-    private Walker _walker = null!;
+    private LizardLocomotionController _lizardController = null!;
     private BreedParams _breed = BodyFactory.Default();
     private readonly RaycastTerrainQuery _terrain = new();
     private RayDebugDraw _rayDebug = null!;
@@ -154,11 +154,11 @@ public partial class SandboxWorld : Node3D
         }
         _rayDebug = new RayDebugDraw(_terrain);
         _rayDebug.Build(this);
-        SpawnWalker(_breed, _spawn);
+        SpawnLizard(_breed, _spawn);
         if (_perturb != 0f)
         {
-            _walker.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
-            _walker.Body.Chunks[0].LastPos = _walker.Body.Chunks[0].Pos;
+            _lizardController.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
+            _lizardController.Body.Chunks[0].LastPos = _lizardController.Body.Chunks[0].Pos;
         }
         if (_probe is null)
         {
@@ -178,16 +178,16 @@ public partial class SandboxWorld : Node3D
     }
 
     /// <summary>（重）生成行走体：替换物理对象并重建渲染节点（数字键换品种共用此路径）。</summary>
-    private void SpawnWalker(BreedParams breed, Vector3 origin)
+    private void SpawnLizard(BreedParams breed, Vector3 origin)
     {
         _breed = breed;
-        _walker = BodyFactory.CreateWalker(origin, breed);
-        _walker.Body.ConstraintIterations = ConstraintIterations;
+        _lizardController = BodyFactory.CreateLizardController(origin, breed);
+        _lizardController.Body.ConstraintIterations = ConstraintIterations;
         _bodies.Clear();
-        _bodies.Add(_walker.Body);
+        _bodies.Add(_lizardController.Body);
         _drag.Release();
         _renderer.Clear();
-        _renderer.Build(this, _bodies, _walker.Limbs, _walker);
+        _renderer.Build(this, _bodies, _lizardController.Limbs, _lizardController);
     }
 
     public override void _PhysicsProcess(double delta)
@@ -214,17 +214,17 @@ public partial class SandboxWorld : Node3D
         if (_yankTick >= 0 && _tick == _yankTick)
         {
             // 走正式击飞 API（曾直接抠 Head.Vel 五个 tick——Launch 因此零回归覆盖，终审 C11）。
-            _walker.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+            _lizardController.Launch(new Vector3(0.1f, 0.4f, 0.15f));
         }
 
         // 地形查询经 _rayDebug 转发（纯观测装饰器）：F3 可视化打出的所有射线。
         var ctx = new TickContext(_gravityPerTick, _rayDebug, _tick);
-        _walker.Tick(ctx);
+        _lizardController.Tick(ctx);
 
         if (_probe is not null)
         {
             TrackQualityMetrics();
-            _probe.Record(_tick, _bodies, _walker.Limbs);
+            _probe.Record(_tick, _bodies, _lizardController.Limbs);
             if (_probe.Finished)
             {
                 GetTree().Quit(DumpFinalState());
@@ -240,8 +240,8 @@ public partial class SandboxWorld : Node3D
     {
         if (WantCameraFly)
         {
-            _walker.MoveDir = Vector3.Zero;
-            _walker.RunSpeed = 0f;
+            _lizardController.MoveDir = Vector3.Zero;
+            _lizardController.RunSpeed = 0f;
             return;
         }
 
@@ -253,9 +253,9 @@ public partial class SandboxWorld : Node3D
 
         if (dir != Vector3.Zero)
         {
-            _walker.MoveTarget = null;
-            _walker.MoveDir = dir.Normalized();
-            _walker.RunSpeed = 1f;
+            _lizardController.MoveTarget = null;
+            _lizardController.MoveDir = dir.Normalized();
+            _lizardController.RunSpeed = 1f;
             return;
         }
 
@@ -266,25 +266,25 @@ public partial class SandboxWorld : Node3D
             Vector3 rayDir = _camera.ProjectRayNormal(mouse);
             if (_rayDebug.Raycast(origin, origin + rayDir * 100f, out TerrainHit hit))
             {
-                _walker.MoveTarget = hit.Point;
+                _lizardController.MoveTarget = hit.Point;
             }
         }
 
-        if (_walker.MoveTarget is not null)
+        if (_lizardController.MoveTarget is not null)
         {
-            if (_walker.AtMoveTarget)
+            if (_lizardController.AtMoveTarget)
             {
-                _walker.MoveTarget = null;
-                _walker.RunSpeed = 0f;
-                _walker.MoveDir = Vector3.Zero;
+                _lizardController.MoveTarget = null;
+                _lizardController.RunSpeed = 0f;
+                _lizardController.MoveDir = Vector3.Zero;
                 return;
             }
-            _walker.RunSpeed = 1f;
+            _lizardController.RunSpeed = 1f;
             return;
         }
 
-        _walker.MoveDir = Vector3.Zero;
-        _walker.RunSpeed = 0f;
+        _lizardController.MoveDir = Vector3.Zero;
+        _lizardController.RunSpeed = 0f;
     }
 
     /// <summary>确定性模式的脚本化输入：绕路点方框巡走——把「走路」本身纳入回归。</summary>
@@ -302,8 +302,8 @@ public partial class SandboxWorld : Node3D
         }
         if (_waypoints.Length == 0)
         {
-            _walker.MoveDir = Vector3.Zero;
-            _walker.RunSpeed = 0f;
+            _lizardController.MoveDir = Vector3.Zero;
+            _lizardController.RunSpeed = 0f;
             return;
         }
         if (_carrotDrive)
@@ -312,7 +312,7 @@ public partial class SandboxWorld : Node3D
             return;
         }
         Vector3 target = _waypoints[_waypointIndex];
-        Vector3 toTarget = target - _walker.Head.Pos;
+        Vector3 toTarget = target - _lizardController.Head.Pos;
         toTarget.Y = 0f;
         if (toTarget.Length() < 0.4f)
         {
@@ -322,8 +322,8 @@ public partial class SandboxWorld : Node3D
             if (_regressionScenario == RegressionScenario.Turn
                 && _determinismTicks > 0 && _tick > _determinismTicks - 45)
             {
-                _walker.MoveDir = Vector3.Zero;
-                _walker.RunSpeed = 0f;
+                _lizardController.MoveDir = Vector3.Zero;
+                _lizardController.RunSpeed = 0f;
                 return;
             }
             _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
@@ -333,11 +333,11 @@ public partial class SandboxWorld : Node3D
                 BeginTurnRecovery();
             }
             target = _waypoints[_waypointIndex];
-            toTarget = target - _walker.Head.Pos;
+            toTarget = target - _lizardController.Head.Pos;
             toTarget.Y = 0f;
         }
-        _walker.MoveDir = toTarget.LengthSquared() < 1e-12f ? Vector3.Zero : toTarget.Normalized();
-        _walker.RunSpeed = 1f;
+        _lizardController.MoveDir = toTarget.LengthSquared() < 1e-12f ? Vector3.Zero : toTarget.Normalized();
+        _lizardController.RunSpeed = 1f;
     }
 
     /// <summary>行进中 90° 胡萝卜重规划：先沿 +Z 在纯平地上建立稳定运动；随后每当身体沿
@@ -349,29 +349,29 @@ public partial class SandboxWorld : Node3D
         {
             _carrotTurnDirectionIndex = 0;
             _carrotTurnDirection = CarrotTurnDirections[_carrotTurnDirectionIndex];
-            _carrotTurnPhaseStart = _walker.Head.Pos;
+            _carrotTurnPhaseStart = _lizardController.Head.Pos;
             SetCarrotTurnTarget(_carrotTurnDirection);
             _carrotTurnInitialized = true;
         }
 
-        bool movingOnFlat = _walker.LastMoveTargetKind == MoveTargetKind.External
-            && _walker.HasMoveIntent
-            && !_walker.AtMoveTarget
-            && !_walker.ApplyGravity
-            && _walker.SupportNormal.Dot(Vector3.Up) >= 0.9f
+        bool movingOnFlat = _lizardController.LastMoveTargetKind == MoveTargetKind.External
+            && _lizardController.HasMoveIntent
+            && !_lizardController.AtMoveTarget
+            && !_lizardController.ApplyGravity
+            && _lizardController.SupportNormal.Dot(Vector3.Up) >= 0.9f
             && _lastHeadPlanarStep.Dot(_carrotTurnDirection) >= CarrotTurnMinStep;
-        Vector3 forward = _walker.Head.Pos - _walker.Hips.Pos;
+        Vector3 forward = _lizardController.Head.Pos - _lizardController.Hips.Pos;
         forward.Y = 0f;
-        Vector3 front = _walker.Head.Pos - _walker.SpineFollower.Pos;
+        Vector3 front = _lizardController.Head.Pos - _lizardController.SpineFollower.Pos;
         front.Y = 0f;
-        Vector3 middle = _walker.SpineFollower.Pos - _walker.Hips.Pos;
+        Vector3 middle = _lizardController.SpineFollower.Pos - _lizardController.Hips.Pos;
         middle.Y = 0f;
         bool aligned = forward.LengthSquared() > 1e-10f
             && forward.Normalized().Dot(_carrotTurnDirection) >= 0.5f;
         bool segmentsAligned = front.LengthSquared() > 1e-10f && middle.LengthSquared() > 1e-10f
             && front.Normalized().Dot(_carrotTurnDirection) >= 0.5f
             && middle.Normalized().Dot(_carrotTurnDirection) >= 0.5f;
-        float progress = (_walker.Head.Pos - _carrotTurnPhaseStart).Dot(_carrotTurnDirection);
+        float progress = (_lizardController.Head.Pos - _carrotTurnPhaseStart).Dot(_carrotTurnDirection);
         bool hasRecoveryBudget = _determinismTicks <= 0 || _tick <= _determinismTicks - 45;
         _carrotTurnArmTicks = !_carrotTurnActive && hasRecoveryBudget && movingOnFlat && aligned
             && segmentsAligned
@@ -381,17 +381,17 @@ public partial class SandboxWorld : Node3D
 
         if (_carrotTurnArmTicks >= CarrotTurnRequiredArmTicks)
         {
-            Vector3 eventUp = _walker.SupportNormal.LengthSquared() > 1e-10f
-                ? _walker.SupportNormal.Normalized()
+            Vector3 eventUp = _lizardController.SupportNormal.LengthSquared() > 1e-10f
+                ? _lizardController.SupportNormal.Normalized()
                 : Vector3.Up;
             Vector3 oldDirection = ActualCarrotDirection(eventUp);
-            float oldTargetRemaining = _walker.MoveTarget is { } oldTarget
-                ? ProjectOnPlane(oldTarget + eventUp * _walker.RideHeight - _walker.Head.Pos,
+            float oldTargetRemaining = _lizardController.MoveTarget is { } oldTarget
+                ? ProjectOnPlane(oldTarget + eventUp * _lizardController.RideHeight - _lizardController.Head.Pos,
                     eventUp).Length()
                 : 0f;
             _carrotTurnDirectionIndex = (_carrotTurnDirectionIndex + 1) % CarrotTurnDirections.Length;
             _carrotTurnDirection = CarrotTurnDirections[_carrotTurnDirectionIndex];
-            _carrotTurnPhaseStart = _walker.Head.Pos;
+            _carrotTurnPhaseStart = _lizardController.Head.Pos;
             SetCarrotTurnTarget(_carrotTurnDirection);
             Vector3 newDirection = ActualCarrotDirection(eventUp);
             BeginCarrotTurn(oldDirection, newDirection, oldTargetRemaining, eventUp,
@@ -399,23 +399,23 @@ public partial class SandboxWorld : Node3D
             _carrotTurnArmTicks = 0;
         }
 
-        _walker.RunSpeed = 1f;
+        _lizardController.RunSpeed = 1f;
     }
 
     private void SetCarrotTurnTarget(Vector3 direction)
     {
-        Vector3 target = _walker.Head.Pos + direction * CarrotTurnTargetDistance;
+        Vector3 target = _lizardController.Head.Pos + direction * CarrotTurnTargetDistance;
         target.Y = 0f;
-        _walker.MoveTarget = target;
+        _lizardController.MoveTarget = target;
     }
 
     private Vector3 ActualCarrotDirection(Vector3 up)
     {
-        if (_walker.MoveTarget is not { } target)
+        if (_lizardController.MoveTarget is not { } target)
         {
             return Vector3.Zero;
         }
-        Vector3 direction = ProjectOnPlane(target + up * _walker.RideHeight - _walker.Head.Pos, up);
+        Vector3 direction = ProjectOnPlane(target + up * _lizardController.RideHeight - _lizardController.Head.Pos, up);
         return direction.LengthSquared() > 1e-10f ? direction.Normalized() : Vector3.Zero;
     }
 
@@ -433,17 +433,17 @@ public partial class SandboxWorld : Node3D
         _carrotTurnStartedAt = _tick;
         _carrotTurnDesired = newDirection;
         _carrotTurnEventUp = eventUp;
-        _carrotTurnHeadStart = _walker.Head.Pos;
-        _carrotTurnFollowerStart = _walker.SpineFollower.Pos;
+        _carrotTurnHeadStart = _lizardController.Head.Pos;
+        _carrotTurnFollowerStart = _lizardController.SpineFollower.Pos;
         _carrotTurnStableRun = 0;
         _carrotTurnMiddleLeadRun = 0;
         _carrotTurnMiddleCrossTick = -1;
         _carrotTurnFrontCrossTick = -1;
         _carrotTurnAxisLagRecorded = false;
 
-        Vector3 frontAxis = ProjectOnPlane(_walker.Head.Pos - _walker.SpineFollower.Pos,
+        Vector3 frontAxis = ProjectOnPlane(_lizardController.Head.Pos - _lizardController.SpineFollower.Pos,
             _carrotTurnEventUp);
-        Vector3 middleAxis = ProjectOnPlane(_walker.SpineFollower.Pos - _walker.Hips.Pos,
+        Vector3 middleAxis = ProjectOnPlane(_lizardController.SpineFollower.Pos - _lizardController.Hips.Pos,
             _carrotTurnEventUp);
         _carrotTurnInitialFrontErrorDeg = AngleDeg(frontAxis, newDirection);
         _carrotTurnInitialMiddleErrorDeg = AngleDeg(middleAxis, newDirection);
@@ -478,20 +478,20 @@ public partial class SandboxWorld : Node3D
     /// SupportNormal 而不是 world-up——后者会把竖直目标投影成零并空耗 16 tick。</summary>
     private void SteerWallTurns()
     {
-        bool onWall = _walker.SupportNormal.X >= 0.8f;
+        bool onWall = _lizardController.SupportNormal.X >= 0.8f;
         if (!onWall)
         {
             _wallSupportRun = 0;
-            _walker.MoveDir = Vector3.Left;
-            _walker.RunSpeed = 1f;
+            _lizardController.MoveDir = Vector3.Left;
+            _lizardController.RunSpeed = 1f;
             return;
         }
 
         _wallSupportRun++;
         if (_wallSupportRun < 5)
         {
-            _walker.MoveDir = Vector3.Left;
-            _walker.RunSpeed = 1f;
+            _lizardController.MoveDir = Vector3.Left;
+            _lizardController.RunSpeed = 1f;
             return;
         }
 
@@ -505,8 +505,8 @@ public partial class SandboxWorld : Node3D
             _wallTurnVertical = -_wallTurnVertical;
             BeginTurnRecovery();
         }
-        _walker.MoveDir = new Vector3(-0.1f, _wallTurnVertical, 0f).Normalized();
-        _walker.RunSpeed = 1f;
+        _lizardController.MoveDir = new Vector3(-0.1f, _wallTurnVertical, 0f).Normalized();
+        _lizardController.RunSpeed = 1f;
     }
 
     private void BeginTurnRecovery()
@@ -528,7 +528,7 @@ public partial class SandboxWorld : Node3D
     /// 这正是直喂契约要求的「点贴近可达地形」。</summary>
     private void SteerCarrotWaypoints()
     {
-        if (_walker.AtMoveTarget)
+        if (_lizardController.AtMoveTarget)
         {
             _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
             _waypointsReached++;
@@ -539,8 +539,8 @@ public partial class SandboxWorld : Node3D
         {
             fed = hit.Point;
         }
-        _walker.MoveTarget = fed;
-        _walker.RunSpeed = 1f;
+        _lizardController.MoveTarget = fed;
+        _lizardController.RunSpeed = 1f;
     }
 
     /// <summary>SoftOnly 防折叠支柱允许有弹性形变；低于静止长度 10% 且持续存在才计求解违反。
@@ -699,10 +699,10 @@ public partial class SandboxWorld : Node3D
         // 角度只做诊断和事件恢复判据，不再跨品种直接判 FAIL；真正的通用硬门是上面的支柱
         // 长度违反。2 节脊柱下 SpineFollower==Hips，夹角退化无意义，保持 180°。
         float spineAngleDeg = 180f;
-        if (_walker.SpineFollower != _walker.Hips)
+        if (_lizardController.SpineFollower != _lizardController.Hips)
         {
-            Vector3 toHead = _walker.Head.Pos - _walker.SpineFollower.Pos;
-            Vector3 toHips = _walker.Hips.Pos - _walker.SpineFollower.Pos;
+            Vector3 toHead = _lizardController.Head.Pos - _lizardController.SpineFollower.Pos;
+            Vector3 toHips = _lizardController.Hips.Pos - _lizardController.SpineFollower.Pos;
             if (toHead.LengthSquared() > 1e-9f && toHips.LengthSquared() > 1e-9f)
             {
                 spineAngleDeg = Mathf.RadToDeg(toHead.AngleTo(toHips));
@@ -719,7 +719,7 @@ public partial class SandboxWorld : Node3D
 
         if (_lastHeadPos != Vector3.Zero)
         {
-            Vector3 step = _walker.Head.Pos - _lastHeadPos;
+            Vector3 step = _lizardController.Head.Pos - _lastHeadPos;
             step.Y = 0f;
             _lastHeadPlanarStep = step;
             _walkDistance += step.Length();
@@ -728,12 +728,12 @@ public partial class SandboxWorld : Node3D
         {
             _lastHeadPlanarStep = Vector3.Zero;
         }
-        _lastHeadPos = _walker.Head.Pos;
-        _gripTickSum += _walker.LegsGripping;
-        _minTerrainSqueeze = Mathf.Min(_minTerrainSqueeze, _walker.Hips.TerrainSqueeze);
-        if (_walker.Body.EnablePostCollisionStructureRecovery)
+        _lastHeadPos = _lizardController.Head.Pos;
+        _gripTickSum += _lizardController.LegsGripping;
+        _minTerrainSqueeze = Mathf.Min(_minTerrainSqueeze, _lizardController.Hips.TerrainSqueeze);
+        if (_lizardController.Body.EnablePostCollisionStructureRecovery)
         {
-            foreach (BodyChunk c in _walker.Body.Chunks)
+            foreach (BodyChunk c in _lizardController.Body.Chunks)
             {
                 if (_rayDebug.SpherePenetration(c.Pos, c.TerrainRadius, out _, out float depth))
                 {
@@ -741,13 +741,13 @@ public partial class SandboxWorld : Node3D
                 }
             }
         }
-        if (!_walker.ApplyGravity)
+        if (!_lizardController.ApplyGravity)
         {
             _gravityOffTicks++;
         }
-        if (_walker.Head.Pos.Y > _maxHeadY)
+        if (_lizardController.Head.Pos.Y > _maxHeadY)
         {
-            _maxHeadY = _walker.Head.Pos.Y;
+            _maxHeadY = _lizardController.Head.Pos.Y;
         }
 
         // tick 末（碰撞后）的连接偏差：LastRelaxDeviation 只看松弛末，碰撞把 chunk 推回
@@ -791,7 +791,7 @@ public partial class SandboxWorld : Node3D
         {
             _nonFinite |= !c.Pos.IsFinite() || !c.Vel.IsFinite();
         }
-        foreach (Limb l in _walker.Limbs)
+        foreach (Limb l in _lizardController.Limbs)
         {
             _nonFinite |= !l.Pos.IsFinite();
         }
@@ -805,15 +805,15 @@ public partial class SandboxWorld : Node3D
 
         if (_regressionScenario == RegressionScenario.Turn && _turnRecoveryActive)
         {
-            Vector3 forward = _walker.Head.Pos - _walker.Hips.Pos;
-            forward -= _walker.SupportNormal * forward.Dot(_walker.SupportNormal);
-            Vector3 desired = _walker.MoveDir
-                - _walker.SupportNormal * _walker.MoveDir.Dot(_walker.SupportNormal);
+            Vector3 forward = _lizardController.Head.Pos - _lizardController.Hips.Pos;
+            forward -= _lizardController.SupportNormal * forward.Dot(_lizardController.SupportNormal);
+            Vector3 desired = _lizardController.MoveDir
+                - _lizardController.SupportNormal * _lizardController.MoveDir.Dot(_lizardController.SupportNormal);
             bool aligned = forward.LengthSquared() > 1e-10f && desired.LengthSquared() > 1e-10f
                 && forward.Normalized().Dot(desired.Normalized()) >= 0.5f;
             bool retainedWall = !_wallTurnDrive
-                || (_walker.SupportNormal.X >= 0.8f
-                    && _walker.Head.Pos.X <= CornerWallX + _walker.Head.TerrainRadius + 0.08f);
+                || (_lizardController.SupportNormal.X >= 0.8f
+                    && _lizardController.Head.Pos.X <= CornerWallX + _lizardController.Head.TerrainRadius + 0.08f);
             if (_wallTurnDrive)
             {
                 _wallTurnLostSupportRun = retainedWall ? 0 : _wallTurnLostSupportRun + 1;
@@ -892,22 +892,22 @@ public partial class SandboxWorld : Node3D
             bool wallContact = false;
             foreach (BodyChunk c in _bodies[0].Chunks)
             {
-                bool spineChunk = c == _walker.Head || c == _walker.SpineFollower || c == _walker.Hips;
+                bool spineChunk = c == _lizardController.Head || c == _lizardController.SpineFollower || c == _lizardController.Hips;
                 wallContact |= spineChunk && c.TerrainContact && c.ContactNormal.X >= 0.8f
                     && c.Pos.X <= CornerWallX + c.TerrainRadius + 0.05f;
             }
             if (_cornerContactTick < 0 && wallContact)
             {
                 _cornerContactTick = _tick;
-                _cornerStartHeadY = _walker.Head.Pos.Y;
+                _cornerStartHeadY = _lizardController.Head.Pos.Y;
             }
             if (_cornerContactTick >= 0)
             {
-                if (_cornerSupportTransitionTicks < 0 && _walker.SupportNormal.X >= 0.8f)
+                if (_cornerSupportTransitionTicks < 0 && _lizardController.SupportNormal.X >= 0.8f)
                 {
                     _cornerSupportTransitionTicks = _tick - _cornerContactTick;
                 }
-                _cornerFallbackRun = _walker.LastMoveTargetKind == MoveTargetKind.Fallback
+                _cornerFallbackRun = _lizardController.LastMoveTargetKind == MoveTargetKind.Fallback
                     ? _cornerFallbackRun + 1
                     : 0;
                 _maxCornerFallbackRun = Math.Max(_maxCornerFallbackRun, _cornerFallbackRun);
@@ -917,7 +917,7 @@ public partial class SandboxWorld : Node3D
                 _maxCornerBendRun = Math.Max(_maxCornerBendRun, _cornerBendRun);
                 if (float.IsNaN(_cornerRise60) && _tick >= _cornerContactTick + 60)
                 {
-                    _cornerRise60 = _walker.Head.Pos.Y - _cornerStartHeadY;
+                    _cornerRise60 = _lizardController.Head.Pos.Y - _cornerStartHeadY;
                 }
             }
         }
@@ -925,22 +925,22 @@ public partial class SandboxWorld : Node3D
 
     private void TrackCarrotTurnMetrics(bool spineRecovered)
     {
-        bool external = _walker.LastMoveTargetKind == MoveTargetKind.External
-            && _walker.MoveTarget is not null
-            && !_walker.AtMoveTarget;
+        bool external = _lizardController.LastMoveTargetKind == MoveTargetKind.External
+            && _lizardController.MoveTarget is not null
+            && !_lizardController.AtMoveTarget;
         if (!external)
         {
             _carrotTurnExternalViolations++;
         }
-        if (_walker.TurnAssistTicks > 0)
+        if (_lizardController.TurnAssistTicks > 0)
         {
             _carrotTurnAssistViolations++;
         }
 
-        Vector3 fullAxis = ProjectOnPlane(_walker.Head.Pos - _walker.Hips.Pos, _carrotTurnEventUp);
-        Vector3 frontAxis = ProjectOnPlane(_walker.Head.Pos - _walker.SpineFollower.Pos,
+        Vector3 fullAxis = ProjectOnPlane(_lizardController.Head.Pos - _lizardController.Hips.Pos, _carrotTurnEventUp);
+        Vector3 frontAxis = ProjectOnPlane(_lizardController.Head.Pos - _lizardController.SpineFollower.Pos,
             _carrotTurnEventUp);
-        Vector3 middleAxis = ProjectOnPlane(_walker.SpineFollower.Pos - _walker.Hips.Pos,
+        Vector3 middleAxis = ProjectOnPlane(_lizardController.SpineFollower.Pos - _lizardController.Hips.Pos,
             _carrotTurnEventUp);
 
         float frontErrorDeg = AngleDeg(frontAxis, _carrotTurnDesired);
@@ -955,8 +955,8 @@ public partial class SandboxWorld : Node3D
         _maxCarrotTurnMiddleLeadRun = Math.Max(_maxCarrotTurnMiddleLeadRun,
             _carrotTurnMiddleLeadRun);
 
-        float headResponse = (_walker.Head.Pos - _carrotTurnHeadStart).Dot(_carrotTurnDesired);
-        float followerResponse = (_walker.SpineFollower.Pos - _carrotTurnFollowerStart)
+        float headResponse = (_lizardController.Head.Pos - _carrotTurnHeadStart).Dot(_carrotTurnDesired);
+        float followerResponse = (_lizardController.SpineFollower.Pos - _carrotTurnFollowerStart)
             .Dot(_carrotTurnDesired);
         float followerTranslationLead = followerResponse - headResponse;
         _minCarrotTurnFollowerTranslationLead = Mathf.Min(_minCarrotTurnFollowerTranslationLead,
@@ -988,10 +988,10 @@ public partial class SandboxWorld : Node3D
             _carrotTurnAxisLagRecorded = true;
         }
 
-        bool headInFront = frontAxis.Dot(_carrotTurnDesired) >= _walker.HeadLinkLength * 0.5f;
+        bool headInFront = frontAxis.Dot(_carrotTurnDesired) >= _lizardController.HeadLinkLength * 0.5f;
         bool fullAxisAligned = fullAxis.LengthSquared() > 1e-10f
             && fullAxis.Normalized().Dot(_carrotTurnDesired) >= 0.5f;
-        Vector3 currentStep = _walker.Head.Pos - _lastHeadPos;
+        Vector3 currentStep = _lizardController.Head.Pos - _lastHeadPos;
         currentStep.Y = 0f;
         bool movingTowardTarget = currentStep.Dot(_carrotTurnDesired) >= CarrotTurnMinStep;
         _carrotTurnStableRun = external && headInFront && fullAxisAligned && spineRecovered
@@ -1029,7 +1029,7 @@ public partial class SandboxWorld : Node3D
                  $"({_maxConstraintDev / _bodies[0].Connections[0].RestLength * 100f:F1}% of rest) " +
                  $"maxFoldIntrusion={_maxFoldIntrusion:F3}m foldTicks={_foldTicks} " +
                  $"walkDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
-                 $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_walker.Limbs.Count} " +
+                 $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{_lizardController.Limbs.Count} " +
                  $"gravityOff={(float)_gravityOffTicks / _tick * 100f:F0}% maxHeadY={_maxHeadY:F2} " +
                  $"endDev={_endDevRatio:F2}x maxEndDev={_maxEndDevRatio:F2}x stretchTicks={_stretchTicks} " +
                  $"maxDeepRun={_maxDeepRun} snagReleases={_bodies[0].SnagReleases} " +
@@ -1037,7 +1037,7 @@ public partial class SandboxWorld : Node3D
                  $"maxAngleUnder100Run={_maxSpineAngleUnder100Run} " +
                  $"maxSpineSupportDeficit={_maxSpineSupportDeficitRatio:F2}x " +
                  $"maxSpineSupportRun={_maxSpineSupportRun} " +
-                 $"maxCornerStuck={_walker.MaxSpineCornerStuckTicks} minTerrainSqueeze={_minTerrainSqueeze:F2} " +
+                 $"maxCornerStuck={_lizardController.MaxSpineCornerStuckTicks} minTerrainSqueeze={_minTerrainSqueeze:F2} " +
                  $"postRecoveryPenetration={_maxPostRecoveryPenetration:F4}m");
         if (_regressionScenario == RegressionScenario.Turn)
         {
@@ -1077,10 +1077,10 @@ public partial class SandboxWorld : Node3D
                      $"supportTransition={_cornerSupportTransitionTicks} fallbackRun={_maxCornerFallbackRun} " +
                      $"bendRun={_maxCornerBendRun} rise60={_cornerRise60:F2}m");
         }
-        Vector3 sn = _walker.SupportNormal;
-        GD.Print($"[FINAL] walker applyGravity={_walker.ApplyGravity} footing={_walker.FootingCounter} " +
-                 $"noGrip={_walker.NoGripCounter} stall={_walker.StallTicks} " +
-                 $"headVel={_walker.Head.Vel.Length():F4} support=({sn.X:F3},{sn.Y:F3},{sn.Z:F3})");
+        Vector3 sn = _lizardController.SupportNormal;
+        GD.Print($"[FINAL] controller applyGravity={_lizardController.ApplyGravity} footing={_lizardController.FootingCounter} " +
+                 $"noGrip={_lizardController.NoGripCounter} stall={_lizardController.StallTicks} " +
+                 $"headVel={_lizardController.Head.Vel.Length():F4} support=({sn.X:F3},{sn.Y:F3},{sn.Z:F3})");
         for (int b = 0; b < _bodies.Count; b++)
         {
             Body body = _bodies[b];
@@ -1091,9 +1091,9 @@ public partial class SandboxWorld : Node3D
                          $"vel={c.Vel.Length():F5} contact={c.TerrainContact} r={c.Radius:F2}");
             }
         }
-        for (int i = 0; i < _walker.Limbs.Count; i++)
+        for (int i = 0; i < _lizardController.Limbs.Count; i++)
         {
-            Limb l = _walker.Limbs[i];
+            Limb l = _lizardController.Limbs[i];
             GD.Print($"[FINAL] limb={i} pos=({l.Pos.X:F4},{l.Pos.Y:F4},{l.Pos.Z:F4}) " +
                      $"grip={l.GripCounter} reaching={l.ReachingForTerrain} idle={l.IdlePose} " +
                      $"extra={l.ExtraLongStep} contact={l.TerrainContact}");
@@ -1153,7 +1153,7 @@ public partial class SandboxWorld : Node3D
         else if (_regressionScenario == RegressionScenario.CarrotTurn)
         {
             const int requiredTurns = 35;
-            if (_walker.SpineFollower == _walker.Hips)
+            if (_lizardController.SpineFollower == _lizardController.Hips)
             {
                 reasons.Add("胡萝卜转向指标需要 spine≥3（中段与髋不能是同一 chunk）");
             }
@@ -1189,7 +1189,7 @@ public partial class SandboxWorld : Node3D
             }
             if (_maxCarrotTurnAbsDirectionDot > 0.15f)
             {
-                reasons.Add($"Walker 实际收到的胡萝卜转向偏离 90° " +
+                reasons.Add($"LizardLocomotionController 实际收到的胡萝卜转向偏离 90° " +
                             $"（max |old·new|={_maxCarrotTurnAbsDirectionDot:F3} >0.15）");
             }
             if (_carrotTurnPositiveHandTurns < 12 || _carrotTurnNegativeHandTurns < 12)
@@ -1221,9 +1221,9 @@ public partial class SandboxWorld : Node3D
                 reasons.Add($"尾链释放后的身体恢复未全部在 40 tick 内完成（last={_postTailRecoveryTicks}, " +
                             $"max={_maxPostTailRecoveryTicks}, pending={_tailRecoveryActive}）");
             }
-            if (_walker.Hips.TerrainSqueeze < 0.999f)
+            if (_lizardController.Hips.TerrainSqueeze < 0.999f)
             {
-                reasons.Add($"尾链恢复后 terrainSqueeze 未复原（{_walker.Hips.TerrainSqueeze:F2}）");
+                reasons.Add($"尾链恢复后 terrainSqueeze 未复原（{_lizardController.Hips.TerrainSqueeze:F2}）");
             }
         }
         else if (_regressionScenario == RegressionScenario.Corner)
@@ -1262,7 +1262,7 @@ public partial class SandboxWorld : Node3D
         }
         UpdateCameraFly((float)delta);
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
-        _rayDebug.Draw(_camera, _walker);
+        _rayDebug.Draw(_camera, _lizardController);
     }
 
     /// <summary>右键held且不按Shift = 想要飞行摄像机（与 Shift+右键放胡萝卜互斥）。
@@ -1273,7 +1273,7 @@ public partial class SandboxWorld : Node3D
     /// <summary>编辑器式自由摄像机：右键（不按 Shift）按住时捕获鼠标，WASD 沿视线基向量平移、
     /// E/Q 沿世界竖直轴升降（不受俯仰影响，仰头时也是垂直上升），鼠标位移（_Input 里的
     /// InputEventMouseMotion）旋转视角。纯观察工具，跑在渲染帧、用真实 delta，不进物理 tick、
-    /// 不进确定性哈希——松开右键回到 Walker 输入与可见光标。</summary>
+    /// 不进确定性哈希——松开右键回到 LizardLocomotionController 输入与可见光标。</summary>
     private void UpdateCameraFly(float delta)
     {
         if (_probe is not null)
@@ -1347,7 +1347,7 @@ public partial class SandboxWorld : Node3D
             return;
         }
         // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
-        SpawnWalker(breeds[index], _walker.Hips.Pos + Vector3.Up * 0.5f);
+        SpawnLizard(breeds[index], _lizardController.Hips.Pos + Vector3.Up * 0.5f);
         _breedUI?.SyncSelection(index);
         GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
     }

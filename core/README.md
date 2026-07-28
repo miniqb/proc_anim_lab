@@ -9,7 +9,7 @@
 ## 文件
 
 - 内核：`BodyChunk` / `ChunkConnection` / `Body`（chunk 物理）、`Limb`（plant-and-trail 腿）、
-  `Walker`（重力开关 + 支撑系 + 推进）、`SphereTerrain`（球-地形共用解算）
+  `LizardLocomotionController`（重力开关 + 支撑系 + 推进）、`SphereTerrain`（球-地形共用解算）
 - 配置：`BreedParams`（品种参数表，纯出生配置）+ `BodyFactory`（装配器 + 四预设）
 - 接缝：`ITerrainQuery`（射线 + 球体穿透 MTD 两原语；零法线 = HitFromInside）
   - `godot/RaycastTerrainQuery.cs`：Godot 适配器（**归宿主程序集编译**，core csproj 排除它；
@@ -17,18 +17,23 @@
   - `PlaneTerrainQuery`：纯解析平面（测试用）
 - 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（无引擎冒烟）
 
+`BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
+`Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端。未来蜈蚣、人形等
+应在共享层之上增加并列控制器，不向这个类继续堆物种分支。
+
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 
 ```csharp
 var terrain = new PlaneTerrainQuery(0f);                  // 或宿主的射线适配器
-Walker walker = BodyFactory.CreateWalker(new Vector3(0, 0.6f, 0), BodyFactory.Default());
+LizardLocomotionController controller = BodyFactory.CreateLizardController(
+    new Vector3(0, 0.6f, 0), BodyFactory.Default());
 var gravityPerTick = new Vector3(0f, -36f * 0.025f * 0.025f, 0f);
 
 for (long tick = 1; ; tick++)                             // 固定 40 tick/s（宿主自备累加器）
 {
-    walker.MoveDir = new Vector3(1f, 0f, 0f);             // AI 的两个旋钮
-    walker.RunSpeed = 1f;
-    walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+    controller.MoveDir = new Vector3(1f, 0f, 0f);          // AI 的两个旋钮
+    controller.RunSpeed = 1f;
+    controller.Tick(new TickContext(gravityPerTick, terrain, tick));
     // 渲染帧另行读 chunk.LerpPos(t) / limb.LerpPos(t)，t = 物理插值分数
 }
 ```

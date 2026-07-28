@@ -16,7 +16,7 @@ public sealed class BodyRenderer
     private readonly List<(Limb Limb, MeshInstance3D Node)> _feet = new();
     private readonly List<ChunkConnection> _connections = new();
     private readonly List<Limb> _limbs = new();
-    private Walker? _walker;
+    private LizardLocomotionController? _lizardController;
     private ImmediateMesh? _lineMesh;
     private MeshInstance3D? _lineNode;
 
@@ -27,9 +27,9 @@ public sealed class BodyRenderer
     private StandardMaterial3D _footSwing = null!;
 
     public void Build(Node3D parent, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null,
-        Walker? walker = null)
+        LizardLocomotionController? controller = null)
     {
-        _walker = walker;
+        _lizardController = controller;
         _chunkFalling = new StandardMaterial3D { AlbedoColor = new Color(0.85f, 0.35f, 0.3f) };
         _chunkFooted = new StandardMaterial3D { AlbedoColor = new Color(0.3f, 0.65f, 0.7f) };
         foreach (Body body in bodies)
@@ -106,12 +106,12 @@ public sealed class BodyRenderer
         _feet.Clear();
         _connections.Clear();
         _limbs.Clear();
-        _walker = null;
+        _lizardController = null;
     }
 
     public void Draw(float t)
     {
-        StandardMaterial3D chunkMat = _walker is { ApplyGravity: false } ? _chunkFooted : _chunkFalling;
+        StandardMaterial3D chunkMat = _lizardController is { ApplyGravity: false } ? _chunkFooted : _chunkFalling;
         foreach ((BodyChunk chunk, MeshInstance3D node) in _spheres)
         {
             node.Position = chunk.LerpPos(t);

@@ -3,7 +3,7 @@ using Godot;
 
 namespace ProcAnim.Core;
 
-/// <summary>推进目标（<see cref="Walker.FindMoveTarget"/> 的胡萝卜）来源分支。
+/// <summary>推进目标（<see cref="LizardLocomotionController.FindMoveTarget"/> 的胡萝卜）来源分支。
 /// 纯观测：供调试绘制与宿主读取，内核不回读、不进确定性哈希。</summary>
 public enum MoveTargetKind
 {
@@ -20,13 +20,15 @@ public enum MoveTargetKind
 	/// 长期停留在此分支 = 身体在追一根悬空胡萝卜（棱边悬空上飘姿态的来源）。</summary>
 	Fallback,
 
-	/// <summary>宿主直喂的路径点（<see cref="Walker.MoveTarget"/> 旋钮，≙ RW 寻路器给的
+	/// <summary>宿主直喂的路径点（<see cref="LizardLocomotionController.MoveTarget"/> 旋钮，≙ RW 寻路器给的
 	/// followingConnection 目标格）：跳过射线构造；实际推进胡萝卜可能按支撑系重定向。</summary>
 	External,
 }
 
 /// <summary>
-/// 会走路的生物 = Body（chunk 物理）+ 若干 Limb（plant-and-trail 腿）+ 推进力。
+/// 蜥蜴式运动控制器 = Body（chunk 物理）+ 若干 Limb（plant-and-trail 腿）+ 推进力。
+/// 这是 Lizard 专属 locomotion backend，不是所有生物共用的通用行走控制器；未来蜈蚣、人形等
+/// 应在共享 Body/地形原语之上实现各自并列的运动控制器。
 /// 镜像 RW Lizard 的移动块：腿的抓握既是锚也是引擎——推进力 ∝ 抓地腿数
 /// （frameSpeed = BaseSpeed · gripFac · RunSpeed），没腿抓地就几乎使不上劲。
 ///
@@ -38,7 +40,7 @@ public enum MoveTargetKind
 /// · 移动意图被支撑面挡住的分量沿面内上坡方向重定向：推着墙走自然变成往上爬。
 /// 无状态机：MoveDir/RunSpeed（或可选 MoveTarget）是输入，「抓住/没抓住」是唯一开关。
 /// </summary>
-public sealed class Walker
+public sealed class LizardLocomotionController
 {
 	public readonly Body Body;
 	public readonly List<Limb> Limbs = new();
@@ -223,7 +225,7 @@ public sealed class Walker
 	/// <summary>本 tick 的推进目标点（仅 <see cref="LastMoveTargetKind"/> ≠ None 时有效）。</summary>
 	public Vector3 LastMoveTarget { get; private set; }
 
-	public Walker(Body body, BodyChunk head, BodyChunk hips, BodyChunk spineFollower)
+	public LizardLocomotionController(Body body, BodyChunk head, BodyChunk hips, BodyChunk spineFollower)
 	{
 		Body = body;
 		Head = head;
