@@ -18,18 +18,18 @@ LOG=/private/tmp/godot_codex.log
 HASH_DEFAULT=EE1CD7D5CB648C9B
 HASH_WALL=7A8169F9D9389F86
 HASH_STAND=D9F94BB9262BD2ED
-HASH_HEAVY=F1BC94197382DF1A
+HASH_HEAVY=8315CD340EE9C580
 HASH_SPRINTER=60BF6780B4011C22
-HASH_HEXAPOD=64E5409012F13C4E
+HASH_HEXAPOD=16815326C023AC80
 HASH_CARROT=F03E9DA79674A7C4
-HASH_WALL_HEAVY=8FE0128B30647C61
-HASH_WALL_HEXAPOD=793B258493A112DC
-HASH_TURN_HEXAPOD=82B5C4C4F123AA14
-HASH_WALL_TURN_HEXAPOD=66B57A14556701E7
-HASH_CARROT_TURN_HEAVY=F69571BC2104F78C
-HASH_CARROT_TURN_HEXAPOD=549C9830D4D98B8C
-HASH_WALL_TAIL=20B5CE11B5D0A817
-HASH_WALL_CORNER=DE4BD6E741B490E9
+HASH_WALL_HEAVY=7A5D1D36900F6440
+HASH_WALL_HEXAPOD=E92282BB5EBB4CF2
+HASH_TURN_HEXAPOD=0204E3BB5F8DEA7F
+HASH_WALL_TURN_HEXAPOD=4CBAA86B86D0D0AE
+HASH_CARROT_TURN_HEAVY=3771A59BBEA8BFC2
+HASH_CARROT_TURN_HEXAPOD=5242DACF5544403E
+HASH_WALL_TAIL=4E84FC3E4EBA1BE3
+HASH_WALL_CORNER=CCCFDC1A3D452797
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -75,7 +75,7 @@ run() {
 
 final_hash() { grep '^\[DET\]' "$OUT/$1.txt" | tail -1 | sed 's/.*hash=//'; }
 
-# 路点下限取当前参考值约 75~80%；小基数向紧取整（heavy 参考 8 → 下限 7），
+# 路点下限取当前参考值约 75~80%；小基数向紧取整（heavy 当前参考 7 → 下限 7），
 # 微扰轨迹有意发散，取更宽的「仍在健康走路线」下限。
 run default    "$HASH_DEFAULT"  9  2000 --tps=400
 run default-b  "$HASH_DEFAULT"  9  2000 --tps=400
@@ -100,7 +100,7 @@ run stand      "$HASH_STAND"    -  2000 --tps=400 --route=stand --spawn=-6,3.7,0
 run carrot     "$HASH_CARROT"   20 2000 --tps=400 --route=carrot
 run heavy      "$HASH_HEAVY"    7  2000 --tps=400 --breed=heavy
 run sprinter   "$HASH_SPRINTER" 12 2000 --tps=400 --breed=sprinter
-run hexapod    "$HASH_HEXAPOD"  7  2000 --tps=400 --breed=hexapod
+run hexapod    "$HASH_HEXAPOD"  8  2000 --tps=400 --breed=hexapod
 # 评审复现固化:嵌入脱困（P1-3）与贴墙擦边（P1-2），位置断言在下方
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0

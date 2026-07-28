@@ -43,6 +43,7 @@ internal static class Program
         bool rotationOk = CheckRotationTopology(out string rotationMsg);
         bool recoveryOk = CheckRecoveryInvariants(out string recoveryMsg);
         bool wallPoseOk = CheckWallPoseStability(out string wallPoseMsg);
+        bool heavyMountOk = CheckHeavyWallMount(out string heavyMountMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -55,6 +56,7 @@ internal static class Program
         Console.WriteLine($"[CORE-ROTATION] {rotationMsg}");
         Console.WriteLine($"[CORE-RECOVERY] {recoveryMsg}");
         Console.WriteLine($"[CORE-WALL-POSE] {wallPoseMsg}");
+        Console.WriteLine($"[CORE-HEAVY-MOUNT] {heavyMountMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -108,6 +110,10 @@ internal static class Program
         if (!wallPoseOk)
         {
             reasons.Add("墙顶顶死时髋部侧摆失稳或未回到头后方");
+        }
+        if (!heavyMountOk)
+        {
+            reasons.Add("heavy 上墙前段未及时沿墙、链尾未按期收敛，或停驶时被吸向墙");
         }
 
         bool pass = reasons.Count == 0;
@@ -436,6 +442,312 @@ internal static class Program
         message = $"连接互绑={bind}，后建覆盖={overwrite}，退化语义={degenerate}，" +
                   $"脊柱钉定+尾链拓扑（四预设+合成 spine4）={pinned}";
         return bind && overwrite && degenerate && pinned;
+    }
+
+    /// <summary>heavy 上墙弓起回归（2026-07 取证轮）：三节脊柱链尾无驱动、长硬尾经尾根
+    /// WeightA 机械回拉（纯化消融：只解耦尾根与整条摘尾逐项同值——Footing 记账贡献为零）、
+    /// 后腿超出 JointDist 可及圈被逐 tick 全拒、抓稳关重力让悬臂力中性——四者叠加时
+    /// 髋部曾悬在墙外最长 1.5s（后腿重抓 +59 tick）慢慢才被爬行拖平。场景 = 概率扫描出的
+    /// 最坏种子（spawn -3.0、接近偏角 10°，弓起深浅取决于撞墙步态相位）。后续用户实测又
+    /// 暴露「内部已近 180°、整条却水平伸出」的假修复：交接期允许前段沿墙、后段留地形成
+    /// 约 90°~140° 的 L/斜线，不能再拿全身内角当唯一美观指标。双场景断言：
+    /// ① 10°/0° 两种接近：Head 真接触墙后前段 15 tick 内连续两 tick 进入沿墙 30°；
+    ///   真抓墙瞬间分别约束前段沿墙/法向，交接内部角不得低于 90°；随后后腿重抓 ≤45 tick、
+    ///   脊柱角回到 ≥160° ≤40 tick、此后不得再塌回 &lt;140°；② RunSpeed=0.25 仍能有限、
+    ///   按比例地完成上墙；③ 上墙后停驶（mount+15 切零输入）：终态仍挂墙、脊柱角 ≥165° 且
+    ///   停驶期髋离墙 ≥0.35m——钉死「朝最近墙面吸」类实现（停驶时无推进力抵消，会把停在
+    ///   近直姿态的身体主动折进墙角：实测 174°→135°、髋吸到 0.30m 贴死，用户实测回归）。</summary>
+    private static bool CheckHeavyWallMount(out string message)
+    {
+        (int Mount, int FrontAlignDelta, float FrontUpAtMount, float FrontNormalAtMount,
+            int RegripDelta, int AngleSettleDelta, float MinAngle, float MinAngleAfterSettle,
+            float MinAngleFinalWindow, float FinalAngle, bool Finite) angled = RunHeavyMount(
+                spawnX: -3f, yawDegrees: 10f, runSpeed: 1f, maxTicks: 400);
+        (int Mount, int FrontAlignDelta, float FrontUpAtMount, float FrontNormalAtMount,
+            int RegripDelta, int AngleSettleDelta, float MinAngle, float MinAngleAfterSettle,
+            float MinAngleFinalWindow, float FinalAngle, bool Finite) straight = RunHeavyMount(
+                spawnX: -3f, yawDegrees: 0f, runSpeed: 1f, maxTicks: 400);
+        (int Mount, int FrontAlignDelta, float FrontUpAtMount, float FrontNormalAtMount,
+            int RegripDelta, int AngleSettleDelta, float MinAngle, float MinAngleAfterSettle,
+            float MinAngleFinalWindow, float FinalAngle, bool Finite) lowThrottle = RunHeavyMount(
+                spawnX: -3f, yawDegrees: 10f, runSpeed: 0.25f, maxTicks: 400);
+        (int Mount, float FinalAngle, float MinWallGap, float FinalHeadHeight,
+            int FinalGripRun, bool FinalAttached, bool Finite) stopped =
+            RunHeavyMountStopped(stopAfterMount: 15);
+
+        bool angledOk = angled.Finite && angled.Mount > 0
+            && angled.FrontAlignDelta is >= 0 and <= 15
+            && angled.FrontUpAtMount >= 0.5f
+            && angled.FrontNormalAtMount <= 0.75f
+            && angled.RegripDelta is >= 0 and <= 45
+            && angled.AngleSettleDelta is >= 0 and <= 40
+            && angled.MinAngle >= 90f
+            && angled.MinAngleAfterSettle >= 140f;
+        bool straightOk = straight.Finite && straight.Mount > 0
+            && straight.FrontAlignDelta is >= 0 and <= 15
+            && straight.FrontUpAtMount >= 0.55f
+            && straight.FrontNormalAtMount <= 0.82f
+            && straight.RegripDelta is >= 0 and <= 45
+            && straight.AngleSettleDelta is >= 0 and <= 40
+            && straight.MinAngle >= 90f
+            && straight.MinAngleAfterSettle >= 140f;
+        bool lowThrottleOk = lowThrottle.Finite && lowThrottle.Mount > 0
+            && lowThrottle.FrontAlignDelta is >= 0 and <= 40
+            && lowThrottle.RegripDelta is >= 0 and <= 120
+            && lowThrottle.MinAngle >= 90f;
+        bool stoppedOk = stopped.Finite && stopped.Mount > 0
+            && stopped.FinalAngle >= 165f
+            && stopped.MinWallGap >= 0.35f
+            && stopped.FinalHeadHeight >= 0.8f
+            && stopped.FinalGripRun >= 20
+            && stopped.FinalAttached;
+
+        int sweepMounted = 0, sweepAligned = 0, sweepRegripped = 0;
+        int sweepMountPose = 0, sweepAngles = 0, sweepStable = 0;
+        int maxSweepAlign = -1, maxSweepRegrip = -1;
+        float maxSweepNormal = 0f, minSweepAngle = 181f;
+        bool sweepOk = true;
+        for (int spawnIndex = 0; spawnIndex < 11; spawnIndex++)
+        {
+            float spawnX = -2.4f - spawnIndex * 0.2f;
+            for (int yawIndex = 0; yawIndex < 4; yawIndex++)
+            {
+                var sample = RunHeavyMount(
+                    spawnX, yawDegrees: yawIndex * 10f, runSpeed: 1f, maxTicks: 400);
+                if (sample.Mount > 0)
+                {
+                    sweepMounted++;
+                }
+                if (sample.FrontAlignDelta is >= 0 and <= 15)
+                {
+                    sweepAligned++;
+                }
+                if (sample.RegripDelta is >= 0 and <= 45)
+                {
+                    sweepRegripped++;
+                }
+                if (sample.FrontNormalAtMount <= 0.93f)
+                {
+                    sweepMountPose++;
+                }
+                if (sample.MinAngle >= 90f)
+                {
+                    sweepAngles++;
+                }
+                if (sample.MinAngleFinalWindow >= 165f)
+                {
+                    sweepStable++;
+                }
+                maxSweepAlign = Math.Max(maxSweepAlign, sample.FrontAlignDelta);
+                maxSweepRegrip = Math.Max(maxSweepRegrip, sample.RegripDelta);
+                maxSweepNormal = Mathf.Max(maxSweepNormal, sample.FrontNormalAtMount);
+                minSweepAngle = Mathf.Min(minSweepAngle, sample.MinAngle);
+                sweepOk &= sample.Finite && sample.Mount > 0
+                    && sample.FrontAlignDelta is >= 0 and <= 15
+                    && sample.FrontNormalAtMount <= 0.93f
+                    && sample.RegripDelta is >= 0 and <= 45
+                    && sample.MinAngle >= 90f
+                    && sample.MinAngleFinalWindow >= 165f;
+            }
+        }
+
+        message = $"10°：上墙 t{angled.Mount}，前段沿墙Δ={angled.FrontAlignDelta}tick（≤15），" +
+                  $"上墙瞬间沿墙/法向={angled.FrontUpAtMount:F2}/{angled.FrontNormalAtMount:F2}" +
+                  $"（≥0.50/≤0.75），" +
+                  $"重抓Δ={angled.RegripDelta}，最小/恢复后角={angled.MinAngle:F0}/{angled.MinAngleAfterSettle:F0}°；" +
+                  $"0°：沿墙Δ={straight.FrontAlignDelta}tick（≤15），上墙瞬间沿墙/法向=" +
+                  $"{straight.FrontUpAtMount:F2}/{straight.FrontNormalAtMount:F2}，" +
+                  $"重抓Δ={straight.RegripDelta}，最小角={straight.MinAngle:F0}°；" +
+                  $"低油门0.25：上墙 t{lowThrottle.Mount}，沿墙Δ={lowThrottle.FrontAlignDelta}，" +
+                  $"重抓Δ={lowThrottle.RegripDelta}；停驶：终态角={stopped.FinalAngle:F0}°，" +
+                  $"头高={stopped.FinalHeadHeight:F2}m，髋离墙最小={stopped.MinWallGap:F2}m，" +
+                  $"连续挂墙={stopped.FinalGripRun}tick；44扫：mount/沿墙/重抓/瞬时姿态/角/终稳=" +
+                  $"{sweepMounted}/{sweepAligned}/{sweepRegripped}/{sweepMountPose}/" +
+                  $"{sweepAngles}/{sweepStable}（/44），" +
+                  $"max沿墙Δ/重抓Δ={maxSweepAlign}/{maxSweepRegrip}，" +
+                  $"max法向={maxSweepNormal:F2}，min角={minSweepAngle:F0}°";
+        return angledOk && straightOk && lowThrottleOk && stoppedOk && sweepOk;
+    }
+
+    private static (int Mount, int FrontAlignDelta, float FrontUpAtMount,
+        float FrontNormalAtMount, int RegripDelta, int AngleSettleDelta,
+        float MinAngle, float MinAngleAfterSettle, float MinAngleFinalWindow,
+        float FinalAngle, bool Finite) RunHeavyMount(
+            float spawnX, float yawDegrees, float runSpeed, int maxTicks)
+    {
+        var terrain = new WallPoseTerrain(floorY: 0f, wallX: -5f, ceilingY: 100f);
+        Walker walker = BodyFactory.CreateWalker(new Vector3(spawnX, 0.4f, 0f), BodyFactory.Heavy());
+        var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        float yaw = Mathf.DegToRad(yawDegrees);
+        Vector3 move = new(-Mathf.Cos(yaw), 0f, Mathf.Sin(yaw));
+
+        int frontContact = -1, frontAlignCandidate = -1, frontAlign = -1;
+        int mount = -1, regrip = -1, angleSettle = -1;
+        float frontUpAtMount = -1f, frontNormalAtMount = 99f;
+        float minAngle = 181f, minAngleAfterSettle = 181f;
+        float minAngleFinalWindow = 181f, finalAngle = 180f;
+        bool finite = true;
+        for (long tick = 1; tick <= maxTicks; tick++)
+        {
+            walker.MoveDir = move;
+            walker.RunSpeed = runSpeed;
+            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+
+            bool frontWallContact = walker.Head.TerrainContact
+                && walker.Head.ContactNormal.X > 0.7f;
+            bool frontWall = false, rearWall = false;
+            foreach (Limb limb in walker.Limbs)
+            {
+                if (limb.GripNormal.X <= 0.7f)
+                {
+                    continue;
+                }
+                if (limb.Anchor == walker.Head)
+                {
+                    frontWallContact |= limb.GripCounter > 0;
+                    frontWall |= limb.Gripping;
+                }
+                else if (limb.Gripping)
+                {
+                    rearWall = true;
+                }
+            }
+            float angle = SpineAngleDeg(walker);
+            finalAngle = angle;
+            if (tick > maxTicks - 20)
+            {
+                minAngleFinalWindow = Mathf.Min(minAngleFinalWindow, angle);
+            }
+            Vector3 frontAxis = walker.Head.Pos - walker.SpineFollower.Pos;
+            Vector3 wallClimb = new(0f, Mathf.Cos(yaw), Mathf.Sin(yaw));
+            float frontAngle = frontAxis.LengthSquared() < 1e-10f
+                ? 180f
+                : Mathf.RadToDeg(Mathf.Acos(Mathf.Clamp(
+                    frontAxis.Normalized().Dot(wallClimb), -1f, 1f)));
+            if (frontContact < 0 && frontWallContact)
+            {
+                frontContact = (int)tick;
+            }
+            if (frontContact > 0 && frontAlign < 0)
+            {
+                if (frontWallContact && frontAngle <= 30f)
+                {
+                    if (frontAlignCandidate < 0)
+                    {
+                        frontAlignCandidate = (int)tick;
+                    }
+                    else if (tick == frontAlignCandidate + 1)
+                    {
+                        frontAlign = frontAlignCandidate;
+                    }
+                }
+                else
+                {
+                    frontAlignCandidate = -1;
+                }
+            }
+            if (mount < 0 && frontWall)
+            {
+                mount = (int)tick;
+                frontUpAtMount = frontAxis.LengthSquared() < 1e-10f
+                    ? -1f
+                    : frontAxis.Normalized().Dot(wallClimb);
+                Vector3 frontRear = walker.SpineFollower.Pos - walker.Head.Pos;
+                frontNormalAtMount = frontRear.LengthSquared() < 1e-10f
+                    ? 1f
+                    : Mathf.Abs(frontRear.Normalized().Dot(Vector3.Right));
+            }
+            if (mount > 0)
+            {
+                minAngle = Mathf.Min(minAngle, angle);
+                if (regrip < 0 && rearWall)
+                {
+                    regrip = (int)tick;
+                }
+                if (angleSettle < 0 && minAngle < 160f && angle >= 160f)
+                {
+                    angleSettle = (int)tick;
+                }
+                if (angleSettle > 0 && tick > angleSettle)
+                {
+                    minAngleAfterSettle = Mathf.Min(minAngleAfterSettle, angle);
+                }
+            }
+            finite &= walker.Head.Pos.IsFinite() && walker.Hips.Pos.IsFinite();
+        }
+        int settleDelta = minAngle >= 160f
+            ? 0
+            : angleSettle < 0 || mount < 0 ? -1 : angleSettle - mount;
+        return (mount,
+            frontAlign < 0 || frontContact < 0 ? -1 : frontAlign - frontContact,
+            frontUpAtMount,
+            frontNormalAtMount,
+            regrip < 0 || mount < 0 ? -1 : regrip - mount,
+            settleDelta,
+            minAngle,
+            minAngleAfterSettle,
+            minAngleFinalWindow,
+            finalAngle, finite);
+    }
+
+    private static (int, float, float, float, int, bool, bool) RunHeavyMountStopped(int stopAfterMount)
+    {
+        var terrain = new WallPoseTerrain(floorY: 0f, wallX: -5f, ceilingY: 100f);
+        Walker walker = BodyFactory.CreateWalker(new Vector3(-3f, 0.4f, 0f), BodyFactory.Heavy());
+        var gravityPerTick = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        float yaw = Mathf.DegToRad(10f);
+        Vector3 move = new(-Mathf.Cos(yaw), 0f, Mathf.Sin(yaw));
+
+        int mount = -1;
+        float minWallGap = 99f, finalAngle = 0f, finalHeadHeight = 0f;
+        int finalGripRun = 0;
+        bool finalAttached = false, finite = true;
+        for (long tick = 1; tick <= 700; tick++)
+        {
+            bool stop = mount > 0 && tick > mount + stopAfterMount;
+            walker.MoveDir = stop ? Vector3.Zero : move;
+            walker.RunSpeed = stop ? 0f : 1f;
+            walker.Tick(new TickContext(gravityPerTick, terrain, tick));
+
+            if (mount < 0)
+            {
+                foreach (Limb limb in walker.Limbs)
+                {
+                    if (limb.Anchor == walker.Head && limb.Gripping && limb.GripNormal.X > 0.7f)
+                    {
+                        mount = (int)tick;
+                        break;
+                    }
+                }
+            }
+            if (stop)
+            {
+                minWallGap = Mathf.Min(minWallGap, walker.Hips.Pos.X - (-5f));
+            }
+            finalAngle = SpineAngleDeg(walker);
+            finalHeadHeight = walker.Head.Pos.Y;
+            finalAttached = false;
+            foreach (Limb limb in walker.Limbs)
+            {
+                finalAttached |= limb.Gripping && limb.GripNormal.X > 0.7f;
+            }
+            finalGripRun = finalAttached ? finalGripRun + 1 : 0;
+            finite &= walker.Head.Pos.IsFinite() && walker.Hips.Pos.IsFinite();
+        }
+        return (mount, finalAngle, minWallGap, finalHeadHeight,
+            finalGripRun, finalAttached, finite);
+    }
+
+    private static float SpineAngleDeg(Walker walker)
+    {
+        Vector3 toHead = walker.Head.Pos - walker.SpineFollower.Pos;
+        Vector3 toHips = walker.Hips.Pos - walker.SpineFollower.Pos;
+        if (toHead.LengthSquared() < 1e-10f || toHips.LengthSquared() < 1e-10f)
+        {
+            return 0f;
+        }
+        return Mathf.RadToDeg(Mathf.Acos(Mathf.Clamp(
+            toHead.Normalized().Dot(toHips.Normalized()), -1f, 1f)));
     }
 
     /// <summary>wall-pose 回归：墙+天花板把头顶死后，旧拖尾点会把 1cm 髋部侧扰动

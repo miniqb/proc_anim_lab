@@ -130,6 +130,26 @@ public sealed class Walker
 	/// 「头前+向上」的飞行胡萝卜，在支撑系旋转跟上之前把身体持续往天上推。</summary>
 	public float CrestProbeDepth = 1.5f;
 
+	/// <summary>链尾静息位回摆增益（每 tick 比例；仅 spine≥3 生效——spine=2 时链尾就是吃
+	/// 拖尾点驱动的 SpineFollower，结构上排除，基线不动）。修的是 3D 化新增的自由度：
+	/// RW 2D 侧视里「垂直于墙面伸出去」的方向不存在，链尾无驱动也不会悬臂；3D 里上墙
+	/// 交接期髋悬在墙外 0.5~0.8m、重力已关、后腿超出可及圈、拉直力 &gt;120° 全休——悬臂
+	/// 成了力中性姿态，只能靠爬行拖拽以 τ≈25 tick 被动衰减（heavy 弓起最长 1.5s 的主因）。
+	/// 静息位 = 沿「头→SpineFollower」轴再延长到链尾当前半径处（纯姿态几何，零地形查询），
+	/// 施力前显式去掉径向分量——只驱动绕 SpineFollower 的回摆，不压缩/拉伸链条。
+	/// 两个被实测否决的方案：沿移动/目标轴直接拖链尾（重引多节 V 形，SpineFollower 修复轮）；
+	/// 沿 -SupportNormal 朝最近墙面吸（停驶时无推进力抵消，把停在近直姿态的身体主动
+	/// 折进墙角——夹角 174°→135° 锁死，2026-07 用户实测回归）。坠落态交还重力，不造抓地。</summary>
+	public float RearBraceGain = 0.15f;
+
+	/// <summary>Heavy 类「三节脊柱、无中段腿」上墙交接时的前段沿面回摆增益。
+	/// Head 腿的射线落点或身体真接触先给出未经混合的局部墙法线，避开 SupportNormal
+	/// 仍混着地面的滞后；SpineFollower 绕 Head 纯切向预转，Head 同步沿面走，绝不沿
+	/// 法线吸墙或直接驱动 Hips。预摆在中铰到 120° 时停止追加伺服，前段进入沿墙 30°、全局支撑
+	/// 接管、后段踩到同面或进入 Crest 后都会熄火；速度按 RunSpeed 缩放并以目标速度补差，
+	/// 不逐 tick 累积冲量。中段有腿的拓扑会自行反馈局部支撑面，结构上排除。</summary>
+	public float FrontMountGain = 0.35f;
+
 	/// <summary>步进方向中移动意图对身体朝向的混合权重（≙ LizardLimb 的 0.4）。</summary>
 	public float SteerBlend = 0.4f;
 
@@ -290,6 +310,8 @@ public sealed class Walker
 		UpdateTurnAssist();
 		Vector3 effMove = HasMoveIntent ? RedirectMove(up) : Vector3.Zero;
 		ApplyLocomotionForce(ctx, effMove, up);
+		ApplyFrontMountAssist(up);
+		ApplyRearBrace();
 		UpdateTerrainSqueeze();
 		Body.EnablePostCollisionStructureRecovery = SpineCornerStuckTicks >= 10;
 		Body.Tick(ctx);
@@ -536,6 +558,206 @@ public sealed class Walker
 			? SupportNormal.Normalized()
 			: up;
 		ApplyTurnAssist(effMove, turnUp, recoverySpeed);
+	}
+
+	/// <summary>链尾静息位回摆（见 <see cref="RearBraceGain"/>）：抓稳期把链尾朝
+	/// 「SpineFollower + 头→SpineFollower 轴 × 链尾当前半径」的直脊柱静息位回摆。
+	/// 力先去径向（绕 SpineFollower 的纯切向）——径向分量要么被刚性连接吃掉、要么
+	/// 变成压链折叠压力，都不产生回摆；对齐后 delta≈0 自然熄火。悬臂态它给出爬行
+	/// 拖拽本来要等 τ≈25 tick 才给的下摆；上墙后停驶时前段轴指哪就摆到哪，不会
+	/// 无中生有把身体拉向墙。注入沿用 MaxMoveSpeed 余量钳制。零地形查询、零射线。</summary>
+	private void ApplyRearBrace()
+	{
+		if (Hips == SpineFollower || ApplyGravity)
+		{
+			return;
+		}
+		// 注：曾试过翻越窗口（Crest）豁免——直觉是「翻越期脊柱本该绕棱线弯，回摆在对抗它」，
+		// 实测反向：回摆把链尾持续送向棱线，正是翻越吞吐的助力（豁免后 wall-heavy 翻越
+		// 8→6、heavy 巡逻 8→6，巡逻路线含翻越段所以平地配置一并受损）。不设窗口分支。
+		Vector3 axisRaw = SpineFollower.Pos - Head.Pos;
+		if (axisRaw.LengthSquared() < 1e-8f)
+		{
+			return; // 头与中段近重合：轴未定义，本 tick 不施力（约束松弛会先拉开）
+		}
+		Vector3 rest = SpineFollower.Pos
+			+ axisRaw.Normalized() * (Hips.Pos - SpineFollower.Pos).Length();
+		Vector3 delta = rest - Hips.Pos;
+		Vector3 radial = Dir(SpineFollower.Pos, Hips.Pos);
+		delta -= radial * delta.Dot(radial);
+		float mag = delta.Length();
+		if (mag < 1e-6f)
+		{
+			return;
+		}
+		Vector3 dir = delta / mag;
+		float headroom = MaxMoveSpeed - Hips.Vel.Dot(dir);
+		if (headroom > 0f)
+		{
+			Hips.Vel += dir * Mathf.Min(mag * RearBraceGain, headroom);
+		}
+	}
+
+	/// <summary>上墙交接的前段局部姿态伺服（见 <see cref="FrontMountGain"/>）。
+	/// 完全由本 tick 的射线落点/接触拓扑与几何门派生，不新增 locomotion 状态机：
+	/// Head 正在伸向陡面且原始意图正推入该面时预转，真接触后可继续；局部法线绕开
+	/// SupportNormal 的地/墙混合低通，后段/全局支撑接管后立即结束。</summary>
+	private void ApplyFrontMountAssist(Vector3 worldUp)
+	{
+		if (FrontMountGain <= 0f || Hips == SpineFollower || !HasMoveIntent
+			|| LastMoveTargetKind == MoveTargetKind.Crest || MoveDir.LengthSquared() < 1e-10f)
+		{
+			return;
+		}
+		foreach (Limb limb in Limbs)
+		{
+			if (limb.Anchor == SpineFollower)
+			{
+				return; // 中段有腿的拓扑会自行把局部支撑面喂给 SupportNormal，不属于 Heavy 空窗
+			}
+		}
+
+		Vector3 headNormalSum = Vector3.Zero;
+		int headSurfaceCount = 0;
+		bool headHasRealSurfaceContact = false;
+		foreach (Limb limb in Limbs)
+		{
+			bool backedWallTarget = limb.GripCounter > 0
+				|| (limb.ReachingForTerrain && limb.HasGrip);
+			if (limb.Anchor != Head || !backedWallTarget
+				|| limb.GripNormal.LengthSquared() < 1e-10f)
+			{
+				continue;
+			}
+			Vector3 candidate = limb.GripNormal.Normalized();
+			float upDot = candidate.Dot(worldUp);
+			// 只接陡墙/陡坡：排除地面与悬垂底面。HasGrip 是本 tick 射线背书的真实地形
+			// 落点；允许脚尚在伸过去时预转姿态，但不改 GripCounter/Gripping，不造抓地。
+			if (upDot < -0.3f || upDot >= 0.5f)
+			{
+				continue;
+			}
+			headNormalSum += candidate;
+			headSurfaceCount++;
+			headHasRealSurfaceContact |= limb.GripCounter > 0;
+		}
+		// 正撞墙时两条 Head 腿可能同 tick 换步；只靠 GripCounter 会在最需要转向的几 tick
+		// 断电。身体球的碰撞法线是同样的真实地形证据，可在腿接触暂缺时补位；必须与
+		// TerrainContact 配套读取，绝不缓存上一段墙面的过期法线。
+		if (headSurfaceCount == 0 && Head.TerrainContact
+			&& Head.ContactNormal.LengthSquared() >= 1e-10f)
+		{
+			Vector3 candidate = Head.ContactNormal.Normalized();
+			float upDot = candidate.Dot(worldUp);
+			if (upDot >= -0.3f && upDot < 0.5f)
+			{
+				headNormalSum = candidate;
+				headSurfaceCount = 1;
+				headHasRealSurfaceContact = true;
+			}
+		}
+		if (headSurfaceCount == 0 || headNormalSum.LengthSquared() < 1e-8f)
+		{
+			return;
+		}
+		Vector3 localNormal = headNormalSum.Normalized();
+		if (!headHasRealSurfaceContact && Head.TerrainContact
+			&& Head.ContactNormal.LengthSquared() >= 1e-10f)
+		{
+			Vector3 bodyNormal = Head.ContactNormal.Normalized();
+			float bodyUpDot = bodyNormal.Dot(worldUp);
+			headHasRealSurfaceContact = bodyUpDot >= -0.3f && bodyUpDot < 0.5f
+				&& bodyNormal.Dot(localNormal) > 0.85f;
+		}
+		if (SupportNormal.LengthSquared() > 1e-10f
+			&& SupportNormal.Normalized().Dot(localNormal) >= 0.8f)
+		{
+			return; // 全局支撑已接管该墙面：成熟爬墙换步不得重新点火
+		}
+
+		Vector3 rawMove = MoveDir.Normalized();
+		float into = -rawMove.Dot(localNormal);
+		if (into <= 0.1f)
+		{
+			return; // 已沿面行走/掉头不属于「正面推墙上墙」交接
+		}
+
+		foreach (Limb limb in Limbs)
+		{
+			if (limb.Anchor == Head || limb.GripCounter <= 0
+				|| limb.GripNormal.LengthSquared() < 1e-10f)
+			{
+				continue;
+			}
+			float alignment = limb.GripNormal.Normalized().Dot(localNormal);
+			if (alignment > 0.85f)
+			{
+				return; // 后段已踩到同一面：全局支撑与 RearBrace 足以接管
+			}
+		}
+
+		Vector3 climb = rawMove + localNormal * into;
+		Vector3 upOnFace = worldUp - localNormal * worldUp.Dot(localNormal);
+		if (upOnFace.LengthSquared() > 1e-8f)
+		{
+			climb += upOnFace.Normalized() * into;
+		}
+		climb -= localNormal * climb.Dot(localNormal);
+		if (climb.LengthSquared() < 1e-8f)
+		{
+			return;
+		}
+		climb = climb.Normalized();
+
+		Vector3 radial = SpineFollower.Pos - Head.Pos;
+		float radius = radial.Length();
+		if (radius < 1e-6f)
+		{
+			return;
+		}
+		radial /= radius;
+		if (!headHasRealSurfaceContact)
+		{
+			Vector3 toHips = Hips.Pos - SpineFollower.Pos;
+			if (toHips.LengthSquared() >= 1e-10f
+				&& (-radial).Dot(toHips.Normalized()) >= -0.5f)
+			{
+				return; // 预摆最多到 120°；真正踩墙前不能先把中铰压成深 L
+			}
+		}
+		// 目的只是把前段从墙法向转入沿面趋势；达到 30° 后立即熄火。这样成熟爬墙时即使
+		// 后腿同步抬起，也不会把正常的沿墙前段重复当成交接姿态施力。
+		if (-radial.Dot(climb) >= 0.8660254f)
+		{
+			return;
+		}
+		Vector3 rest = Head.Pos - climb * radius;
+		Vector3 delta = rest - SpineFollower.Pos;
+		delta -= radial * delta.Dot(radial); // 只绕 Head 回摆，不压缩/拉伸第一节
+		float mag = delta.Length();
+		if (mag < 1e-6f)
+		{
+			return;
+		}
+
+		Vector3 followerDir = delta / mag;
+		float throttle = Mathf.Clamp(RunSpeed, 0f, 1f);
+		float correction = Mathf.Min(mag * FrontMountGain, MaxMoveSpeed) * throttle;
+		// 这是目标方向速度，不是每 tick 固定加速度：只补当前缺口可防止交接末端角速度累积过冲。
+		const float Share = 0.75f;
+		float desiredShareSpeed = correction * Share;
+		float followerHeadroom = MaxMoveSpeed - SpineFollower.Vel.Dot(followerDir);
+		float followerMissing = desiredShareSpeed - SpineFollower.Vel.Dot(followerDir);
+		if (followerHeadroom > 0f && followerMissing > 0f)
+		{
+			SpineFollower.Vel += followerDir * Mathf.Min(followerMissing, followerHeadroom);
+		}
+		float headHeadroom = MaxMoveSpeed - Head.Vel.Dot(climb);
+		float headMissing = desiredShareSpeed - Head.Vel.Dot(climb);
+		if (headHeadroom > 0f && headMissing > 0f)
+		{
+			Head.Vel += climb * Mathf.Min(headMissing, headHeadroom);
+		}
 	}
 
 	private void UpdateTurnAssist()

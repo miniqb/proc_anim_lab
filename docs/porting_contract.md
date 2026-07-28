@@ -99,6 +99,16 @@ Walker walker = BodyFactory.CreateWalker(origin, p);
   不 clamp）；180° 辅助绕上一 tick 的 `SupportNormal`，零输入会切断旧意图方向历史。三锚六腿在
   RW Caramel/SpitLizard 有拓扑先例，腿粒子不向身体回传
   反力，因此不得再把该问题解释成「hexapod 第三腿对把 hips 钉住」。
+  **上墙交接姿态不变量**（2026-07 FrontMount 修复）：多节脊柱不能只检查内部夹角——
+  Head→SpineFollower 即使近 180° 展开，整条仍可能沿墙法向成为水平旗杆。无中段腿的
+  多节拓扑在 Head 腿拿到射线背书的墙面落点时，即可用未经全局混合/低通的 `GripNormal`
+  预构造局部爬升方向；腿同步换步时仅以当前 `Head.TerrainContact+ContactNormal` 补位。
+  `FrontMountGain=0.35` 让 SpineFollower 绕 Head 纯切向回摆并让 Head 沿面走，强度按
+  `RunSpeed` 缩放，速度注入只补到目标值的 0.75，不逐 tick 累积。预摆内部角到 120° 时
+  停止追加伺服（不是硬角度钳制）；前段进入沿墙 30°、`SupportNormal·localNormal≥0.8`、
+  后段踩同面或 Crest 均熄火。
+  不得缓存过期墙法线、沿法线吸墙、直接驱动 Hips 或伪造抓地。后段随后由
+  `RearBraceGain=0.15` 回摆到已经正确的前段轴后方；有中段腿的拓扑不启用这条辅助。
 
 ### 2.1 参数可行域（M4 调参教训，超出即近瘫）
 

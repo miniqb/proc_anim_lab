@@ -316,6 +316,16 @@ public partial class SandboxWorld : Node3D
         toTarget.Y = 0f;
         if (toTarget.Length() < 0.4f)
         {
+            // 与 wall-turn 同一预算门：恢复观测 ~20 tick（对齐+3 tick 稳定），窗口尾部点火的
+            // 反转必然 pending 假红（RearBrace 轮掉头节奏前移，第 16 次落进结尾窗口即红）。
+            // 预算不足时原地停驶——不反转也不产生未观测的掉头，断言保持严格。
+            if (_regressionScenario == RegressionScenario.Turn
+                && _determinismTicks > 0 && _tick > _determinismTicks - 45)
+            {
+                _walker.MoveDir = Vector3.Zero;
+                _walker.RunSpeed = 0f;
+                return;
+            }
             _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
             _waypointsReached++;
             if (_regressionScenario == RegressionScenario.Turn)

@@ -100,6 +100,10 @@
 >
 > **拖尾点失稳修复（wall-pose，2026-07）**：症状 = 上墙后髋不贴墙水平悬空、顶死推墙时髋摆到正侧方 ~80° 锁死成横向滑移步态（无引擎复现场景：顶死 + 1cm 侧向种子 40 tick 指数发散；顶死无种子则水平悬空姿态无限期冻结）。根因 = 推进拖尾点 `target + Dir(target→Head)×节长` 在 LookAhead(0.5) > 节长(0.3) 时**恒在头前 ~0.2m**：follower 注入是方向性定幅（不随距离缩放），刚性连接把 follower 锁在头周围一节长球面上，吸引子在球面内前侧 → 稳定平衡位是「髋在头前」，我们要的拖尾位是反平衡点，只靠头部运动的拖行（~v/L，满速时约失稳泵 3 倍）压制——头一顶死失稳泵独大。修复 = 拖尾点挪到头后：`Head + Dir(target→Head)×半节长`（吸引子挪进球面内背离目标侧，拖尾位变成稳定极点；系数不取 1.0 防 Dir 两点重合退化）。顶死时髋自行垂回拖尾位，正常拖尾姿态下 followerDir 几乎不变：平地 smoke 走距仅 -1.4%，wall 翻越 11→14、wall-hexapod 11→13 反升，default/sprinter/hexapod/carrot 路点同量级微降（新参考值见上方矩阵注释）。stand/embed/wallside 无移动意图不触推进力，哈希不变。同轮把 wall-turn 场景补上 carrot-turn 同款 45 tick 恢复预算门（修复后爬墙相位前移，第 11 次掉头挤进窗口尾部形成 pending 假红；墙顶棱线附近的 7 tick 离墙观测为髋搭上墙顶的过渡瞬态，非失稳），并把顶死+1cm 侧扰动与无扰动对照固化为 smoke `[CORE-WALL-POSE]` 真断言。复现中确认的两个次级问题（Fallback 胡萝卜可达性校验、站稳态雕像化）未修，独立成后续工作。
 >
+> **上墙弓起修复（RearBrace 链尾静息位回摆，2026-07）**：症状 = heavy 刚上墙的一段时间脊柱以中段为铰向墙外弓起、髋部悬在墙外 0.5~0.8m、尾巴悬浮成弧，随爬升缓慢回贴（最坏 1.5s）。无引擎逐 tick 取证 + 消融（最坏种子 spawn -3.0/接近偏角 10°，弓起深浅取决于撞墙时步态相位）定因四层：**形成** = 上墙交接期头被拉上墙而链尾无任何驱动（被地板摩擦 + 尾根回拉钉住），三节脊柱唯一自由铰只能折弯（两条路径：交接全松开动量压曲 / 头爬髋留几何折弯）；**变丑** = 折角落在 97°~150° 恢复死区（misLocal <120° 才介入、防折叠支柱 0.45m 折算 <97° 才触发，且两者都是沿头髋弦「方向盲」撑开，撑出来的是水平旗杆不是贴墙直线）+ 球体重叠视觉放大（半径 0.24/0.27/0.30 对节长 0.3）；**维持** = 尾根机械回拉（纯化消融：只把尾根 WeightA 置 0 与整条摘尾逐项同值——尾链 Footing 记账贡献为零）+ 后腿超出 JointDist 0.63m 可及圈被 FindGrip 逐 tick 全拒（旧 HuntPos 停在墙脚，最长 60 tick 无锚，抓地腿减半又反削唯一贴墙力）+ 抓稳关重力让悬臂力中性（把后半身摆回墙面的钟摆力正是被开关关掉的那个；RW 2D 侧视不存在「垂直于墙伸出」自由度——3D 化新增维度，无反编译对策可抄）；**恢复** = 爬行拖拽被动对齐（τ≈25 tick），髋进可及圈后腿一抓即拉平。修复走了两迭代，第一版被用户实测否决：**迭代一（废弃）**= 沿 -SupportNormal 朝最近支撑面吸的贴面伺服——推墙场景达标（重抓 +59→+30），但**上墙后停驶**时没有推进力抵消，把停在近直姿态（174°）的身体主动折进墙角（135° 锁死、髋吸到 0.30m 贴死）——「朝面吸」在悬臂几何里就是压链方向，缺的是「绕中段回摆」的切向分量。**迭代二（现行）**= `Walker.RearBraceGain`（0.15）：链尾朝「SpineFollower + 头→SpineFollower 轴 × 链尾当前半径」的直脊柱静息位回摆，施力前显式去径向（纯切向、不压缩链条、零地形查询、MaxMoveSpeed 余量钳制）——悬臂态它给出爬行拖拽本来要等 τ≈25 tick 才给的下摆，停驶态前段轴指哪就摆到哪、不会无中生有拉向墙。结构门 `Hips != SpineFollower` + `!ApplyGravity`——spine=2 链尾就是拖尾点驱动的 follower 天然免疫（default/sprinter 与 smoke ExpectedHash 逐位不变），坠落态交还重力；不碰 FindGrip 不造抓地。另试过翻越窗口（Crest）豁免，实测净负（回摆正是把链尾送过棱线的助力：豁免后 wall-heavy 8→6、heavy 巡逻 8→6——巡逻路线含翻越段，平地配置一并受损），不设窗口分支。效果：推墙最坏种子后腿重抓 +59→+28 tick、脊柱角回 160° 仅 +9 tick、此后不塌回（≥167°）；停驶终态 180°（修复前对照 174°、迭代一 135°）；carrot-turn 恢复 12~15→6~7 tick、中段领先 8.4°→0°；hexapod 巡逻 9→11 路点。代价：wall-heavy 翻越 9→8（-1，相位量级）。smoke `[CORE-HEAVY-MOUNT]` 双场景真断言（推墙：重抓 ≤45 / 角回 160° ≤40 / 不塌回 <140°；停驶：终态角 ≥165° / 髋离墙 ≥0.35m——钉死「朝面吸」类回归；增益归零精确复现 +59 红灯，门有效性已验证）。同轮平地 turn 驱动补 wall-turn 同款 45 tick 恢复预算门（掉头节奏前移后末次反转落进结尾窗口 pending 假红）。spine=3 十配置换新基线；遗留：形成期瞬时折角保留（合法瞬态）、后腿超距 FindGrip 过渡目标（还可砍 ~16 tick 脚程，须保持 HasGrip=false 不造假抓地）未做。
+>
+> **上墙前段转向修复（FrontMount，2026-07）**：RearBrace 解决了链尾弓起，却也暴露新的假绿——三节脊柱内角接近 180°，但头—第二节仍沿墙法向水平伸出，RearBrace 只会把髋排到这根错误轴后面，整条成为水平旗杆。`Walker.FrontMountGain=0.35` 只服务「多节脊柱、无中段腿」的 Heavy 类拓扑：Head 腿拿到本 tick 射线背书的陡墙落点即可用原始 `GripNormal` 预构造局部爬升方向，腿同步换步时仅以当前 `Head.TerrainContact+ContactNormal` 补位；SpineFollower 绕 Head 纯切向回摆，Head 同步沿面走，不沿法线吸墙、不驱动 Hips、不造抓地。预摆内部角到 120° 即停，真实接触后允许形成用户期望的 ≥90° L/斜线；前段进入沿墙 30°、`SupportNormal·localNormal≥0.8`、后段踩同面或 Crest 均熄火，成熟壁面换步不会重燃。强度按 `RunSpeed` 缩放，速度注入只补到目标值的 0.75，不逐 tick 累积冲量。44 组出生距离×接近角扫描：44/44 在真实墙接触后 15 tick 内稳定进入沿墙 30°，后腿重抓最坏 45 tick，最小内部角 97.7°、零深折叠；正撞最坏相位 mount 法向占比从 0.986 降到 0.809，交接最低角 129°。Godot `wall-heavy` 8→10 路点；Hexapod 因有中段腿而结构排除，wall/tail/turn 轨迹与旧基线逐位一致。smoke 同时覆盖 10°、0°、RunSpeed=0.25、停驶仍挂墙/不吸墙和后续展开，不能再只拿全身内角判美观。
+>
 > **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
@@ -109,7 +113,7 @@
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
 > #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
 > #    MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
-> #    深卡角/非正交接触边界 + TypeRef 边界扫描。
+> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 + TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
 > # ② Godot 全矩阵（分钟级）。20 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
@@ -127,8 +131,8 @@
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
-> # 2000 tick 参考值（拖尾点失稳修复轮后）：default 11 路点、wall 14 翻越、heavy 8 路点、
-> #   sprinter 15 路点、hexapod 9 路点、carrot 25 路点；wall-heavy 9、wall-hexapod 13。
+> # 2000 tick 参考值（FrontMount 轮后）：default 11 路点、wall 14 翻越、heavy 7 路点、
+> #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。
