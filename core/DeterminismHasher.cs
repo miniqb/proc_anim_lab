@@ -44,6 +44,20 @@ public sealed class DeterminismHasher
         }
     }
 
+    /// <summary>逐翅逐节折叠 Pos/Vel（Wings/Segments 列表序 = 装配序，固定）。
+    /// 拍翅相位等控制器标量不进哈希（同守则：影响轨迹的状态由轨迹哈希抓到）。</summary>
+    public void FoldWings(IReadOnlyList<VultureWing> wings)
+    {
+        foreach (VultureWing wing in wings)
+        {
+            foreach (VultureWing.WingSegment seg in wing.Segments)
+            {
+                Fold(seg.Pos);
+                Fold(seg.Vel);
+            }
+        }
+    }
+
     private void FoldBits(uint bits)
     {
         for (int i = 0; i < 4; i++)

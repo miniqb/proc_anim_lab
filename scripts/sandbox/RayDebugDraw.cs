@@ -130,6 +130,42 @@ public sealed class RayDebugDraw : ITerrainQuery
         _mesh.SurfaceEnd();
     }
 
+    /// <summary>秃鹫版观测：直喂目标（紫）+ 悬停锚（绿）。射线记录与蜥蜴版共用。</summary>
+    public void Draw(Camera3D camera, VultureFlightController controller)
+    {
+        if (_mesh is null)
+        {
+            return;
+        }
+        _mesh.ClearSurfaces();
+        bool hasCarrot = controller.MoveTarget is not null;
+        bool hasHover = controller.HoverAnchor is not null;
+        if (!Enabled || (_rays.Count == 0 && !hasCarrot && !hasHover))
+        {
+            return;
+        }
+        Vector3 camPos = camera.GlobalPosition;
+        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+        foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
+        {
+            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
+            if (didHit)
+            {
+                AddMarker(end, camPos, MarkerColor, MarkerSize);
+            }
+        }
+        if (controller.MoveTarget is { } target)
+        {
+            AddRibbon(controller.FrontSpine.Pos, target, CarrotExternalColor, camPos);
+            AddMarker(target, camPos, CarrotExternalColor, CarrotMarkerSize);
+        }
+        if (controller.HoverAnchor is { } anchor)
+        {
+            AddMarker(anchor, camPos, CarrotSupportColor, CarrotMarkerSize);
+        }
+        _mesh.SurfaceEnd();
+    }
+
     /// <summary>一根射线 = 一条朝向相机的条带（两三角形），比 1px 线图元醒目得多。</summary>
     private void AddRibbon(Vector3 from, Vector3 end, Color c, Vector3 camPos)
     {

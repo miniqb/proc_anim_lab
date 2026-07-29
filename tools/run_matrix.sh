@@ -1,5 +1,5 @@
 #!/bin/bash
-# 确定性全矩阵回归：20 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
+# 确定性全矩阵回归：24 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
 # 位置检查 / 退出码聚合）。任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、
 # 探针只打印不断言, NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
 #
@@ -30,6 +30,10 @@ HASH_CARROT_TURN_HEAVY=3771A59BBEA8BFC2
 HASH_CARROT_TURN_HEXAPOD=5242DACF5544403E
 HASH_WALL_TAIL=4E84FC3E4EBA1BE3
 HASH_WALL_CORNER=CCCFDC1A3D452797
+HASH_VULTURE=2D5A98F31A341BD9
+HASH_VULTURE_KING=17B7904915D96960
+HASH_VULTURE_SWIFT=9CB6463BBDFBF7B2
+HASH_VULTURE_PERCH=7D2E1015ED56A00E
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -104,6 +108,13 @@ run hexapod    "$HASH_HEXAPOD"  8  2000 --tps=400 --breed=hexapod
 # 评审复现固化:嵌入脱困（P1-3）与贴墙擦边（P1-2），位置断言在下方
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0
+# 秃鹫（VultureFlightController，与蜥蜴并列的飞行生物控制器）：
+# fly = 3D 巡航环线反复越 3m 薄墙（[RESULT] 断言飞行占比 ≥80% + 越墙高度 ≥4m）；
+# perch = 空中路点后喂地面目标，[RESULT] 断言真的降落吸附且终态栖息。
+run vulture       "$HASH_VULTURE"       21 2000 --tps=400 --route=fly --breed=vulture --spawn=0,0.5,0
+run vulture-king  "$HASH_VULTURE_KING"  24 2000 --tps=400 --route=fly --breed=king --spawn=0,0.5,0
+run vulture-swift "$HASH_VULTURE_SWIFT" 28 2000 --tps=400 --route=fly --breed=swift --spawn=0,0.5,0
+run vulture-perch "$HASH_VULTURE_PERCH" 2  800  --tps=400 --route=perch --breed=vulture --spawn=0,0.5,0
 
 # 嵌入脱困:60 tick 后所有 chunk 必须已被 MTD 推出地板（旧版 HitFromInside 永久冻结）
 if grep '^\[FINAL\] body' "$OUT/embed.txt" | awk -F'pos=\\(' '{split($2,a,","); if (a[2]+0 < -0.01) bad=1} END {exit bad}'; then

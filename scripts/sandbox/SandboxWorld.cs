@@ -95,11 +95,40 @@ public partial class SandboxWorld : Node3D
         Vector3.Back, Vector3.Left, Vector3.Forward, Vector3.Right,
     };
 
+    /// <summary>--route=fly：秃鹫 3D 巡航环线（喂 MoveTarget）。绕 x=-6 的 3m 薄墙一个往返：
+    /// 前场低飞 → 拉高 → **高位横穿墙顶** → 墙后垂直降 → 原路爬回 → 越墙返场。
+    /// 直喂契约要求喂点间无阻隔可达——且要给真实轨迹留垂度余量：下降腿会触发滑翔
+    /// 相位冻结，实际轨迹比直线下垂 ~1m（第一版斜穿墙顶的路线就是这么撞在墙面上的），
+    /// 所以横穿腿走 y=5.5→4.5 的高位，降到低点的腿放在墙后 x=-7.5 纯竖直进行。</summary>
+    /// 另一课（实测）：巡航路点必须离地形 ≥ 降落贴地探测深度（1.2m）——第一版把
+    /// 前场路点放在缓坡面上方 0.54m，控制器如实判定「目标贴地」并整套降落栖息了。
+    private static readonly Vector3[] VultureFlyRoute =
+    {
+        new(4f, 2.8f, 0f),
+        new(-4f, 5.5f, 0f),
+        new(-7.5f, 4.5f, 0f),
+        new(-7.5f, 2f, 0f),
+        new(-7.5f, 4.5f, 0f),
+        new(-4f, 5.5f, 0f),
+    };
+
+    /// <summary>--route=perch：两个空中路点后喂地面目标——降落从「落点贴地探测 + 进入
+    /// 触发半径」涌现（翅膀转 Grab、吸附栖息），[RESULT] 断言真的落了地。</summary>
+    private static readonly Vector3[] VulturePerchRoute =
+    {
+        new(4f, 2f, 0f),
+        new(-4f, 5.5f, 0f),
+    };
+
+    private static readonly Vector3 VulturePerchTarget = new(2f, 0f, 2f);
+
     private Vector3[] _waypoints = DefaultRoute;
     private int _waypointIndex;
     private int _waypointsReached;
     private bool _carrotDrive; // --route=carrot：路点经 MoveTarget 直喂（否则 MoveDir 方向驱动）
     private bool _carrotTurnDrive;
+    private bool _vultureRouteSelected; // --route=fly/perch（秃鹫专属路线）
+    private bool _vulturePerchDrive;    // --route=perch：路点跑完后喂地面目标降落
 
     private enum RegressionScenario
     {
@@ -116,6 +145,8 @@ public partial class SandboxWorld : Node3D
     private readonly List<Body> _bodies = new();
     private LizardLocomotionController _lizardController = null!;
     private BreedParams _breed = BodyFactory.Default();
+    private VultureFlightController? _vultureController; // 非 null = 当前生物是秃鹫
+    private VultureBreedParams? _vultureBreed;           // --breed= 落在秃鹫表 → 秃鹫模式
     private readonly RaycastTerrainQuery _terrain = new();
     private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
@@ -154,26 +185,43 @@ public partial class SandboxWorld : Node3D
         }
         _rayDebug = new RayDebugDraw(_terrain);
         _rayDebug.Build(this);
-        SpawnLizard(_breed, _spawn);
+        if (_vultureBreed is { } vultureBreed)
+        {
+            SpawnVulture(vultureBreed, _spawn);
+        }
+        else
+        {
+            SpawnLizard(_breed, _spawn);
+        }
         if (_perturb != 0f)
         {
-            _lizardController.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
-            _lizardController.Body.Chunks[0].LastPos = _lizardController.Body.Chunks[0].Pos;
+            // 与旧版 _lizardController.Body.Chunks[0] 同一对象（_bodies[0] 即当前生物的 Body）。
+            _bodies[0].Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
+            _bodies[0].Chunks[0].LastPos = _bodies[0].Chunks[0].Pos;
         }
         if (_probe is null)
         {
             // 确定性回归模式禁交互输入（含品种切换），UI 面板只在交互模式下建——与数字键的既有限制对齐。
+            // 品种表 = 蜥蜴四预设 + 秃鹫四预设（数字键续接编号，选中即换生物类别）。
             BreedParams[] breeds = BodyFactory.AllBreeds();
-            var names = new string[breeds.Length];
+            VultureBreedParams[] vultures = BodyFactory.AllVultureBreeds();
+            var names = new string[breeds.Length + vultures.Length];
             for (int i = 0; i < breeds.Length; i++)
             {
                 names[i] = breeds[i].Name;
             }
+            for (int i = 0; i < vultures.Length; i++)
+            {
+                names[breeds.Length + i] = "vulture:" + vultures[i].Name;
+            }
             _breedUI = new BreedSelectorUI();
             _breedUI.Build(this, names, SelectBreed);
-            _breedUI.SyncSelection(Array.FindIndex(breeds, b => b.Name == _breed.Name));
+            _breedUI.SyncSelection(_vultureBreed is { } vb
+                ? breeds.Length + Array.FindIndex(vultures, v => v.Name == vb.Name)
+                : Array.FindIndex(breeds, b => b.Name == _breed.Name));
         }
-        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, breed={_breed.Name}, " +
+        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, " +
+                 $"breed={(_vultureBreed is { } vbn ? "vulture:" + vbn.Name : _breed.Name)}, " +
                  $"determinism={(_probe is not null ? "on" : "off")}");
     }
 
@@ -181,6 +229,8 @@ public partial class SandboxWorld : Node3D
     private void SpawnLizard(BreedParams breed, Vector3 origin)
     {
         _breed = breed;
+        _vultureController = null;
+        _vultureBreed = null;
         _lizardController = BodyFactory.CreateLizardController(origin, breed);
         _lizardController.Body.ConstraintIterations = ConstraintIterations;
         _bodies.Clear();
@@ -188,6 +238,21 @@ public partial class SandboxWorld : Node3D
         _drag.Release();
         _renderer.Clear();
         _renderer.Build(this, _bodies, _lizardController.Limbs, _lizardController);
+    }
+
+    /// <summary>（重）生成秃鹫：与 SpawnLizard 平行的装配路径（渲染带翅链与羽毛线扇）。</summary>
+    private void SpawnVulture(VultureBreedParams breed, Vector3 origin)
+    {
+        _vultureBreed = breed;
+        VultureFlightController controller = BodyFactory.CreateVultureController(origin, breed);
+        _vultureController = controller;
+        controller.Body.ConstraintIterations = ConstraintIterations;
+        _bodies.Clear();
+        _bodies.Add(controller.Body);
+        _drag.Release();
+        _renderer.Clear();
+        _renderer.Build(this, _bodies, null, null, controller.Wings, controller,
+            breed.FeathersPerWing);
     }
 
     public override void _PhysicsProcess(double delta)
@@ -199,6 +264,37 @@ public partial class SandboxWorld : Node3D
         _tick++;
         _terrain.Bind(GetWorld3D().DirectSpaceState);
         _rayDebug.BeginTick();
+
+        if (_vultureController is { } vulture)
+        {
+            // 秃鹫平行主循环：输入/巡航 → Tick → 指标/探针。蜥蜴路径零改动。
+            if (_probe is null)
+            {
+                _drag.SampleInput(_camera, _bodies);
+                _drag.ApplyDragForce();
+                SampleVultureInput();
+            }
+            else
+            {
+                SteerVultureRoute();
+            }
+            if (_yankTick >= 0 && _tick == _yankTick)
+            {
+                vulture.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+            }
+            var vctx = new TickContext(_gravityPerTick, _rayDebug, _tick);
+            vulture.Tick(vctx);
+            if (_probe is not null)
+            {
+                TrackVultureMetrics();
+                _probe.Record(_tick, _bodies, null, vulture.Wings);
+                if (_probe.Finished)
+                {
+                    GetTree().Quit(DumpVultureFinalState());
+                }
+            }
+            return;
+        }
 
         if (_probe is null)
         {
@@ -285,6 +381,87 @@ public partial class SandboxWorld : Node3D
 
         _lizardController.MoveDir = Vector3.Zero;
         _lizardController.RunSpeed = 0f;
+    }
+
+    /// <summary>秃鹫交互输入：WASD 世界 XZ + Space 升 / C 降（3D 意图，与蜥蜴的平面意图
+    /// 不同）；Shift+右键点地形 → MoveTarget 直喂（飞过去，落点贴地则自动降落栖息）——
+    /// 到点不清目标：保持喂点即悬停锚定（station-keeping）。WASD/升降一按立即接管。</summary>
+    private void SampleVultureInput()
+    {
+        VultureFlightController c = _vultureController!;
+        if (WantCameraFly)
+        {
+            c.MoveDir = Vector3.Zero;
+            c.RunSpeed = 0f;
+            return;
+        }
+
+        Vector3 dir = Vector3.Zero;
+        if (Input.IsPhysicalKeyPressed(Key.W)) dir.Z -= 1f;
+        if (Input.IsPhysicalKeyPressed(Key.S)) dir.Z += 1f;
+        if (Input.IsPhysicalKeyPressed(Key.A)) dir.X -= 1f;
+        if (Input.IsPhysicalKeyPressed(Key.D)) dir.X += 1f;
+        if (Input.IsPhysicalKeyPressed(Key.Space)) dir.Y += 1f;
+        if (Input.IsPhysicalKeyPressed(Key.C)) dir.Y -= 1f;
+
+        if (dir != Vector3.Zero)
+        {
+            c.MoveTarget = null;
+            c.MoveDir = dir.Normalized();
+            c.RunSpeed = 1f;
+            return;
+        }
+
+        if (Input.IsMouseButtonPressed(MouseButton.Right) && Input.IsPhysicalKeyPressed(Key.Shift))
+        {
+            Vector2 mouse = _camera.GetViewport().GetMousePosition();
+            Vector3 origin = _camera.ProjectRayOrigin(mouse);
+            Vector3 rayDir = _camera.ProjectRayNormal(mouse);
+            if (_rayDebug.Raycast(origin, origin + rayDir * 100f, out TerrainHit hit))
+            {
+                c.MoveTarget = hit.Point;
+            }
+        }
+
+        c.MoveDir = Vector3.Zero;
+        c.RunSpeed = c.MoveTarget is not null ? 1f : 0f;
+    }
+
+    /// <summary>秃鹫确定性巡航：3D 路点直喂（MoveTarget 通路是秃鹫的原生输入形态）。
+    /// fly 路线循环绕圈；perch 路线跑完路点后喂地面目标，降落自然涌现并记录 landedTick。</summary>
+    private void SteerVultureRoute()
+    {
+        VultureFlightController c = _vultureController!;
+        if (_waypoints.Length == 0)
+        {
+            c.MoveTarget = null;
+            c.RunSpeed = 0f;
+            return;
+        }
+        c.RunSpeed = 1f;
+        if (_vulturePerchDrive && _waypointIndex >= _waypoints.Length)
+        {
+            c.MoveTarget = VulturePerchTarget;
+            if (_vultureLandedTick < 0 && c.AnyWingAttached && !c.AirBorne)
+            {
+                _vultureLandedTick = _tick;
+            }
+            return;
+        }
+        c.MoveTarget = _waypoints[_waypointIndex];
+        if (c.AtMoveTarget)
+        {
+            _waypointsReached++;
+            _waypointIndex++;
+            if (!_vulturePerchDrive)
+            {
+                _waypointIndex %= _waypoints.Length;
+            }
+            if (_waypointIndex < _waypoints.Length)
+            {
+                c.MoveTarget = _waypoints[_waypointIndex];
+            }
+        }
     }
 
     /// <summary>确定性模式的脚本化输入：绕路点方框巡走——把「走路」本身纳入回归。</summary>
@@ -654,6 +831,11 @@ public partial class SandboxWorld : Node3D
     private bool _nonFinite;         // 任意 chunk/limb 状态出现 NaN/Inf（一票 FAIL）
     private float _minTerrainSqueeze = 1f;
     private float _maxPostRecoveryPenetration;
+
+    // —— 秃鹫路线指标（fly/perch；与蜥蜴指标块互斥使用）——
+    private long _vultureLandedTick = -1; // perch：首次「吸附且非飞行」的 tick
+    private long _vultureAirTicks;        // 全翅 Flap 的 tick 数
+    private long _vultureAttachedTicks;   // 有翅吸附的 tick 数
 
     /// <summary>确定性模式下顺带记录质量指标：约束偏差峰值 + 行走里程 + 抓地/重力开关统计。</summary>
     private void TrackQualityMetrics()
@@ -1254,6 +1436,155 @@ public partial class SandboxWorld : Node3D
         return pass ? 0 : 1;
     }
 
+    /// <summary>秃鹫路线的质量指标（与蜥蜴 TrackQualityMetrics 平行；3D 里程、
+    /// 飞行/栖息占比、tick 末约束偏差率与深断裂连跑同口径）。</summary>
+    private void TrackVultureMetrics()
+    {
+        VultureFlightController c = _vultureController!;
+        if (_lastHeadPos != Vector3.Zero)
+        {
+            _walkDistance += (c.FrontSpine.Pos - _lastHeadPos).Length(); // 飞行是 3D 里程
+        }
+        _lastHeadPos = c.FrontSpine.Pos;
+        if (c.FrontSpine.Pos.Y > _maxHeadY)
+        {
+            _maxHeadY = c.FrontSpine.Pos.Y;
+        }
+        if (c.AirBorne)
+        {
+            _vultureAirTicks++;
+        }
+        if (c.AnyWingAttached)
+        {
+            _vultureAttachedTicks++;
+        }
+        if (_bodies[0].LastRelaxDeviation > _maxConstraintDev)
+        {
+            _maxConstraintDev = _bodies[0].LastRelaxDeviation;
+        }
+
+        float endRatio = 0f;
+        foreach (ChunkConnection conn in _bodies[0].Connections)
+        {
+            if (conn.SoftOnly)
+            {
+                continue;
+            }
+            float err = (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength;
+            float dev = conn.ConstraintMode switch
+            {
+                ChunkConnection.Mode.PullOnly => Mathf.Max(0f, err),
+                ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -err),
+                _ => Mathf.Abs(err),
+            };
+            float ratio = conn.RestLength > 1e-6f ? dev / conn.RestLength : 0f;
+            if (ratio > endRatio)
+            {
+                endRatio = ratio;
+            }
+        }
+        _endDevRatio = endRatio;
+        if (endRatio > _maxEndDevRatio)
+        {
+            _maxEndDevRatio = endRatio;
+        }
+        if (endRatio > 0.5f)
+        {
+            _stretchTicks++;
+        }
+        _deepRun = endRatio > 1f ? _deepRun + 1 : 0;
+        if (_deepRun > _maxDeepRun)
+        {
+            _maxDeepRun = _deepRun;
+        }
+
+        foreach (BodyChunk chunk in _bodies[0].Chunks)
+        {
+            _nonFinite |= !chunk.Pos.IsFinite() || !chunk.Vel.IsFinite();
+        }
+        foreach (VultureWing w in c.Wings)
+        {
+            foreach (VultureWing.WingSegment s in w.Segments)
+            {
+                _nonFinite |= !s.Pos.IsFinite() || !s.Vel.IsFinite();
+            }
+        }
+    }
+
+    /// <summary>秃鹫探针终态输出与判定（与蜥蜴 DumpFinalState 平行；[FINAL] body 行格式
+    /// 保持一致供矩阵位置断言复用）。fly 路线要求飞行占比与越墙高度；perch 路线要求
+    /// 真的降落吸附且终态栖息。</summary>
+    private int DumpVultureFinalState()
+    {
+        VultureFlightController c = _vultureController!;
+        GD.Print($"[METRIC] flightDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
+                 $"maxHeadY={_maxHeadY:F2} airTicks={_vultureAirTicks} " +
+                 $"attachedTicks={_vultureAttachedTicks} landedTick={_vultureLandedTick} " +
+                 $"maxConstraintDev={_maxConstraintDev:F4} endDev={_endDevRatio:F2}x " +
+                 $"maxEndDev={_maxEndDevRatio:F2}x stretchTicks={_stretchTicks} " +
+                 $"maxDeepRun={_maxDeepRun} snagReleases={_bodies[0].SnagReleases}");
+        GD.Print($"[FINAL] controller airBorne={c.AirBorne} attached={c.AnyWingAttached} " +
+                 $"support={c.SupportValue:F2} phase={c.WingFlap:F2} amp={c.WingFlapAmplitude:F2} " +
+                 $"frontVel={c.FrontSpine.Vel.Length():F4}");
+        for (int i = 0; i < _bodies[0].Chunks.Count; i++)
+        {
+            BodyChunk chunk = _bodies[0].Chunks[i];
+            GD.Print($"[FINAL] body=0 chunk={i} pos=({chunk.Pos.X:F4},{chunk.Pos.Y:F4},{chunk.Pos.Z:F4}) " +
+                     $"vel={chunk.Vel.Length():F5} contact={chunk.TerrainContact} r={chunk.Radius:F2}");
+        }
+        for (int i = 0; i < c.Wings.Count; i++)
+        {
+            VultureWing w = c.Wings[i];
+            VultureWing.WingSegment tip = w.Segments[^1];
+            GD.Print($"[FINAL] wing={i} mode={w.Mode} attached={w.Attached} grip={w.GripCounter} " +
+                     $"grippingSegs={w.GrippingSegments} fly={w.FlyingMode:F2} " +
+                     $"tip=({tip.Pos.X:F4},{tip.Pos.Y:F4},{tip.Pos.Z:F4})");
+        }
+
+        var reasons = new List<string>();
+        if (_nonFinite)
+        {
+            reasons.Add("状态出现 NaN/Inf");
+        }
+        if (_maxDeepRun > 100)
+        {
+            reasons.Add($"约束深度断裂持续 {_maxDeepRun} tick（>100）");
+        }
+        if (_expectHash is ulong expect && _probe!.Hash != expect)
+        {
+            reasons.Add($"哈希 {_probe.Hash:X16} ≠ 基线 {expect:X16}（有意改内核请同步两处真相源：矩阵脚本 + smoke ExpectedHash）");
+        }
+        if (_bodies[0].SnagReleases > 60)
+        {
+            reasons.Add($"卡链释放 {_bodies[0].SnagReleases} 次（>60）——传送震荡/慢性卡死");
+        }
+        if (_vulturePerchDrive)
+        {
+            if (_vultureLandedTick < 0)
+            {
+                reasons.Add("perch 路线没有发生降落吸附（场景覆盖失效）");
+            }
+            if (!c.AnyWingAttached || c.AirBorne)
+            {
+                reasons.Add($"perch 终态未栖息（attached={c.AnyWingAttached}, airBorne={c.AirBorne}）");
+            }
+        }
+        else if (_vultureRouteSelected)
+        {
+            if (_vultureAirTicks < _tick * 8 / 10)
+            {
+                reasons.Add($"fly 路线飞行占比不足（{_vultureAirTicks}/{_tick} tick）");
+            }
+            if (_maxHeadY < 4f)
+            {
+                reasons.Add($"fly 路线最高只飞到 {_maxHeadY:F2}m（<4——没有完成越墙爬升）");
+            }
+        }
+        bool pass = reasons.Count == 0;
+        GD.Print(pass ? "[RESULT] PASS" : $"[RESULT] FAIL: {string.Join("; ", reasons)}");
+        return pass ? 0 : 1;
+    }
+
     public override void _Process(double delta)
     {
         if (_fatal)
@@ -1262,7 +1593,14 @@ public partial class SandboxWorld : Node3D
         }
         UpdateCameraFly((float)delta);
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
-        _rayDebug.Draw(_camera, _lizardController);
+        if (_vultureController is { } vulture)
+        {
+            _rayDebug.Draw(_camera, vulture);
+        }
+        else
+        {
+            _rayDebug.Draw(_camera, _lizardController);
+        }
     }
 
     /// <summary>右键held且不按Shift = 想要飞行摄像机（与 Shift+右键放胡萝卜互斥）。
@@ -1338,18 +1676,32 @@ public partial class SandboxWorld : Node3D
         SelectBreed((int)(key.PhysicalKeycode - Key.Key1));
     }
 
-    /// <summary>数字键与下拉面板共用的换品种入口，保证两个输入源互相同步。</summary>
+    /// <summary>数字键与下拉面板共用的换品种入口，保证两个输入源互相同步。
+    /// 编号：蜥蜴四预设在前、秃鹫四预设续接——选中即换生物类别（蜥蜴↔秃鹫）。</summary>
     private void SelectBreed(int index)
     {
         BreedParams[] breeds = BodyFactory.AllBreeds();
-        if (index < 0 || index >= breeds.Length)
+        VultureBreedParams[] vultures = BodyFactory.AllVultureBreeds();
+        if (index < 0 || index >= breeds.Length + vultures.Length)
         {
             return;
         }
         // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
-        SpawnLizard(breeds[index], _lizardController.Hips.Pos + Vector3.Up * 0.5f);
+        Vector3 basePos = _vultureController is { } vc
+            ? vc.RearSpine.Pos
+            : _lizardController.Hips.Pos;
+        if (index < breeds.Length)
+        {
+            SpawnLizard(breeds[index], basePos + Vector3.Up * 0.5f);
+            GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
+        }
+        else
+        {
+            VultureBreedParams vb = vultures[index - breeds.Length];
+            SpawnVulture(vb, basePos + Vector3.Up * 0.5f);
+            GD.Print($"[SANDBOX] breed -> vulture:{vb.Name}");
+        }
         _breedUI?.SyncSelection(index);
-        GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
     }
 
     /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。
@@ -1426,9 +1778,29 @@ public partial class SandboxWorld : Node3D
                     _regressionScenario = RegressionScenario.CarrotTurn;
                     _carrotTurnDrive = true;
                 }
+                else if (arg == "--route=fly")
+                {
+                    _waypoints = VultureFlyRoute;
+                    _vultureRouteSelected = true;
+                }
+                else if (arg == "--route=perch")
+                {
+                    _waypoints = VulturePerchRoute;
+                    _vultureRouteSelected = true;
+                    _vulturePerchDrive = true;
+                }
                 else if (arg.StartsWith("--breed="))
                 {
-                    _breed = BodyFactory.ByName(arg["--breed=".Length..]);
+                    // 品种名分派生物类别：落在秃鹫表 → 秃鹫模式；否则蜥蜴（未知名回落 default）。
+                    string breedName = arg["--breed=".Length..];
+                    if (BodyFactory.IsVultureBreed(breedName))
+                    {
+                        _vultureBreed = BodyFactory.VultureByName(breedName);
+                    }
+                    else
+                    {
+                        _breed = BodyFactory.ByName(breedName);
+                    }
                 }
                 else if (arg.StartsWith("--perturb="))
                 {
@@ -1473,6 +1845,17 @@ public partial class SandboxWorld : Node3D
         {
             // 断言只在探针结束时执行——没有探针它静默蒸发且进程永不退出（终审 C6）。
             GD.PrintErr("[SANDBOX] --expect-hash 需要配合 --determinism");
+            return false;
+        }
+        if (_vultureRouteSelected && _vultureBreed is null)
+        {
+            GD.PrintErr("[SANDBOX] fly/perch 路线是秃鹫专属（--breed=vulture|king|swift|quad）");
+            return false;
+        }
+        if (_probe is not null && _vultureBreed is not null && !_vultureRouteSelected)
+        {
+            // 蜥蜴路线的指标/判定读不到秃鹫控制器——静默跑错配置比报错更危险。
+            GD.PrintErr("[SANDBOX] 秃鹫确定性回归需要 --route=fly 或 --route=perch");
             return false;
         }
         return true;

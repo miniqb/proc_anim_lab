@@ -104,6 +104,8 @@
 >
 > **上墙前段转向修复（FrontMount，2026-07）**：RearBrace 解决了链尾弓起，却也暴露新的假绿——三节脊柱内角接近 180°，但头—第二节仍沿墙法向水平伸出，RearBrace 只会把髋排到这根错误轴后面，整条成为水平旗杆。`LizardLocomotionController.FrontMountGain=0.35` 只服务「多节脊柱、无中段腿」的 Heavy 类拓扑：Head 腿拿到本 tick 射线背书的陡墙落点即可用原始 `GripNormal` 预构造局部爬升方向，腿同步换步时仅以当前 `Head.TerrainContact+ContactNormal` 补位；SpineFollower 绕 Head 纯切向回摆，Head 同步沿面走，不沿法线吸墙、不驱动 Hips、不造抓地。预摆内部角到 120° 即停，真实接触后允许形成用户期望的 ≥90° L/斜线；前段进入沿墙 30°、`SupportNormal·localNormal≥0.8`、后段踩同面或 Crest 均熄火，成熟壁面换步不会重燃。强度按 `RunSpeed` 缩放，速度注入只补到目标值的 0.75，不逐 tick 累积冲量。44 组出生距离×接近角扫描：44/44 在真实墙接触后 15 tick 内稳定进入沿墙 30°，后腿重抓最坏 45 tick，最小内部角 97.7°、零深折叠；正撞最坏相位 mount 法向占比从 0.986 降到 0.809，交接最低角 129°。Godot `wall-heavy` 8→10 路点；Hexapod 因有中段腿而结构排除，wall/tail/turn 轨迹与旧基线逐位一致。smoke 同时覆盖 10°、0°、RunSpeed=0.25、停驶仍挂墙/不吸墙和后续展开，不能再只拿全身内角判美观。
 >
+> **秃鹫飞行控制器（VultureFlightController，2026-07）**：第二种生物控制器，平行于 `LizardLocomotionController`（其注释预留的首个并列实现），共享 Body/地形原语互不引用。≙ 反编译 Vulture.cs/VultureTentacle.cs 全套语义（升力/拍翅/悬停/降落数值逐行核实换算，1px=0.025m）。与蜥蜴的根本路线差异：**重力常开**（无重力开关）——升力 = 与拍翅相位同步的 sin² 脉冲（谷值恰为 0），只注入**后脊柱单 chunk**，重力摊 4 个躯干 chunk，约束松弛摊分脉冲 ≈÷4 后周期均值与重力平衡（悬停上下颠簸是这套机制的直接后果，≙ RW 手感，不是 bug）；**下降不施向下力**，靠倒拨拍翅相位冻结在低升力半区滑翔（`FlapGlideRate` ≙ wingFlap −= 1/70）。身体 = K4 风筝刚架 3D 化（前脊柱 +0.4m/后脊柱 −0.25m/双肩 ±0.5m，六条 Rigid 全三角化，RestLength 取出生几何 = RW 26/40/22.36/25.61px 逐位同构；共面静息态的无穷小柔性 = 有机机体微弯）+ 头 PullOnly 拴绳（WeightA=0 ≙ weightSymmetry 0，头的重量拖不动身体）+ 头部伺服（RW 物理脖链的收缩：飞行 0.2/着地 0.75 父系阻尼 + 朝「前向×脖长」静息位吸，渲染层画脖曲线）。翅膀 = `VultureWing` 新类（**不复用 Limb**——plant-and-trail 是地面步态状态机，且该类被既有基线钉死）：段链粒子 + 只抗拉绳约束（≙ stiff=false）+ **对身体零回传**（≙ pullAtConnectionChunk=0，唯一例外 = 抓地悬挂拉力 (0.9L−d)×0.2）；`Flap` 模式 = 全局相位行波（快下拍 15 tick + 慢回收 25 tick = 1s 周期，翼尖滞后半周期，扫掠幅 5~15m 故意远超可达 → 伺服饱和截断才是有效机制）+ 翼根两节硬驱动；`Grab` 模式 = 射线找抓点（锚点直射 + 投影采样，允许天花板底面——秃鹫倒挂）→ 翅尖硬钉 → 逐节贴附计支撑。**无 locomotion 状态机**：模式在每只翅膀上，AirBorne/栖息从翅膀组合涌现；起飞/降落由 MoveTarget 几何触发（落点贴地探测 + 进入触发半径 → 全翅 Grab + AirBrake(30) + 5s 切换锁；栖息 + 远/悬空目标 → TakeOff + 30 tick 助推——RW 喷气推进器 jetFuel/Utility 系统的收缩）。输入契约与蜥蜴同名同义（MoveDir 为 **3D** 意图/RunSpeed/MoveTarget 直喂 + AtMoveTarget **带 1×/2× 迟滞**防悬停颤振；Shift/Teleport/Launch 同名移植）；注速一律 headroom 钳制（MaxFlySpeed/MaxRiseSpeed——RW 瞄路径格天然限速，连续胡萝卜必须显式封顶，同蜥蜴 MaxMoveSpeed 论证）。确定性：零随机（RW StuckBehavior 随机抖动不移植），Flap→Grab 需「刚架贴地形」或「持续 >10 tick 无意图」证据——翅尖刷墙/悬垂头擦地/换路点单 tick 空窗都不算（fly 路线三轮实测逼出来的门控）。品种四预设：`vulture`（基准双翅 8 节 5.5m）/`king`（×1.4 质量 10 节 6.75m 长翅）/`swift`（0.8 体格快拍短翅，原创）/`quad`（四翼 ≙ Miros 拓扑，LiftShare 1.4/翅数）；`VultureBreedParams` 与蜥蜴表平行不混表，沙盒数字键 5~8 续接、`--breed=vulture|king|swift|quad` 自动分派生物类别。回归：smoke 四断言（`[CORE-VULTURE-FLIGHT/LAUNCH/SHIFT/ASSEMBLY]`：2000 tick 起飞→巡航→悬停→降落栖息双跑 bit-exact + 哈希基线、击飞恢复、rebase 逐字段、四预设装配不变量）+ 矩阵四配置（`vulture`/`vulture-king`/`vulture-swift` fly 环线反复越 3m 薄墙 ≥21/24/28 路点 + `vulture-perch` 真降落断言）。直喂契约的飞行版教训（实测）：巡航路点须离地形 ≥ 降落贴地探测深度（1.2m，否则如实降落）、下降腿要给滑翔垂度留 ~1m 余量（否则擦墙顶）。落地即修的对抗性评审轮（四缺陷确认零误报）：① `AtMoveTarget` 迟滞态绑定具体目标（换点即复位——RW 原生 0.5m 格距下旧版会连环假到达）；② 悬停锚只在真到点时取喂点（零油门 + 远处残留目标曾以 ~89% 巡航速度绕过油门自动驾驶）；③ 升力注入不设 AirBorne 外层门（逐翅注入 ≙ RW，混合翅态下仍在拍的翅膀继续托身体——单翅失能侧倾涌现的前提）；④ 坠落自救补 `landingBrake<1` 门 + 收紧全翅 Grab（俯冲降落曾被自救掰回 Flap 再吃 5s 切换锁）。四条全部有 smoke 钉子（`[CORE-VULTURE-CONTRACT]`：密集喂点 10/10 无假到达、停车水平漂移 <0.5m、混合态波峰注入、俯冲 engage→吸附 ≤100 tick）。
+>
 > **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
@@ -111,12 +113,13 @@
 > **确定性回归**（改物理内核后必跑；全部真断言——探针只打印不判定的旧形态是假绿，评审修复轮的教训）：
 > ```bash
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
-> #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
-> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
-> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 + TypeRef 边界扫描。
+> #    Program.cs ExpectedHash/ExpectedVultureHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 +
+> #    Shift 连续性 + MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
+> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 +
+> #    秃鹫（飞行全流程/击飞恢复/rebase/装配不变量）+ TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
-> # ② Godot 全矩阵（分钟级）。20 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
+> # ② Godot 全矩阵（分钟级）。24 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
 > #    防折叠支柱持续违反与事件相对恢复门），pipefail + 退出码聚合，任何一项红 → 非零退出；
 > #    结尾打 MATRIX GREEN/RED：
 > ./tools/run_matrix.sh [输出目录]
@@ -126,13 +129,16 @@
 > #   carrot-turn-heavy/carrot-turn-hexapod（行进中 External 胡萝卜侧转约 90°，量化中段领先）、
 > #   wall-corner（目标墙首次接触换面）、stand（站桩+闲置姿态）、
 > #   carrot（MoveTarget 路径点直喂通路）、heavy/sprinter/hexapod（品种默认巡逻路线）、
-> #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）。
+> #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）、
+> #   vulture/vulture-king/vulture-swift（秃鹫 fly 环线反复越墙，飞行占比 ≥80% + 越墙高度）、
+> #   vulture-perch（空中路点后地面目标：真降落吸附 + 终态栖息断言）。
 > # [RESULT] 在进程 teardown 之前打印；已知 Godot 4.7 macOS 偶发退场 mutex 崩溃（exit 134），
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
 > # 2000 tick 参考值（FrontMount 轮后）：default 11 路点、wall 14 翻越、heavy 7 路点、
-> #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13。
+> #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13；
+> #   秃鹫（fly 环线）：vulture 29、king 32、swift 37 路点（800 tick perch：降落 ~t255）。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。

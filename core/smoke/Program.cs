@@ -28,6 +28,10 @@ internal static class Program
     /// 的哈希表同步改）——只比双跑一致会漏掉「确定但错误」的行为漂移。</summary>
     private const ulong ExpectedHash = 0xAAA0E4963668E5DCUL;
 
+    /// <summary>秃鹫平地飞行基线哈希（起飞→三路点巡航→悬停→降落栖息，2000 tick；
+    /// 场景定义见 RunVultureFlight）。守则同上：有意改秃鹫内核才允许更新。</summary>
+    private const ulong ExpectedVultureHash = 0x1B9F0B2CCAA0FC10UL;
+
     private static int Main()
     {
         // 输出统一不变文化：逗号小数 locale 会破坏下游脚本对数值行的解析（与沙盒同一约定）。
@@ -44,6 +48,11 @@ internal static class Program
         bool recoveryOk = CheckRecoveryInvariants(out string recoveryMsg);
         bool wallPoseOk = CheckWallPoseStability(out string wallPoseMsg);
         bool heavyMountOk = CheckHeavyWallMount(out string heavyMountMsg);
+        bool vultureFlightOk = CheckVultureFlight(out string vultureFlightMsg);
+        bool vultureLaunchOk = CheckVultureLaunchRecovery(out string vultureLaunchMsg);
+        bool vultureShiftOk = CheckVultureShift(out string vultureShiftMsg);
+        bool vultureAssemblyOk = CheckVultureAssembly(out string vultureAssemblyMsg);
+        bool vultureContractOk = CheckVultureReviewFixes(out string vultureContractMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -57,6 +66,11 @@ internal static class Program
         Console.WriteLine($"[CORE-RECOVERY] {recoveryMsg}");
         Console.WriteLine($"[CORE-WALL-POSE] {wallPoseMsg}");
         Console.WriteLine($"[CORE-HEAVY-MOUNT] {heavyMountMsg}");
+        Console.WriteLine($"[CORE-VULTURE-FLIGHT] {vultureFlightMsg}");
+        Console.WriteLine($"[CORE-VULTURE-LAUNCH] {vultureLaunchMsg}");
+        Console.WriteLine($"[CORE-VULTURE-SHIFT] {vultureShiftMsg}");
+        Console.WriteLine($"[CORE-VULTURE-ASSEMBLY] {vultureAssemblyMsg}");
+        Console.WriteLine($"[CORE-VULTURE-CONTRACT] {vultureContractMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -114,6 +128,26 @@ internal static class Program
         if (!heavyMountOk)
         {
             reasons.Add("heavy 上墙前段未及时沿墙、链尾未按期收敛，或停驶时被吸向墙");
+        }
+        if (!vultureFlightOk)
+        {
+            reasons.Add("秃鹫飞行契约被破坏（起飞/巡航/悬停/降落/哈希基线）");
+        }
+        if (!vultureLaunchOk)
+        {
+            reasons.Add("秃鹫 Launch 后未恢复飞行（击飞契约被破坏）");
+        }
+        if (!vultureShiftOk)
+        {
+            reasons.Add("秃鹫 Shift 平移不完备或续飞失败（rebase 契约被破坏）");
+        }
+        if (!vultureAssemblyOk)
+        {
+            reasons.Add("秃鹫装配不变量失效（拓扑/朝向钉定/四品种可运行）");
+        }
+        if (!vultureContractOk)
+        {
+            reasons.Add("秃鹫评审修复回归失效（密集喂点/零油门停车/混合翅态升力/俯冲降落）");
         }
 
         bool pass = reasons.Count == 0;
@@ -1056,6 +1090,395 @@ internal static class Program
             }
             return depth > 0f;
         }
+    }
+
+    /// <summary>秃鹫飞行全流程（平地解析地形）：栖息起飞 → 三路点 3D 巡航（爬升/转向）→
+    /// 到点悬停观察窗 → 地面目标自动降落栖息。断言：双跑 bit-exact + 哈希对基线、
+    /// 起飞发生、路点全到、飞行高度过阈、悬停颠簸有界（升力脉冲的固有上下颠簸 ≙ RW，
+    /// 但不得发散）、降落吸附且栖息静止、无 NaN、终态约束收敛。</summary>
+    private static bool CheckVultureFlight(out string message)
+    {
+        (ulong Hash, long TookOff, int Waypoints, float MaxY, long LandedAt, float HoverSpan,
+            float PerchDrift, bool Nan, float EndDev) a = RunVultureFlight();
+        (ulong Hash, long TookOff, int Waypoints, float MaxY, long LandedAt, float HoverSpan,
+            float PerchDrift, bool Nan, float EndDev) b = RunVultureFlight();
+
+        bool behaviorOk = a.TookOff is > 0 and < 50
+            && a.Waypoints == 3
+            && a.MaxY > 3f
+            && a.LandedAt > 0
+            && a.HoverSpan < 3f
+            && a.PerchDrift < 0.05f
+            && !a.Nan
+            && a.EndDev < 0.05f;
+        message = $"双跑={(a.Hash == b.Hash ? "bit-exact" : "MISMATCH")} hash={a.Hash:X16} " +
+                  $"expected={ExpectedVultureHash:X16}，起飞 t{a.TookOff}，路点 {a.Waypoints}/3，" +
+                  $"maxY={a.MaxY:F2}m，降落 t{a.LandedAt}，悬停竖直摆幅={a.HoverSpan:F2}m（<3），" +
+                  $"栖息漂移={a.PerchDrift:F3}m（<0.05），endDev={a.EndDev:F4}m";
+        return a.Hash == b.Hash && a.Hash == ExpectedVultureHash && behaviorOk;
+    }
+
+    private static (ulong, long, int, float, long, float, float, bool, float) RunVultureFlight()
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        VultureFlightController c = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.Vulture());
+        var g = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        var hasher = new DeterminismHasher();
+
+        Vector3[] route = { new(6f, 3f, 0f), new(12f, 1.5f, 4f), new(6f, 4.5f, -3f) };
+        Vector3 landTarget = new(10f, 0f, 0f);
+        int wp = 0;
+        long tookOff = -1, allReachedAt = -1, landedAt = -1;
+        float maxY = 0f, hoverMinY = float.MaxValue, hoverMaxY = float.MinValue;
+        Vector3 perchRef = default;
+        float perchDrift = 0f;
+        bool nan = false;
+
+        for (long t = 1; t <= 2000; t++)
+        {
+            if (wp < route.Length)
+            {
+                c.MoveTarget = route[wp];
+                if (c.AtMoveTarget)
+                {
+                    wp++;
+                    if (wp == route.Length)
+                    {
+                        allReachedAt = t;
+                    }
+                }
+            }
+            else if (allReachedAt > 0 && t < allReachedAt + 300)
+            {
+                c.MoveTarget = route[^1]; // 悬停观察窗：喂点不动，到点 → 意图归零 → hover 涌现
+                hoverMinY = Mathf.Min(hoverMinY, c.FrontSpine.Pos.Y);
+                hoverMaxY = Mathf.Max(hoverMaxY, c.FrontSpine.Pos.Y);
+            }
+            else
+            {
+                c.MoveTarget = landTarget; // 地面目标：降落从落点贴地探测涌现
+            }
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, t));
+
+            hasher.FoldBody(c.Body);
+            hasher.FoldWings(c.Wings);
+
+            if (tookOff < 0 && c.AirBorne)
+            {
+                tookOff = t;
+            }
+            maxY = Mathf.Max(maxY, c.FrontSpine.Pos.Y);
+            if (landedAt < 0 && allReachedAt > 0 && t >= allReachedAt + 300
+                && c.AnyWingAttached && !c.AirBorne)
+            {
+                landedAt = t;
+            }
+            if (t == 1700)
+            {
+                perchRef = c.FrontSpine.Pos;
+            }
+            else if (t > 1700)
+            {
+                // 结尾稳态窗（最后 300 tick）栖息静止：降落后向目标的短程缓爬是合法行为，
+                // 稳态后不得再漂（雕像化恰恰是秃鹫栖息的正确终态）。
+                perchDrift = Mathf.Max(perchDrift, (c.FrontSpine.Pos - perchRef).Length());
+            }
+            nan |= !c.FrontSpine.Pos.IsFinite() || !c.Head.Pos.IsFinite();
+            foreach (VultureWing w in c.Wings)
+            {
+                foreach (VultureWing.WingSegment s in w.Segments)
+                {
+                    nan |= !s.Pos.IsFinite();
+                }
+            }
+        }
+        float hoverSpan = hoverMaxY > hoverMinY ? hoverMaxY - hoverMinY : 0f;
+        return (hasher.Value, tookOff, wp, maxY, landedAt, hoverSpan, perchDrift, nan,
+            c.Body.CurrentMaxDeviation());
+    }
+
+    /// <summary>秃鹫击飞恢复：巡航中 Launch（全翅松手转 Flap）→ 之后须仍在飞行态并
+    /// 继续抵达下一个空中目标——契约与蜥蜴 CheckLaunchRecovery 对偶。</summary>
+    private static bool CheckVultureLaunchRecovery(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        VultureFlightController c = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.Vulture());
+        var g = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        long t = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            t++;
+            c.MoveTarget = new Vector3(8f, 3f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, t));
+        }
+        c.Launch(new Vector3(0.1f, -0.15f, 0.2f));
+        bool airborneAfter = c.AirBorne; // Launch 即全翅 Flap（挣扎展翅）
+        bool reached = false;
+        for (int i = 0; i < 700 && !reached; i++)
+        {
+            t++;
+            c.MoveTarget = new Vector3(-6f, 4f, -2f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, t));
+            reached = c.AtMoveTarget;
+        }
+        bool nan = !c.FrontSpine.Pos.IsFinite();
+        message = $"Launch 后飞行态={airborneAfter}，700 tick 内抵达新目标={reached}";
+        return airborneAfter && reached && !nan;
+    }
+
+    /// <summary>秃鹫 rebase 完备性：巡航中 Shift(+512,0,+512)，逐字段精确断言所有带世界
+    /// 坐标的量（chunk Pos/LastPos、翅节 Pos/LastPos、GripPos、MoveTarget、HoverAnchor）
+    /// 恰好移动 delta，然后续飞抵达平移后的目标。</summary>
+    private static bool CheckVultureShift(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        VultureFlightController c = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.Vulture());
+        var g = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        long t = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            t++;
+            c.MoveTarget = new Vector3(8f, 3f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, t));
+        }
+
+        var delta = new Vector3(512f, 0f, 512f);
+        var prevChunks = new (Vector3 Pos, Vector3 LastPos)[c.Body.Chunks.Count];
+        for (int i = 0; i < prevChunks.Length; i++)
+        {
+            prevChunks[i] = (c.Body.Chunks[i].Pos, c.Body.Chunks[i].LastPos);
+        }
+        var prevSegs = new List<(Vector3 Pos, Vector3 LastPos)>();
+        var prevGrips = new List<Vector3>();
+        foreach (VultureWing w in c.Wings)
+        {
+            prevGrips.Add(w.GripPos);
+            foreach (VultureWing.WingSegment s in w.Segments)
+            {
+                prevSegs.Add((s.Pos, s.LastPos));
+            }
+        }
+        Vector3 prevTarget = c.MoveTarget!.Value;
+        Vector3? prevHover = c.HoverAnchor;
+
+        c.Shift(delta);
+        bool exact = true;
+        for (int i = 0; i < prevChunks.Length; i++)
+        {
+            exact &= c.Body.Chunks[i].Pos == prevChunks[i].Pos + delta
+                && c.Body.Chunks[i].LastPos == prevChunks[i].LastPos + delta;
+        }
+        int segIndex = 0, gripIndex = 0;
+        foreach (VultureWing w in c.Wings)
+        {
+            exact &= w.GripPos == prevGrips[gripIndex++] + delta;
+            foreach (VultureWing.WingSegment s in w.Segments)
+            {
+                exact &= s.Pos == prevSegs[segIndex].Pos + delta
+                    && s.LastPos == prevSegs[segIndex].LastPos + delta;
+                segIndex++;
+            }
+        }
+        exact &= c.MoveTarget == prevTarget + delta;
+        exact &= prevHover is null ? c.HoverAnchor is null : c.HoverAnchor == prevHover + delta;
+
+        bool reached = false;
+        for (int i = 0; i < 700 && !reached; i++)
+        {
+            t++;
+            c.MoveTarget = prevTarget + delta;
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, t));
+            reached = c.AtMoveTarget;
+        }
+        bool nan = !c.FrontSpine.Pos.IsFinite();
+        message = $"Shift(+512,0,+512) 逐字段精确={exact}，续飞抵达={reached}";
+        return exact && reached && !nan;
+    }
+
+    /// <summary>外部评审修复轮回归（四个确认缺陷的钉子）：
+    /// ① 密集喂点（0.9m 间距 ≈ RW 原生格距量级）：AtMoveTarget 迟滞绑定目标——换点必须
+    ///   复位，否则新点落在旧点 2× 出圈半径内被瞬时假到达（宿主以为巡逻正常、鸟原地悬停）；
+    ///   断言每次到达信号触发时与当前喂点的真实距离 ≤ 1× 到点半径 + 微余量。
+    /// ② 零油门停车：RunSpeed=0 + 远处残留 MoveTarget——悬停锚不得取未到达的喂点
+    ///   （曾绕过油门以 ~89% 巡航速度自动驾驶过去）；断言 300 tick 漂移 &lt; 0.5m。
+    /// ③ 混合翅态升力：手动把一翅掰成 Grab（SwitchMode 是公开 API）后仍在拍的翅膀
+    ///   必须继续注入升力（≙ RW 逐翅注入，单翅失能侧倾涌现的前提）。
+    /// ④ 俯冲降落：高空俯冲到地面目标，降落刹车期坠落自救不得把刚转 Grab 的翅膀掰回
+    ///   Flap（≙ RW landingBrake&lt;1 门）；断言进入触发半径后 ≤100 tick 内吸附。</summary>
+    private static bool CheckVultureReviewFixes(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        var g = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+
+        // ① 密集喂点。
+        VultureFlightController dense = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.Vulture());
+        int denseReached = 0;
+        bool falseArrival = false;
+        long t = 0;
+        for (int i = 0; i < 2200 && denseReached < 10; i++)
+        {
+            t++;
+            Vector3 fed = new(2f + denseReached * 0.9f, 3f, 0f);
+            dense.MoveTarget = fed;
+            dense.RunSpeed = 1f;
+            dense.Tick(new TickContext(g, terrain, t));
+            if (dense.AtMoveTarget)
+            {
+                falseArrival |= (fed - dense.FrontSpine.Pos).Length()
+                    > dense.MoveTargetArriveRadius + 0.05f;
+                denseReached++;
+            }
+        }
+        bool denseOk = denseReached == 10 && !falseArrival;
+
+        // ② 零油门停车。
+        VultureFlightController parked = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.Vulture());
+        t = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            t++;
+            parked.MoveTarget = new Vector3(0f, 4f, 0f);
+            parked.RunSpeed = 1f;
+            parked.Tick(new TickContext(g, terrain, t));
+        }
+        parked.MoveTarget = new Vector3(50f, 4f, 0f); // 远处残留目标
+        parked.RunSpeed = 0f;
+        Vector3 parkRef = parked.FrontSpine.Pos;
+        float parkDrift = 0f;
+        for (int i = 0; i < 300; i++)
+        {
+            t++;
+            parked.Tick(new TickContext(g, terrain, t));
+            // 只量水平漂移：悬停的竖直颠簸（升力脉冲谷值归零）是固有手感 ~1m，
+            // 缺陷 #2 的症状是朝 50m 外目标的水平自动驾驶。
+            Vector3 d = parked.FrontSpine.Pos - parkRef;
+            d.Y = 0f;
+            parkDrift = Mathf.Max(parkDrift, d.Length());
+        }
+        bool parkOk = parkDrift < 0.5f;
+
+        // ③ 混合翅态升力：出生栖息（双翅 Grab、翅 0 会吸附地板）后手动把翅 1 掰成 Flap
+        //   ——吸附翅不会被 giveUp/followPair 自动翻转，混合态稳定存在；掰法与「单翅
+        //   被打晕、健康翅继续拍」同构。断言拍动脉冲波峰处后脊柱吃到明显竖直注入
+        //   （修复前 AirBorne 外层门在混合态把升力整体扼杀，峰值处 Δv 只剩阻尼+重力）。
+        VultureFlightController mixed = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.3f, 0f), BodyFactory.Vulture());
+        t = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            t++;
+            mixed.RunSpeed = 0f;
+            mixed.Tick(new TickContext(g, terrain, t)); // 落稳，翅 0/1 各自吸附地板
+        }
+        mixed.Wings[1].SwitchMode(VultureWing.WingMode.Flap);
+        bool mixedLift = false;
+        float maxMixedDelta = 0f;
+        for (int i = 0; i < 60; i++)
+        {
+            t++;
+            mixed.RunSpeed = 0f;
+            float upVelBefore = mixed.RearSpine.Vel.Y;
+            mixed.Tick(new TickContext(g, terrain, t));
+            bool stillMixed = mixed.Wings[0].Mode == VultureWing.WingMode.Grab
+                && mixed.Wings[1].Mode == VultureWing.WingMode.Flap;
+            if (stillMixed)
+            {
+                maxMixedDelta = Mathf.Max(maxMixedDelta, mixed.RearSpine.Vel.Y - upVelBefore);
+            }
+        }
+        mixedLift = maxMixedDelta > 0.04f;
+
+        // ④ 俯冲降落：爬高 → 直喂地面目标 → 进入触发半径后 100 tick 内必须吸附。
+        VultureFlightController diver = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.Vulture());
+        t = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            t++;
+            diver.MoveTarget = new Vector3(0f, 8f, 0f);
+            diver.RunSpeed = 1f;
+            diver.Tick(new TickContext(g, terrain, t));
+        }
+        Vector3 ground = new(3f, 0f, 0f);
+        long engageAt = -1, attachAt = -1;
+        for (int i = 0; i < 900 && attachAt < 0; i++)
+        {
+            t++;
+            diver.MoveTarget = ground;
+            diver.RunSpeed = 1f;
+            diver.Tick(new TickContext(g, terrain, t));
+            if (engageAt < 0 && (ground - diver.FrontSpine.Pos).Length() < diver.LandEngageRadius)
+            {
+                engageAt = t;
+            }
+            if (engageAt > 0 && diver.AnyWingAttached)
+            {
+                attachAt = t;
+            }
+        }
+        bool diveOk = engageAt > 0 && attachAt > 0 && attachAt - engageAt <= 100;
+
+        message = $"密集喂点 {denseReached}/10（假到达={falseArrival}），" +
+                  $"零油门停车漂移={parkDrift:F2}m（<0.5），混合翅态升力注入={mixedLift}，" +
+                  $"俯冲降落 engage→吸附 Δ={(attachAt > 0 && engageAt > 0 ? attachAt - engageAt : -1)} tick（≤100）";
+        return denseOk && parkOk && mixedLift && diveOk;
+    }
+
+    /// <summary>秃鹫装配不变量（四预设全查，quad 额外 200 tick 可运行性）：
+    /// 5 chunk 风筝刚架 + 头拴绳（7 连接）、朝向钉定（前→后/后→前/双肩互指/头→前——
+    /// 互绑巧合会让前脊柱参照软拴绳上的头）、翅膀成对互联、四翼品种翅数=4。</summary>
+    private static bool CheckVultureAssembly(out string message)
+    {
+        bool ok = true;
+        var notes = new List<string>();
+        foreach (VultureBreedParams p in BodyFactory.AllVultureBreeds())
+        {
+            VultureFlightController c = BodyFactory.CreateVultureController(
+                new Vector3(0f, 0.5f, 0f), p);
+            bool topology = c.Body.Chunks.Count == 5
+                && c.Body.Connections.Count == 7
+                && c.Wings.Count == p.Wings;
+            bool pinned = c.FrontSpine.RotationChunk == c.RearSpine
+                && c.RearSpine.RotationChunk == c.FrontSpine
+                && c.ShoulderL.RotationChunk == c.ShoulderR
+                && c.ShoulderR.RotationChunk == c.ShoulderL
+                && c.Head.RotationChunk == c.FrontSpine;
+            bool paired = true;
+            for (int i = 0; i + 1 < c.Wings.Count; i += 2)
+            {
+                paired &= c.Wings[i].Pair == c.Wings[i + 1] && c.Wings[i + 1].Pair == c.Wings[i];
+            }
+            ok &= topology && pinned && paired;
+            notes.Add($"{p.Name}:{(topology && pinned && paired ? "ok" : "BAD")}");
+        }
+
+        // 四翼品种 200 tick 可运行性（不进哈希基线——结构性烟测，防「装配得出来跑不起来」）。
+        var terrain = new PlaneTerrainQuery(0f);
+        VultureFlightController quad = BodyFactory.CreateVultureController(
+            new Vector3(0f, 0.5f, 0f), BodyFactory.QuadWing());
+        var g = new Vector3(0f, -GravityMps2 * TickDt * TickDt, 0f);
+        bool quadNan = false;
+        for (long t = 1; t <= 200; t++)
+        {
+            quad.MoveTarget = new Vector3(6f, 3f, 0f);
+            quad.RunSpeed = 1f;
+            quad.Tick(new TickContext(g, terrain, t));
+            quadNan |= !quad.FrontSpine.Pos.IsFinite();
+        }
+        ok &= !quadNan && quad.AirBorne;
+
+        message = $"{string.Join(" ", notes)}，quad 200 tick 飞行={quad.AirBorne} nan={quadNan}";
+        return ok;
     }
 
     /// <summary>
