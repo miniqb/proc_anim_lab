@@ -30,6 +30,7 @@
 
 - **[`docs/rainworld_procedural_animation_research.md`](docs/rainworld_procedural_animation_research.md)** —— **核心参考**。雨世界程序化动画系统深度研究 + **反编译实证（§11 代码级：BodyPart/Limb/LizardLimb/TailSegment/TerrainCurve 等）** + **Godot 移植策略（§12：为什么用射线而不是细网格）**。
 - **[`docs/porting_contract.md`](docs/porting_contract.md)** —— **M5 产物**。`ProcAnim.Core` → `random-room-runtime` 回迁契约：模块清单与依赖面、装配/驱动/输入/输出四契约、`ITerrainQuery` 接缝语义、确定性守则与三层回归、两条迁移路线与两种集成姿态（含主项目对接面调研快照）。
+- **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`+`BodyPart` 继承树、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱或多节腿前先查这里的先例。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
 - 源文档（主项目，真相源）：`../random_room/random-room-runtime/docs/rainworld_procedural_animation_research.md`（本项目内为**工作副本**，两边如有更新需手动同步；副本中指向主项目其它文档的相对链接会失效，属正常）。
 - 主项目怪物美术/规格（回迁时对接）：`../random_room/random-room-runtime/docs/monster_visual_research.md`、`procedural_monster_visual_spec.md`、`tyrant_enemy_requirements.md`。
@@ -44,6 +45,10 @@
   ```bash
   export PATH="$PATH:$HOME/.dotnet/tools"   # ilspycmd（dotnet global tool）
   ilspycmd ~/workspace/others/Managed_extracted/Assembly-CSharp.dll -t <ClassName> > ~/workspace/others/rw_decomp/<ClassName>.cs
+  ```
+  DLC 的类**不在**全局命名空间，`-t` 要带全名：`MoreSlugcats.*`、`Watcher.*`、`DLCSharedEnums`。做**跨类统计**（继承树、全局 grep）时整程序集展开更省事，约 10 秒：
+  ```bash
+  ilspycmd ~/workspace/others/Managed_extracted/Assembly-CSharp.dll -p -o <仓库外目录>   # ~22MB
   ```
 - ⚠️ **边界**：反编译源码**仅供本机学习/互操作参考，不得提交进本仓库、不得再分发**。故意放在**所有 git 仓库之外**（`~/workspace/others/`）。写代码时可以参考其算法/结构，但**落到本项目的是自己的实现**，不是拷贴游戏代码。
 
