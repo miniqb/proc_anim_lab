@@ -114,7 +114,8 @@ internal sealed class LizardSandboxCreatureAdapter : ISandboxCreatureAdapter
         renderer.Build(parent, new[] { Controller.Body }, Controller.Limbs, Controller);
 
     public void DrawDebug(RayDebugDraw debugDraw, Camera3D camera) =>
-        debugDraw.Draw(camera, Controller);
+        debugDraw.Draw(camera, Controller.Head.Pos,
+            Controller.LastMoveTargetKind, Controller.LastMoveTarget);
 
     public void FoldDeterministicState(DeterminismHasher hasher) =>
         hasher.FoldLimbs(Controller.Limbs);

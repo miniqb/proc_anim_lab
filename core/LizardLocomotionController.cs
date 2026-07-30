@@ -3,28 +3,6 @@ using Godot;
 
 namespace ProcAnim.Core;
 
-/// <summary>推进目标（<see cref="LizardLocomotionController.FindMoveTarget"/> 的胡萝卜）来源分支。
-/// 纯观测：供调试绘制与宿主读取，内核不回读、不进确定性哈希。</summary>
-public enum MoveTargetKind
-{
-	/// <summary>本 tick 未施加推进（无移动意图/死区内），目标点无效。</summary>
-	None,
-
-	/// <summary>钉在支撑面上：头前沿 -SupportNormal 投影命中 + RideHeight（健康态）。</summary>
-	Support,
-
-	/// <summary>翻越窗口：世界向下探测钉在顶面 + RideHeight（伴随 CrestCentering 伺服）。</summary>
-	Crest,
-
-	/// <summary>退化分支：两射线都打空，头前+向上的空中相对目标（FloorLeverage）——
-	/// 长期停留在此分支 = 身体在追一根悬空胡萝卜（棱边悬空上飘姿态的来源）。</summary>
-	Fallback,
-
-	/// <summary>宿主直喂的路径点（<see cref="LizardLocomotionController.MoveTarget"/> 旋钮，≙ RW 寻路器给的
-	/// followingConnection 目标格）：跳过射线构造；实际推进胡萝卜可能按支撑系重定向。</summary>
-	External,
-}
-
 /// <summary>
 /// 蜥蜴式运动控制器 = Body（chunk 物理）+ 若干 Limb（plant-and-trail 腿）+ 推进力。
 /// 这是 Lizard 专属 locomotion backend，不是所有生物共用的通用行走控制器；未来蜈蚣、人形等

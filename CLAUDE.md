@@ -2,7 +2,11 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M5 移植接口 + 外部评审修复轮 + 并列蜈蚣控制器（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`，蜥蜴与蜈蚣共享身体/地形底座但保持物种专属控制器。蜈蚣的出生配置、双端表面轨迹、真实抓足、逐节支撑、确定性行波/自避、四个稳定预设及宿主适配已落地；纯 .NET smoke 与 **32 项 Godot 全矩阵（旧 20 项 Lizard + 新 12 项 Centipede）均已通过**。回迁契约见 [`docs/porting_contract.md`](docs/porting_contract.md)。
+> 当前状态：**M6 Cicada 独立后端 + 并列蜈蚣控制器完成（2026-07-30）**——`ProcAnim.Core`
+> 现在包含 Lizard / Spider / Centipede / Cicada 四个平行的物种控制器。蜈蚣的任意节装配、
+> 双端表面轨迹、真实抓足和四个稳定预设，以及蝉的 3D 飞行、显式三面停驻、Charge、四翼四触须
+> 和 light/dark 预设均已落地并有独立回归；M5 内核抽离、回迁契约及 Lizard 外部评审修复保持完成。
+> 「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
 
@@ -21,7 +25,7 @@
 
 1. **确定性时基**：固定 **40 tick/秒** 逻辑步长 + 渲染插值（`lastPos→pos` 用 timeStacker 做 Lerp/Slerp），逻辑与画面解耦。
 2. **身体 = 珠子 + 橡皮筋**：几个 body chunk（带质量的点/球）+ 弹簧/距离约束（Verlet 式积分 + 约束松弛）。
-3. **腿的"IK"极简**：每条腿是**一个追目标点的粒子**（`vel = Lerp(vel, 朝目标*huntSpeed, quickness)` + 吸附），**不是解析式多关节 IK**。
+3. **运动与姿态分层**：蜥蜴腿的运动态是**一个追目标点的足端粒子**（`vel = Lerp(vel, 朝目标*huntSpeed, quickness)` + 吸附），不是多关节物理链；蜘蛛在同类足端之上派生两段 IK 膝点作为正式渲染姿态，膝不碰撞、不承力。
 4. **走路 = plant-and-trail**：脚踩住不动 → 身体前移 → 脚相对落后超阈值 → 找新落点 → 再踩住；腿长用距离约束维持。
 5. **脚落点 = 射线打真实 3D collider**（**不拆网格、不重造格子碰撞**，见研究文档 §12）；Godot 用 `PhysicsRayQueryParameters3D`。
 6. **locomotion 模式靠涌现**：抓着可达地形 → **重力关成 0**（不会掉墙）；走/爬在腿与身体两层**都无分支**，只有"抓住/没抓住"这一个开关。玩家式**显式状态机**仅在需要精细操控的角色上才用。（雨世界的"入水→腿垂下"游泳态本项目不做，见 §4。）
@@ -31,6 +35,8 @@
 - **[`docs/rainworld_procedural_animation_research.md`](docs/rainworld_procedural_animation_research.md)** —— **核心参考**。雨世界程序化动画系统深度研究 + **反编译实证（§11 代码级：BodyPart/Limb/LizardLimb/TailSegment/TerrainCurve 等）** + **Godot 移植策略（§12：为什么用射线而不是细网格）**。
 - **[`docs/porting_contract.md`](docs/porting_contract.md)** —— **M5 产物**。`ProcAnim.Core` → `random-room-runtime` 回迁契约：模块清单与依赖面、装配/驱动/输入/输出四契约、`ITerrainQuery` 接缝语义、确定性守则与三层回归、两条迁移路线与两种集成姿态（含主项目对接面调研快照）。
 - **[`docs/centipede_controller.md`](docs/centipede_controller.md)** —— 并列蜈蚣后端：任意节/逐节覆写装配、双端表面轨迹、真实抓足、生命周期、四个稳定预设与当前验证边界。
+- **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`+`BodyPart` 继承树、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱或多节腿前先查这里的先例。
+- **[`docs/cicada_controller.md`](docs/cicada_controller.md)** —— **M6 产物**。Cicada 双 chunk 飞行、稳定 3D 姿态、显式停驻、Charge、附肢表现、宿主接口与专项回归。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
 - 源文档（主项目，真相源）：`../random_room/random-room-runtime/docs/rainworld_procedural_animation_research.md`（本项目内为**工作副本**，两边如有更新需手动同步；副本中指向主项目其它文档的相对链接会失效，属正常）。
 - 主项目怪物美术/规格（回迁时对接）：`../random_room/random-room-runtime/docs/monster_visual_research.md`、`procedural_monster_visual_spec.md`、`tyrant_enemy_requirements.md`。
@@ -45,6 +51,10 @@
   ```bash
   export PATH="$PATH:$HOME/.dotnet/tools"   # ilspycmd（dotnet global tool）
   ilspycmd ~/workspace/others/Managed_extracted/Assembly-CSharp.dll -t <ClassName> > ~/workspace/others/rw_decomp/<ClassName>.cs
+  ```
+  DLC 的类**不在**全局命名空间，`-t` 要带全名：`MoreSlugcats.*`、`Watcher.*`、`DLCSharedEnums`。做**跨类统计**（继承树、全局 grep）时整程序集展开更省事，约 10 秒：
+  ```bash
+  ilspycmd ~/workspace/others/Managed_extracted/Assembly-CSharp.dll -p -o <仓库外目录>   # ~22MB
   ```
 - ⚠️ **边界**：反编译源码**仅供本机学习/互操作参考，不得提交进本仓库、不得再分发**。故意放在**所有 git 仓库之外**（`~/workspace/others/`）。写代码时可以参考其算法/结构，但**落到本项目的是自己的实现**，不是拷贴游戏代码。
 
@@ -65,6 +75,7 @@
 | **M3** | 地形涌现：斜坡 / 墙 → 走、爬两态自然涌现（重力开关 + 射线方向切换） | ✅ 完成 |
 | **M4** | 多样化与调参：多足 / 尾巴 / 多种体型，参数化手感（对标 `LizardBreedParams`） | ✅ 完成 |
 | **M5** | 移植接口：抽出与引擎解耦的模块，定义回迁 `random-room-runtime` 的边界 | ✅ 完成 |
+| **M6** | 独立 Cicada 后端：3D 飞行/停驻/Charge、四翼四触须、双预设与专用沙盒 | ✅ 完成 |
 
 > **M1 产物**：`scripts/physics/`（纯 C# 内核：BodyChunk / ChunkConnection / Body / ITerrainQuery，零场景树依赖，M5 回迁边界；**M5 起移至 `core/`**）、`scripts/terrain/RaycastTerrainQuery.cs`（内核与 Godot 物理的唯一接缝；**M5 起移至 `core/godot/`**）、`scripts/sandbox/`（驱动/渲染/拖拽/确定性探针）、`scenes/sandbox.tscn`（白盒：地板+缓坡+台阶+墙）。
 >
@@ -119,6 +130,76 @@
 > 穿透 `0m`。固定头下阶梯领/尾端在 tick 46/116 落地，终态非相邻间距 1.917× 半径和，
 > 严重成团连续 0 tick。
 > 详见 [`docs/centipede_controller.md`](docs/centipede_controller.md)。
+>
+> **蜘蛛并列后端（2026-07）**：`SpiderLocomotionController` 不继承或扩充蜥蜴控制器，只共享
+> `Body`/`ChunkConnection`/`SphereTerrain`/`ITerrainQuery`。`SpiderBreedParams` 表达至少两节的
+> 有序线性身体链，每个 `LegPairSpec` 可挂到任意身体节；不支持分支或环。正式
+> `spider-small` / `spider-large` 都对齐 RW BigSpider 的“两节身体、四对腿全挂第 0 节，
+> 第 1 节无腿”，另以三节、多锚点合成配置钉住通用性。`SpiderLeg` 的足端独立执行
+> plant-and-trail 与真实射线抓握；`KneePos` 由根/足端、上下腿长度和持久 bend pole 解出，
+> 仅作为 `Anchor→Knee→Foot` 渲染输出。地面、斜坡、墙、内外角和天花板没有模式枚举：
+> 支撑法线由真实抓地法线低通汇总，抓稳关重力、失抓恢复重力。独立回归入口为
+> `dotnet run --project core/spider_smoke` 与 `./tools/run_spider_matrix.sh`；原蜥蜴 smoke/矩阵
+> 仍必须逐位不变。
+>
+> **蜘蛛窄墙抱边（2026-07）**：症状 = 身体贴在接近自身宽度的墙端面时，端面外的腿没有
+> 候选而悬空。修复没有增加窄墙模式：`SpiderLeg.FindGrip` 把名义落点沿旧支撑法线压进
+> 凸棱轮廓，再沿 `_frameRight * Side` 用完整腿长横向反投影；左/右腿各自发现相邻侧面。
+> 该候选单独保存，只有命中本侧横向面或前方正交面、且处于有限 AEP 距离余量内时，才可
+> 替换旧支撑候选；命中仍走可达环和 `TargetSurfaceContact` 背书。专项
+> `--route=narrow-wall` 使用 0.36m 端面并按身体半径留出接近距离；小/大型最终分别有
+> 5/6 条腿连续抱侧面，双侧接触窗口分别 961/879 tick，支撑有限稳定、IK/pole/穿透不回归。
+>
+> **蜘蛛完整迈步修复（2026-07）**：用户指出大蜘蛛最后一对腿高频向前挪一点、像被身体
+> 拖行。逐步测量推翻了“只是腿慢”的初判：旧路径在抓点刚越出可达环时会同 tick 直接
+> `FindGrip`，摆动中的腿又被可达性检查逐 tick 重新 `BeginSwing`；同时落脚目标随腿根
+> 每 tick 前移。后腿因此记录到约 69~73 次直接重定向，单次前向变化仅约 -1.5~+0.9cm，
+> 根本没有完成 PEP→AEP 的摆动。真实蜘蛛研究显示慢速步态常由
+> `R1/R3/L2/L4 ↔ L1/L3/R2/R4` 两组四腿交替，足端具有明确接触期和前摆期；本项目取其
+> 确定性稳定子集，而不模拟肌肉/液压。
+>
+> 现行修复：① `OpposeSidePhase` 让同对左右反相、相邻腿对交替；② 全部腿先更新本 tick
+> 根部，再按最低保留抓地腿数、相位和硬超距统一发放松脚许可；③ 正式预设启用
+> `UseExplicitTouchdownLead`，抬脚瞬间保留横向工作区并冻结世界 AEP，摆动期间不追身体；
+> ④ 越出可达环只会开始一轮完整 `ReachRecovery`，已摆动腿不会反复清零。大蜘蛛保留
+> `TrailReleaseRatio=0.38`、`GaitPhaseTicks=12`、慢脚速/四 tick 抓握，最低支撑为 4；
+> 四对 AEP lead 由前至后为 `0.55/0.48/0.40/0.35` 倍腿长。
+>
+> 回归不再只看整体速度：`StepSerial/LandingSerial` 逐腿统计完整步、直接重定向、紧急步、
+> 前向追回、微步、抬脚高度及支撑期根部推进。900 tick smoke 中大蜘蛛每腿完成 27~35 步，
+> 最弱腿平均追回 0.271 倍腿长，最后一对平均 0.287，后腿微步/直接重定向/紧急步均为 0；
+> 399 tick Godot `--route=gait` 中最后一对平均追回 0.282、微步为 0。小蜘蛛后排仍为
+> 0.265、微步为 0。蜘蛛全矩阵与原蜥蜴 smoke/20 项矩阵全部通过；没有增加地形模式分支。
+>
+> **蜘蛛急转腿槽修复（2026-07）**：症状 = 身体已完成 90°/180° 换向，但部分腿持续落在
+> 另一侧，甚至同一腿对倒置。根因不是转身速度，而是 `CaptureSwingTarget` 原样继承旧脚相对
+> 新局部轴的横向分量；一旦旧抓点跨过中线，每轮冻结 AEP 都会继续复制错误侧。现行修复只在
+> 抬腿捕获新 AEP 的 tick 处理：若横向分量已跨线，且该腿已确认的上次抓面与当前支撑面
+> `dot >= 0.85`，就关于本腿根部面镜像一次，保留原站距再回到解剖侧。旧脚在接触期仍可自然
+> 短暂跨身；不强制松脚、不逐 tick 重映射冻结目标；法线明显不同的窄墙/棱角多面抓握也不
+> 套用这次平面镜像。
+> 第二轮视觉复查又暴露“回到本侧但仍贴身”的稳定坏解：现有镜像只修符号，`+0.06` 这类
+> 很小的正 lane 会被以后每次 AEP 原样复制。现行实现因此在镜像之后增加同面站距软回收：
+> 本腿与配对腿的上次抓面、当前 `_frameUp` 三者法线 dot 均 ≥0.85 时，每次正常抬腿把
+> 横向分量向 `MaxReach×Lerp(0.68,0.82,StepLength)×DesiredReachDirection·outward`
+> 回收 60%。名义宽度自然包含每条腿的扇角/横向权重/体型；已植脚不动，内外侧短暂差异会
+> 随错相换步渐退；窄墙两侧与棱角多面抓握因法线不同自动跳过。
+> 无引擎专项覆盖小/大型蜘蛛左右 90° 与精确 180°：身体 5~15 tick 对齐，全部足端和下一
+> 落脚目标进入连续 20 tick 正确侧的起点为 13~52 tick，滚动站距平衡恢复为小型
+> 36~40 tick、大型 69~95 tick；预算后最坏腿对差 P95 ≤0.09 腿长、最小内外站距比
+> P05 ≥0.87、每腿实际/AEP 相对各自名义宽度 P05 ≥0.875，同时钉住 IK/pole、失抓与
+> 转后推进。Godot `--route=turn
+> --turn=left|right|around` 另以真实 RootPos 腿槽覆盖小/大六项；最坏 large-around 在
+> 55 tick 后不再跨身，92 tick 内恢复站距平衡，零 pole 翻面。既有直行步态、
+> 小/大窄墙、墙—墙 L 角和墙→天花板路线继续通过。
+> **M6 Cicada 产物（2026-07-30）**：新增 `CicadaParams` / `CicadaFactory` /
+> `CicadaLocomotionController`，与 Lizard 后端只共享 Body、连接和 `ITerrainQuery`。双 chunk
+> 身体按 RW 尺寸换算，固定序采用 `Body.Tick → Cicada Act`；支持完整 3D 输入、弱悬停锚、
+> 显式地板/墙/顶停驻与失效复飞、30 tick 意图起飞、锁方向 Charge 和 20 tick Stunned。
+> 四翼与四条触须只输出固定 tick 表现状态，不向身体回传力；`light` / `dark` 只靠出生参数分化。
+> 独立 `scenes/cicada_sandbox.tscn` 默认装配 light，交互支持 WASD+Q/E、停驻选择与
+> 起飞/Charge；`core/cicada_smoke` 和 `tools/run_cicada_matrix.sh` 覆盖固定哈希、40/400Hz、
+> 微扰、三面停驻、起飞、撞墙与双预设。详细契约见 `docs/cicada_controller.md`。
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
