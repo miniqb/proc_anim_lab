@@ -1,0 +1,183 @@
+[gd_scene load_steps=23 format=3]
+
+[ext_resource type="Script" path="res://scripts/spider_sandbox/SpiderSandboxWorld.cs" id="1_world"]
+
+[sub_resource type="StandardMaterial3D" id="mat_floor"]
+albedo_color = Color(0.45, 0.48, 0.52, 1)
+roughness = 0.9
+
+[sub_resource type="StandardMaterial3D" id="mat_course"]
+albedo_color = Color(0.67, 0.62, 0.52, 1)
+roughness = 0.84
+
+[sub_resource type="StandardMaterial3D" id="mat_corner"]
+albedo_color = Color(0.43, 0.56, 0.68, 1)
+roughness = 0.8
+
+[sub_resource type="StandardMaterial3D" id="mat_ceiling"]
+albedo_color = Color(0.54, 0.42, 0.62, 1)
+roughness = 0.8
+
+[sub_resource type="BoxShape3D" id="shape_floor"]
+size = Vector3(24, 1, 20)
+
+[sub_resource type="BoxMesh" id="mesh_floor"]
+size = Vector3(24, 1, 20)
+
+[sub_resource type="BoxShape3D" id="shape_ramp"]
+size = Vector3(6, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="mesh_ramp"]
+size = Vector3(6, 0.4, 3)
+
+[sub_resource type="BoxShape3D" id="shape_step"]
+size = Vector3(2, 0.3, 2)
+
+[sub_resource type="BoxMesh" id="mesh_step"]
+size = Vector3(2, 0.3, 2)
+
+[sub_resource type="BoxShape3D" id="shape_crest_wall"]
+size = Vector3(0.4, 3, 6)
+
+[sub_resource type="BoxMesh" id="mesh_crest_wall"]
+size = Vector3(0.4, 3, 6)
+
+[sub_resource type="BoxShape3D" id="shape_l_wall_x"]
+size = Vector3(0.4, 6, 5)
+
+[sub_resource type="BoxMesh" id="mesh_l_wall_x"]
+size = Vector3(0.4, 6, 5)
+
+[sub_resource type="BoxShape3D" id="shape_l_wall_z"]
+size = Vector3(5, 6, 0.4)
+
+[sub_resource type="BoxMesh" id="mesh_l_wall_z"]
+size = Vector3(5, 6, 0.4)
+
+[sub_resource type="BoxShape3D" id="shape_ceiling"]
+size = Vector3(5, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="mesh_ceiling"]
+size = Vector3(5, 0.4, 3)
+
+[sub_resource type="BoxShape3D" id="shape_narrow_wall"]
+size = Vector3(0.36, 7, 2)
+
+[sub_resource type="BoxMesh" id="mesh_narrow_wall"]
+size = Vector3(0.36, 7, 2)
+
+[sub_resource type="Environment" id="env"]
+ambient_light_source = 2
+ambient_light_color = Color(0.78, 0.83, 0.9, 1)
+ambient_light_energy = 0.65
+
+[node name="SpiderSandboxWorld" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, -0.5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+shape = SubResource("shape_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+mesh = SubResource("mesh_floor")
+surface_material_override/0 = SubResource("mat_floor")
+
+[node name="Ramp" type="StaticBody3D" parent="Terrain"]
+transform = Transform3D(0.9510566, -0.30901673, 0, 0.30901673, 0.9510566, 0, 0, 0, 1, 4, 0.75, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Ramp"]
+shape = SubResource("shape_ramp")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Ramp"]
+mesh = SubResource("mesh_ramp")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="Step" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-3, 0.15, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step"]
+shape = SubResource("shape_step")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step"]
+mesh = SubResource("mesh_step")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="CrestWall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-6, 1.5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/CrestWall"]
+shape = SubResource("shape_crest_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/CrestWall"]
+mesh = SubResource("mesh_crest_wall")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="NarrowWall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-9, 3.5, -7)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/NarrowWall"]
+shape = SubResource("shape_narrow_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/NarrowWall"]
+mesh = SubResource("mesh_narrow_wall")
+surface_material_override/0 = SubResource("mat_corner")
+
+[node name="WallLCourse" type="Node3D" parent="Terrain"]
+
+[node name="WallX" type="StaticBody3D" parent="Terrain/WallLCourse"]
+position = Vector3(6, 3, 3.5)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/WallLCourse/WallX"]
+shape = SubResource("shape_l_wall_x")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/WallLCourse/WallX"]
+mesh = SubResource("mesh_l_wall_x")
+surface_material_override/0 = SubResource("mat_corner")
+
+[node name="WallZ" type="StaticBody3D" parent="Terrain/WallLCourse"]
+position = Vector3(3.5, 3, 6)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/WallLCourse/WallZ"]
+shape = SubResource("shape_l_wall_z")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/WallLCourse/WallZ"]
+mesh = SubResource("mesh_l_wall_z")
+surface_material_override/0 = SubResource("mat_corner")
+
+[node name="WallCeilingCourse" type="Node3D" parent="Terrain"]
+
+[node name="Wall" type="StaticBody3D" parent="Terrain/WallCeilingCourse"]
+position = Vector3(0, 3, -6)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/WallCeilingCourse/Wall"]
+shape = SubResource("shape_l_wall_x")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/WallCeilingCourse/Wall"]
+mesh = SubResource("mesh_l_wall_x")
+surface_material_override/0 = SubResource("mat_ceiling")
+
+[node name="Ceiling" type="StaticBody3D" parent="Terrain/WallCeilingCourse"]
+position = Vector3(2.5, 6, -6)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/WallCeilingCourse/Ceiling"]
+shape = SubResource("shape_ceiling")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/WallCeilingCourse/Ceiling"]
+mesh = SubResource("mesh_ceiling")
+surface_material_override/0 = SubResource("mat_ceiling")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.9238795, 0.3826834, 0, -0.3826834, 0.9238795, 0, 6.5, 15)
+current = true
+far = 80.0
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.8253356, -0.44229966, 0.3509874, 0, 0.62161, 0.7833269, -0.5646425, -0.6465076, 0.51303685, 0, 0, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")

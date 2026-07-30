@@ -12,8 +12,9 @@
 1. **拷 `core/` 一个文件夹**进主项目（两条路线见 §8.2；命名空间归化 = 一次 sed）。
 2. **按主项目射线规范实现 `ITerrainQuery`**（§6 有对照模板；`core/godot/RaycastTerrainQuery.cs`
    是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
-3. **宿主 tick 里装 0.025s 累加器**驱动 `LizardLocomotionController.Tick`，渲染读 `LerpPos(插值分数)`（§3）；
-   回归先跑 `core/smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
+3. **宿主 tick 里装 0.025s 累加器**驱动选定物种控制器的 `Tick`，渲染读
+   `LerpPos(插值分数)`（§3）；回归先跑对应的 `core/smoke` / `core/spider_smoke`
+   （秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
 
@@ -28,14 +29,20 @@
 | `SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
 | `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
 | `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
+| `MoveTargetKind.cs` | 两个并列控制器共用的推进目标来源观测枚举；调试层只读目标数据，不依赖具体物种 | — |
 | `Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
 | `LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
 | `BreedParams.cs` | 品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
 | `BodyFactory.cs` | 通用装配器 + 四预设（default/heavy/sprinter/hexapod） | LizardBreeds |
+| `SpiderLeg.cs` | 蜘蛛足端粒子：plant-and-trail、全方向 FindGrip、稳定 pole 两段 IK 膝点 | BigSpider/Spider 足端与图形层 IK 分层 |
+| `SpiderLocomotionController.cs` | 蜘蛛专属运动控制器：多锚点抓地汇总、支撑低通、归一化推进、线性链拖尾 | 独立 3D 涌现实现 |
+| `SpiderBreedParams.cs` | 有序线性身体链 + 显式腿对锚点配置 | BigSpider 拓扑的可配置扩展 |
+| `SpiderFactory.cs` | 小型/大型正式预设 + 三节多锚点测试预设 | BigSpider 两节八腿拓扑 |
 | `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
 | `PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
 | `smoke/` | 无引擎冒烟回归 console 工程（§7.2） | — |
+| `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK 与生命周期无引擎回归 | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -123,6 +130,50 @@ LizardLocomotionController controller = BodyFactory.CreateLizardController(origi
 **「笨重感」不要用腿参数表达**（它们碰抓地循环）——用 `SpineSegments`、`BodySizeFac`、
 `TailSegments/TailStiffness`、`BodyStiffness`、`SmoothenLegMovement=false`（绿蜥式拖沓）表达。
 
+### 2.2 蜘蛛装配契约
+
+```csharp
+SpiderBreedParams p = SpiderFactory.SmallSpider(); // 或 LargeSpider/ByName(name)
+SpiderLocomotionController spider = SpiderFactory.CreateSpiderController(origin, p);
+```
+
+- `BodySegments` 必须至少两项，按列表顺序装成唯一的 Rigid 线性链；本后端不表达分支或环。
+- 每个 `LegPairSpec.AnchorSegmentIndex` 显式指定锚点节，同一节可挂任意多对腿，也允许多节挂腿。
+  `spider-small` / `spider-large` 固定为两节、四对腿全部挂第 0 节；第 1 节无腿。
+  `SyntheticMultiAnchor()` 只用于回归，证明三节、多锚点没有被控制器写死。
+- 未知 `SpiderFactory.ByName` 名称快速失败；所有节半径/质量/连接参数、腿长、足端参数和锚点
+  索引在装配前验证，避免坏配置静默退化。
+- 身体总推进先按抓地比例缩放，再按锚点上的真实抓地贡献归一化分配；增加腿或挂腿身体节不会
+  线性增速。无腿的后续身体节只由连接和连续拖尾姿态弹簧跟随。
+- `SpiderLeg.Pos` 是唯一足端运动/抓地状态。`RootPos → KneePos → Pos` 是渲染姿态：
+  上下两段长度由余弦定理解，持久 `BendPole` 在共线与换面时保持手性，膝不参加碰撞或承力。
+  足端最大可达距离小于两段长度之和，保证可见弯折。
+- `LegPairSpec.StepLength` 继续表达静态工作区的名义伸展；可选 `TrailReleaseRatio` 独立决定
+  抓点落后多少腿长后抬腿。正式预设另启用 `UseExplicitTouchdownLead`：抬腿时保留足端
+  横向工作区，并把 `TouchdownLeadRatio` 定义的 AEP 冻结在世界空间，摆动期间不再追逐
+  每 tick 前移的身体。四对腿使用由前至后递减的 lead，左右腿反相、相邻腿对交替，组成
+  两组确定性的对角四足步态；大蜘蛛保留长腿、四腿最低支撑和慢抓握，也能完成一次可见前摆。
+  `ForwardStepBias` 仍只调整静态候选中心，不代替正式摆动的冻结 AEP。
+- 身体急转时，仍在旧世界抓点上的腿可以短暂跨过新的局部中线；这属于合法接触期，不能集体
+  强制松脚。该腿下一次抬起并捕获 AEP 时，若其已确认的上次抓面与当前支撑面仍近似一致，
+  会先把跨线横向分量关于本腿根部面镜像一次。仅回到正确半边仍不够：正但很小的站距也会
+  被显式 AEP 永久复制，因此同一 tick 还会把横向分量向该槽位由
+  `FanAngle/PairLateral/StepLength` 推导的名义宽度回收 60%。只有本腿、配对腿的上次抓面
+  都与当前支撑面一致且彼此同面（法线三组 dot 均不小于 0.85）时才回收；不同法线的窄墙/
+  棱角多面抓握不套用。冻结后的世界 AEP 不逐 tick 重映射，已植脚也不滑动。因此没有新增
+  转向模式，也不会以碎步、瞬时失抓或牺牲抱边来隐藏换向过渡。
+- 已抓点若越出可达环，会以 `ReachRecovery` 开始一轮完整摆动；已处于摆动的腿不会被
+  逐 tick 再次初始化。控制器先为全部腿更新同一 tick 的根部坐标，再按“相位匹配或硬超距”
+  的确定性优先级发放有限松脚许可，因此不会出现后腿不断清零摆动、只向前挪一点的假步态。
+- 落脚仍按固定顺序搜索真实 TerrainHit。直接/当前支撑/历史抓面/世界向下/局部扇形候选
+  统一按足端球心到 AEP 的距离仲裁；同侧横向反投影另行保存，只在命中本侧横向面或前方
+  正交新面、且仍处于有限 AEP 距离余量时才可替换旧支撑候选。左腿只找左侧、右腿只找右侧，
+  使超出窄端面轮廓的腿抱住相邻侧面，又不会让普通墙角的远侧面抢走合适落点。它不增加
+  “窄墙”状态；命中仍须通过可达环及目标面真实接触背书。
+- `MoveDir` / `RunSpeed` / `MoveTarget` / `AtMoveTarget` 及
+  `Shift` / `Teleport` / `Launch` 与蜥蜴入口同形；生命周期操作会完整覆盖足端、膝、pole、
+  抓点和步态状态。地面、墙、斜坡、角落、天花板没有模式字段。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -141,6 +192,10 @@ LizardLocomotionController controller = BodyFactory.CreateLizardController(origi
   站稳判定/重力开关 → 输入反转检测 → 推进力/持久拉直 → terrainSqueeze 门控 →
   `Body.Tick`（受力→积分→约束→碰撞→卡角结构恢复→卡链释放）→ 头速顶死计数 + 局部卡角计数
   → 腿 → 支撑法线更新 → 持久拉直需求衰减。
+- `SpiderLocomotionController.Tick` 内部序同样不可拆分：解析方向/路径点 →
+  读取上 tick 抓地并更新重力开关 → 按抓地贡献施加归一化推进与线性链拖尾姿态力 → `Body.Tick` →
+  顶死换步 → `SpiderLeg.Tick`（足端积分、可达环、碰撞、两段 IK）→ 汇总下一 tick
+  `SupportNormal`。换序会让抓地、推进和膝姿态读取不同相位。
 
 ### 3.2 渲染插值
 
@@ -242,16 +297,19 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 | `LizardLocomotionController.ApplyGravity` | 身体色：true 红=坠落 / false 青=抓稳（站/爬涌现态的唯一可视开关） |
 | `Limb.LerpPos(t)` / `.Radius` / `.Anchor` | 脚球 + 腿线 |
 | `Limb.Gripping` / `.ReachingForTerrain` / `.IdlePose` | 脚色：绿=抓稳推进 / 橙=迈步找落点 / 灰蓝=摆动或闲置 |
+| `SpiderLocomotionController.ApplyGravity` / `.SupportNormal` | 蜘蛛抓稳状态与完整表面朝向 |
+| `SpiderLeg.LerpRoot(t)` / `.LerpKnee(t)` / `.LerpPos(t)` | 蜘蛛两段腿：根→膝→足端 |
+| `SpiderLeg.Gripping` / `.ReachingForTerrain` / `.GripNormal` | 蜘蛛真实抓点状态；膝点不作为物理接触 |
 
 ### 5.2 AI / 游戏逻辑可读
 
-`LizardLocomotionController.LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
+两个控制器共同提供 `LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
 （支撑面法线：平地≈上、爬墙≈墙法线——可判「正在爬墙」）、`StallTicks`（顶死程度）、
-`StraightenOutNeeded` / `SpineCornerStuckTicks` / `MaxSpineCornerStuckTicks`（姿态恢复需求、
-局部髋部卡角与本次恢复生命周期峰值；Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
-`AtMoveTarget`（直喂模式到达信号，宿主换点驱动）、`LastMoveTarget`/`LastMoveTargetKind`
-（本 tick 实际推进胡萝卜及其来源分支：Support 钉面 / Crest 翻越 / External 直喂或沿面重定向 /
-Fallback 空中退化——Fallback 长期驻留 = 方向驱动在棱边失去地形参照，可视化为红色）、
+`AtMoveTarget`、`LastMoveTarget` / `LastMoveTargetKind`。蜘蛛另可逐腿读取
+`SpiderLeg.GripNormal` / `HasGrip` / `BendPole` / `KneePos`；弯腿姿态是正式只读输出。
+蜥蜴专属的 `StraightenOutNeeded` / `SpineCornerStuckTicks` /
+`MaxSpineCornerStuckTicks`（姿态恢复需求、局部髋部卡角与本次恢复生命周期峰值；
+Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
 `Limb.GripNormal`/`HasGrip`、`BodyChunk.TerrainContact`/`ContactNormal`、
 `BodyChunk.Rotation`（chunk 朝向 =「参照 chunk → 自己」单位向量，≙ RW BodyChunk.Rotation。
 工厂钉定不变量：头参照髋 → Rotation = 全身轴前向；中段参照后一节 → 本段轴前向；髋参照头 →
@@ -339,11 +397,23 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 #    + wall-pose 墙顶顶死+侧扰动稳定性 + TypeRef 引擎边界扫描。
 dotnet run --project core/smoke
 
-# ② Godot 全矩阵（分钟级；改物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ② 蜘蛛无引擎冒烟：小/大双跑独立哈希 + 正式/多锚点拓扑 + 两段 IK/pole +
+#    Shift/Teleport/Launch 完整生命周期 + 极不等长腿可达环 + 反折拖尾恢复 +
+#    未确认抓点超时/目标面背书 + 180° 朝向与直接天花板重抓 +
+#    小/大型蜘蛛逐腿完整步数、每步前向追回、抬脚高度、支撑期根部位移、
+#    同 tick 重置、紧急步和后腿微步比例门 + 小/大型左右 90° 与 180° 急转后的
+#    身体对齐、足端/目标本侧槽恢复、腿对分离、IK/pole 连续性与前进门。
+dotnet run --project core/spider_smoke
+
+# ③ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
+#    小/大窄墙双侧抱持、墙—墙 L 角、墙→天花板，以及小/大型三向急转恢复。
+./tools/run_spider_matrix.sh
+
+# ④ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑤ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
@@ -359,9 +429,9 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 头—SpineFollower 前向构型、全身轴与展开姿态必须在 25 tick 内恢复；中段局部轴相对头部局部轴的
 最大角度领先、连续领先 tick 与过 60° 对齐阈值的时间差只作诊断输出，尚不以任意审美阈值判红。
 
-**基线哈希只存两处**（有意改内核后同步更新，别处一律引用）：
-`tools/run_matrix.sh` 顶部的哈希表（Godot 全矩阵）与 `core/smoke/Program.cs` 的
-`ExpectedHash`（无引擎冒烟）。回迁后把这两处一起带走即为目标仓库的基线。
+蜥蜴基线哈希只存 `tools/run_matrix.sh` 与 `core/smoke/Program.cs`；蜘蛛基线只存
+`tools/run_spider_matrix.sh` 与 `core/spider_smoke/Program.cs`。有意改变对应后端行为时只更新
+它自己的两处；共享原语改动则四处都必须重新审计，不能用批量改哈希代替行为断言。
 
 ### 7.3 回迁后的回归形态
 

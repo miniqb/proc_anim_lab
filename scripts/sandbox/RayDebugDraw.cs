@@ -93,14 +93,19 @@ public sealed class RayDebugDraw : ITerrainQuery
         parent.AddChild(node);
     }
 
-    public void Draw(Camera3D camera, LizardLocomotionController controller)
+    /// <summary>
+    /// 绘制最近一个 tick 的查询与可选推进胡萝卜。调用侧只传通用目标观测，
+    /// 因而蜥蜴、蜘蛛或后续并列控制器都无需让调试层知道其具体类型。
+    /// </summary>
+    public void Draw(Camera3D camera, Vector3 carrotOrigin,
+        MoveTargetKind targetKind, Vector3 target)
     {
         if (_mesh is null)
         {
             return;
         }
         _mesh.ClearSurfaces();
-        bool hasCarrot = controller.LastMoveTargetKind != MoveTargetKind.None;
+        bool hasCarrot = targetKind != MoveTargetKind.None;
         if (!Enabled || (_rays.Count == 0 && !hasCarrot))
         {
             return;
@@ -117,15 +122,15 @@ public sealed class RayDebugDraw : ITerrainQuery
         }
         if (hasCarrot)
         {
-            Color c = controller.LastMoveTargetKind switch
+            Color c = targetKind switch
             {
                 MoveTargetKind.Support => CarrotSupportColor,
                 MoveTargetKind.Crest => CarrotCrestColor,
                 MoveTargetKind.External => CarrotExternalColor,
                 _ => CarrotFallbackColor,
             };
-            AddRibbon(controller.Head.Pos, controller.LastMoveTarget, c, camPos);
-            AddMarker(controller.LastMoveTarget, camPos, c, CarrotMarkerSize);
+            AddRibbon(carrotOrigin, target, c, camPos);
+            AddMarker(target, camPos, c, CarrotMarkerSize);
         }
         _mesh.SurfaceEnd();
     }
