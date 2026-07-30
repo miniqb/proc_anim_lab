@@ -15,6 +15,8 @@ public sealed class DeterminismHasher
     private const ulong FnvPrime = 1099511628211UL;
 
     private ulong _hash = FnvOffset;
+    private readonly Dictionary<ulong, ulong> _opaqueIdOrdinals = new();
+    private ulong _nextOpaqueIdOrdinal = 1;
 
     public ulong Value => _hash;
 
@@ -23,6 +25,39 @@ public sealed class DeterminismHasher
         FoldBits(System.BitConverter.SingleToUInt32Bits(v.X));
         FoldBits(System.BitConverter.SingleToUInt32Bits(v.Y));
         FoldBits(System.BitConverter.SingleToUInt32Bits(v.Z));
+    }
+
+    public void Fold(float value) =>
+        FoldBits(System.BitConverter.SingleToUInt32Bits(value));
+
+    public void Fold(int value) => FoldBits(unchecked((uint)value));
+
+    public void Fold(bool value) => FoldBits(value ? 1u : 0u);
+
+    public void Fold(ulong value)
+    {
+        FoldBits(unchecked((uint)value));
+        FoldBits(unchecked((uint)(value >> 32)));
+    }
+
+    /// <summary>
+    /// 折叠只具备“零/非零、相同/不同”语义的宿主句柄。Godot collider_id 是进程内
+    /// ObjectID，数值跨进程不稳定；按本次哈希中首次出现顺序规范化，保留身份关系而不让
+    /// 外部标签制造无行为差异的哈希漂移。
+    /// </summary>
+    public void FoldOpaqueId(ulong value)
+    {
+        if (value == 0)
+        {
+            Fold(0UL);
+            return;
+        }
+        if (!_opaqueIdOrdinals.TryGetValue(value, out ulong ordinal))
+        {
+            ordinal = _nextOpaqueIdOrdinal++;
+            _opaqueIdOrdinals.Add(value, ordinal);
+        }
+        Fold(ordinal);
     }
 
     /// <summary>逐 chunk 折叠 Pos/Vel（Chunks 列表序 = 装配序，固定）。</summary>

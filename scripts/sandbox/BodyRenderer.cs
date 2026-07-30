@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using ProcAnim.Core;
@@ -14,9 +15,12 @@ public sealed class BodyRenderer
 {
     private readonly List<(BodyChunk Chunk, MeshInstance3D Node)> _spheres = new();
     private readonly List<(Limb Limb, MeshInstance3D Node)> _feet = new();
+    private readonly List<(ISandboxAppendageView Appendage, MeshInstance3D Node)> _otherFeet = new();
     private readonly List<ChunkConnection> _connections = new();
     private readonly List<Limb> _limbs = new();
+    private readonly List<ISandboxAppendageView> _otherAppendages = new();
     private LizardLocomotionController? _lizardController;
+    private Func<bool>? _isSupported;
     private ImmediateMesh? _lineMesh;
     private MeshInstance3D? _lineNode;
 
@@ -88,6 +92,81 @@ public sealed class BodyRenderer
         parent.AddChild(_lineNode);
     }
 
+    /// <summary>
+    /// 并列控制器的白盒渲染入口。附肢通过沙盒只读视图接入，不要求核心腿类型继承
+    /// <see cref="Limb"/>；isSupported 只决定身体颜色，不参与运动。
+    /// </summary>
+    internal void Build(Node3D parent, IReadOnlyList<Body> bodies,
+        IReadOnlyList<ISandboxAppendageView> appendages, Func<bool> isSupported)
+    {
+        _isSupported = isSupported;
+        _chunkFalling = new StandardMaterial3D { AlbedoColor = new Color(0.85f, 0.35f, 0.3f) };
+        _chunkFooted = new StandardMaterial3D { AlbedoColor = new Color(0.3f, 0.65f, 0.7f) };
+        _footGrip = new StandardMaterial3D { AlbedoColor = new Color(0.3f, 0.8f, 0.35f) };
+        _footReach = new StandardMaterial3D { AlbedoColor = new Color(0.95f, 0.6f, 0.2f) };
+        _footSwing = new StandardMaterial3D { AlbedoColor = new Color(0.5f, 0.6f, 0.75f) };
+
+        BuildBodies(parent, bodies);
+        foreach (ISandboxAppendageView appendage in appendages)
+        {
+            var node = new MeshInstance3D
+            {
+                Mesh = new SphereMesh
+                {
+                    Radius = appendage.Radius,
+                    Height = appendage.Radius * 2f,
+                },
+                MaterialOverride = _footSwing,
+                TopLevel = true,
+            };
+            parent.AddChild(node);
+            _otherFeet.Add((appendage, node));
+            _otherAppendages.Add(appendage);
+        }
+        BuildLines(parent);
+    }
+
+    private void BuildBodies(Node3D parent, IReadOnlyList<Body> bodies)
+    {
+        foreach (Body body in bodies)
+        {
+            foreach (BodyChunk chunk in body.Chunks)
+            {
+                var node = new MeshInstance3D
+                {
+                    Mesh = new SphereMesh { Radius = chunk.Radius, Height = chunk.Radius * 2f },
+                    MaterialOverride = _chunkFalling,
+                    TopLevel = true,
+                };
+                parent.AddChild(node);
+                _spheres.Add((chunk, node));
+            }
+            foreach (ChunkConnection conn in body.Connections)
+            {
+                if (!conn.SoftOnly)
+                {
+                    _connections.Add(conn);
+                }
+            }
+        }
+    }
+
+    private void BuildLines(Node3D parent)
+    {
+        _lineMesh = new ImmediateMesh();
+        _lineNode = new MeshInstance3D
+        {
+            Mesh = _lineMesh,
+            MaterialOverride = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = new Color(0.95f, 0.9f, 0.4f),
+            },
+            TopLevel = true,
+        };
+        parent.AddChild(_lineNode);
+    }
+
     /// <summary>拆掉本次 Build 创建的全部节点（品种切换重生用），之后可再次 Build。</summary>
     public void Clear()
     {
@@ -99,19 +178,27 @@ public sealed class BodyRenderer
         {
             node.QueueFree();
         }
+        foreach ((_, MeshInstance3D node) in _otherFeet)
+        {
+            node.QueueFree();
+        }
         _lineNode?.QueueFree();
         _lineNode = null;
         _lineMesh = null;
         _spheres.Clear();
         _feet.Clear();
+        _otherFeet.Clear();
         _connections.Clear();
         _limbs.Clear();
+        _otherAppendages.Clear();
         _lizardController = null;
+        _isSupported = null;
     }
 
     public void Draw(float t)
     {
-        StandardMaterial3D chunkMat = _lizardController is { ApplyGravity: false } ? _chunkFooted : _chunkFalling;
+        bool supported = _lizardController is { ApplyGravity: false } || (_isSupported?.Invoke() ?? false);
+        StandardMaterial3D chunkMat = supported ? _chunkFooted : _chunkFalling;
         foreach ((BodyChunk chunk, MeshInstance3D node) in _spheres)
         {
             node.Position = chunk.LerpPos(t);
@@ -124,13 +211,23 @@ public sealed class BodyRenderer
                 : limb.ReachingForTerrain && !limb.IdlePose ? _footReach
                 : _footSwing;
         }
+        foreach ((ISandboxAppendageView appendage, MeshInstance3D node) in _otherFeet)
+        {
+            node.Position = appendage.LastPos.Lerp(appendage.Pos, t);
+            node.MaterialOverride = appendage.Phase switch
+            {
+                SandboxAppendagePhase.Grip => _footGrip,
+                SandboxAppendagePhase.Reach => _footReach,
+                _ => _footSwing,
+            };
+        }
 
         if (_lineMesh is null)
         {
             return;
         }
         _lineMesh.ClearSurfaces();
-        if (_connections.Count == 0 && _limbs.Count == 0)
+        if (_connections.Count == 0 && _limbs.Count == 0 && _otherAppendages.Count == 0)
         {
             return;
         }
@@ -144,6 +241,11 @@ public sealed class BodyRenderer
         {
             _lineMesh.SurfaceAddVertex(limb.Anchor.LerpPos(t));
             _lineMesh.SurfaceAddVertex(limb.LerpPos(t));
+        }
+        foreach (ISandboxAppendageView appendage in _otherAppendages)
+        {
+            _lineMesh.SurfaceAddVertex(appendage.AnchorLastPos.Lerp(appendage.AnchorPos, t));
+            _lineMesh.SurfaceAddVertex(appendage.LastPos.Lerp(appendage.Pos, t));
         }
         _lineMesh.SurfaceEnd();
     }

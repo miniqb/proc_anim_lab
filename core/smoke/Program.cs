@@ -44,6 +44,7 @@ internal static class Program
         bool recoveryOk = CheckRecoveryInvariants(out string recoveryMsg);
         bool wallPoseOk = CheckWallPoseStability(out string wallPoseMsg);
         bool heavyMountOk = CheckHeavyWallMount(out string heavyMountMsg);
+        bool centipedeOk = CentipedeSmoke.RunAll(out string centipedeMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -57,6 +58,7 @@ internal static class Program
         Console.WriteLine($"[CORE-RECOVERY] {recoveryMsg}");
         Console.WriteLine($"[CORE-WALL-POSE] {wallPoseMsg}");
         Console.WriteLine($"[CORE-HEAVY-MOUNT] {heavyMountMsg}");
+        Console.WriteLine($"[CORE-CENTIPEDE] {centipedeMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -114,6 +116,10 @@ internal static class Program
         if (!heavyMountOk)
         {
             reasons.Add("heavy 上墙前段未及时沿墙、链尾未按期收敛，或停驶时被吸向墙");
+        }
+        if (!centipedeOk)
+        {
+            reasons.Add("蜈蚣装配、确定性、双端领航、生命周期、自避、查询缩放或课程地形回归失败");
         }
 
         bool pass = reasons.Count == 0;

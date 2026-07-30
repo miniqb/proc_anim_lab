@@ -2,7 +2,7 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M5 移植接口完成 + 外部评审修复轮（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`（TypeRef 边界扫描 + 无引擎冒烟双重解耦实证），回迁契约就位（[`docs/porting_contract.md`](docs/porting_contract.md)）。评审修复轮补齐：球体穿透碰撞语义（接缝第二原语）、卡链释放、输入死区/抓握/限速语义统一、宿主 Shift/Teleport/Launch 接线 API、断言化回归矩阵（`tools/run_matrix.sh`）。准确状态：**内核抽离完成 + 集成契约就位**；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
+> 当前状态：**M5 移植接口 + 外部评审修复轮 + 并列蜈蚣控制器（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`，蜥蜴与蜈蚣共享身体/地形底座但保持物种专属控制器。蜈蚣的出生配置、双端表面轨迹、真实抓足、逐节支撑、确定性行波/自避、四个稳定预设及宿主适配已落地；纯 .NET smoke 与 **32 项 Godot 全矩阵（旧 20 项 Lizard + 新 12 项 Centipede）均已通过**。回迁契约见 [`docs/porting_contract.md`](docs/porting_contract.md)。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
 
@@ -30,6 +30,7 @@
 
 - **[`docs/rainworld_procedural_animation_research.md`](docs/rainworld_procedural_animation_research.md)** —— **核心参考**。雨世界程序化动画系统深度研究 + **反编译实证（§11 代码级：BodyPart/Limb/LizardLimb/TailSegment/TerrainCurve 等）** + **Godot 移植策略（§12：为什么用射线而不是细网格）**。
 - **[`docs/porting_contract.md`](docs/porting_contract.md)** —— **M5 产物**。`ProcAnim.Core` → `random-room-runtime` 回迁契约：模块清单与依赖面、装配/驱动/输入/输出四契约、`ITerrainQuery` 接缝语义、确定性守则与三层回归、两条迁移路线与两种集成姿态（含主项目对接面调研快照）。
+- **[`docs/centipede_controller.md`](docs/centipede_controller.md)** —— 并列蜈蚣后端：任意节/逐节覆写装配、双端表面轨迹、真实抓足、生命周期、四个稳定预设与当前验证边界。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
 - 源文档（主项目，真相源）：`../random_room/random-room-runtime/docs/rainworld_procedural_animation_research.md`（本项目内为**工作副本**，两边如有更新需手动同步；副本中指向主项目其它文档的相对链接会失效，属正常）。
 - 主项目怪物美术/规格（回迁时对接）：`../random_room/random-room-runtime/docs/monster_visual_research.md`、`procedural_monster_visual_spec.md`、`tyrant_enemy_requirements.md`。
@@ -50,7 +51,8 @@
 ## 4. 范围 / 非目标
 
 - **做**：生物运动/动画系统内核 + 必要的白盒测试场景与调参工具。
-- **不做**：**游泳 / 水中运动（本项目明确不涉及）**、关卡生成、玩法、锁钥、UI、正式美术——那些留在主项目。
+- **不做**：AI 寻路、战斗、**游泳 / 水中运动（本项目明确不涉及）**、关卡生成、玩法、
+  锁钥、UI、正式美术——那些留在主项目；`MoveTarget` 只接受宿主给出的邻近可达点。
 - 一切设计以"**能干净地回迁到 `random-room-runtime`**"为约束。
 
 ## 5. 路线图（里程碑）
@@ -90,6 +92,34 @@
 > - **抽离质量门**：9 配置全矩阵（default 双跑/40vs400Hz/perturb、wall、stand、三品种）与抽离前基线**逐字节 diff 为空**——移动文件+改命名空间+程序集拆分+哈希器下沉，零行为漂移。
 > - [`docs/porting_contract.md`](docs/porting_contract.md)：回迁契约。模块清单与依赖面、装配（品种可行域表）/驱动（40 tick 固定序、60Hz 宿主 0.025s 累加器）/输入（MoveDir/RunSpeed 两旋钮 + MoveTarget 路径点直喂可选第三旋钮，≙ RW 寻路器喂路径格的原始形态）/输出（渲染与 AI 观测面）四契约、ITerrainQuery 接缝全语义（HitFromInside 零法线、主项目掩码层 20 + RID 排除规范、射线量级与节流阀门、Jolt 验证点）、确定性守则与三层回归、**两条迁移路线**（源码拷入 ≙ 主项目惯例 / 首个 ProjectReference）与**两种集成姿态**（规格 §4.3 可替换后端·身体拴权威根拖行 / 内核位置权威·根跟随，前者默认）。主项目对接面调研快照（单程序集 60Hz Jolt、motion 子系统 Gate-C 已过待接线、MonsterMotionSnapshot 映射表）沉淀于契约 §8。
 >
+> **并列蜈蚣控制器（2026-07）**：新增独立 `CentipedeLocomotionController`，只复用 `Body`/
+> `ChunkConnection`/`ITerrainQuery` 底座，不改蜥蜴算法。`CentipedeParams` +
+> `CentipedeSegmentParams` + 稀疏逐节覆写支持任意 ≥2 节出生装配；相邻节质量加权、隔节
+> SoftOnly 防折叠。运动由带 `ArcLength` 的双端表面轨迹、逐节局部支撑、真实
+> `CentipedeLeg` 抓点、确定性行波和有上限空间桶自避组成；支持 `Shift`/`Teleport`/`Launch`
+> 与宿主直喂的邻近可达 `MoveTarget`。宿主通过 `RequestedLeadEnd` 显式请求 Start/End，
+> `LeadEnd` 报告已应用状态；`MoveDir`/`MoveTarget` 不自动推断或切换头尾，自动选端与去抖
+> 属于宿主/AI。沙盒交互模式与 `--lead=start|end` 都显式锁定领航端；只有未传 `--lead`
+> 的无头 default 巡逻脚本演示宿主层方向评分 + 3 tick 去抖，再通过 `RequestedLeadEnd`
+> 发命令，核心对此策略不知情。路径两端各保存有向表面切线；输入投影在外角退化时沿既有
+> 切线平行运输，不用世界 Up/Right 猜方向。候选另受正向进度、近期路径回访和球体可行性
+> 约束，转角样点的弧长取实际中心距离；相邻刚性连接只恢复碰撞相对新增的违反。四个稳定 ID 为
+> `centipede/short`（5）、
+> `centipede/long`（18）、`centipede/armored`（10）、`centipede/ribbon`（12）；
+> 沙盒由宿主适配器统一输入/渲染/调试，核心层不增加万能生物接口。无引擎 smoke 覆盖
+> 2/5/18/32 节、显式头尾切换、生命周期、自避、查询增长和地面→18°斜坡→内角墙→外角墙顶→
+> 天花板课程、固定 Start+恒 +X 下阶梯，以及脚跨薄墙恢复（中心扫掠、低速球壳 MTD、
+> 停驶 stance 抓点遮挡与同侧碰墙对照）；short/long 当前哈希为 `4DAD09DE3CB81C31` /
+> `4E3DFC052BA4E74D`，Lizard `AAA0E4963668E5DC` 不变。Godot 12 项蜈蚣矩阵已纳入完整矩阵并通过：
+> 四预设巡逻 short/long/armored/ribbon 哈希为 `BE58C639D59E1EA2` / `0D1D0D51D5E9C26B` /
+> `D595C149C1C6B8EC` / `D834CFF4122082C3`；course-short/course-long/step-down-armored 为
+> `D6F99637C6D76EE1` / `30793ACEDD88F34C` / `3D2594F93BC2F009`；embed-long/wallside-long 为
+> `FE8E2E356129F7A2` / `E2837F5747FDFBFF`。两条课程的 `maxNoneRun=1/9`、
+> `maxBlockedRun=0/0`、`maxConnectionRun=4/7`，尾端通过为 15/80、89/184 tick（实际/预算），
+> 穿透 `0m`。固定头下阶梯领/尾端在 tick 46/116 落地，终态非相邻间距 1.917× 半径和，
+> 严重成团连续 0 tick。
+> 详见 [`docs/centipede_controller.md`](docs/centipede_controller.md)。
+>
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
 > **SpineFollower 修复（RotationChunk 轮后追加，2026-07；多节脊柱爬墙 V 形折叠 bug）**：`LizardLocomotionController.ApplyLocomotionForce` 原先让链尾 `Hips` 直接追「目标点身后一节」，偏移量取 `SpineLength`（= 脊柱**全长**，头到髋各连接 RestLength 之和）——两节脊柱（Head/Hips 相邻）时这恰好退化成正确语义，三节以上（heavy/hexapod）时中间节完全没有驱动力，两条独立刚性连接在「头到髋直线距离 < 脊柱全长」的欠约束自由度上被动折成 V 形，且抓稳后重力关闭，错误姿态可稳定维持（反编译 `Lizard.cs:2277-2280` 核实根因：RW 原版只用 `bodyChunkConnections[0].distance`——**单节**长度——驱动 `bodyChunks[1]`，链尾 `bodyChunks[2]` 从不被直接追踪，只靠连接约束被动拖行）。修复：新增 `LizardLocomotionController.SpineFollower`（≙ `bodyChunks[1]`，工厂钉定为 `chunks[1]`）与 `HeadLinkLength`（单节长度）承接这个追踪力，`Hips` 恢复纯被动拖行。两节脊柱下 `SpineFollower` 与 `Hips` 是同一 chunk 且 `HeadLinkLength` 数值与原 `SpineLength` 相同——`default`/`sprinter`/`wall`/`stand`/`carrot`/`embed`/`wallside` 七条矩阵配置与 smoke 哈希逐位不变（no-op 有数学证明，非仅回归验证）；`heavy`/`hexapod`（三节脊柱）换新基线：路点数 heavy 6→8、hexapod 8→9（同 2000 tick），官方巡逻路线下头-中-髋夹角由折叠态稳定 ~53° 回升到稳态 ~177°（转弯/翻越瞬态低至 116°~151°，但数百 tick 内自行回直，不再像修复前那样滞留）。
@@ -113,10 +143,15 @@
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
 > #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
 > #    MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
-> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 + TypeRef 边界扫描。
+> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 +
+> #    蜈蚣装配/显式头尾切换/表面课程/固定头下阶梯/脚跨墙恢复/生命周期/自避/查询增长 +
+> #    TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
-> # ② Godot 全矩阵（分钟级）。20 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
+> # 蜈蚣无引擎基线：short=4DAD09DE3CB81C31，long=4E3DFC052BA4E74D；
+> # 既有 Lizard=AAA0E4963668E5DC 不变。
+>
+> # ② Godot 全矩阵（分钟级）。32 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
 > #    防折叠支柱持续违反与事件相对恢复门），pipefail + 退出码聚合，任何一项红 → 非零退出；
 > #    结尾打 MATRIX GREEN/RED：
 > ./tools/run_matrix.sh [输出目录]
@@ -127,16 +162,20 @@
 > #   wall-corner（目标墙首次接触换面）、stand（站桩+闲置姿态）、
 > #   carrot（MoveTarget 路径点直喂通路）、heavy/sprinter/hexapod（品种默认巡逻路线）、
 > #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）。
+> # 蜈蚣 12 项：四预设巡逻 + short 双跑/40Hz/微扰 + short/long 全向课程 +
+> #   armored 固定头下阶梯 + long 嵌入恢复/擦墙；课程须完整通过地面、斜坡、内角墙、
+> #   墙顶、外墙与天花板，下阶梯须固定 Start 且始终只给 +X。
 > # [RESULT] 在进程 teardown 之前打印；已知 Godot 4.7 macOS 偶发退场 mutex 崩溃（exit 134），
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
 > # 2000 tick 参考值（FrontMount 轮后）：default 11 路点、wall 14 翻越、heavy 7 路点、
 > #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13。
+> # 当前 32 项 = 既有 20 项 Lizard + 新增 12 项 Centipede，完整矩阵已 GREEN。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
-> # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。
-> # 有意改内核 = 同一提交里更新这两处；别处（含本文件）一律引用不复制。
+> # 可执行基线真相源：tools/run_matrix.sh + core/smoke/Program.cs +
+> # core/smoke/CentipedeSmoke.cs。有意改内核时更新对应真相源。
 > ```
 
 ## 6. 环境
