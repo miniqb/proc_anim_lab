@@ -584,7 +584,7 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 
 Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/微扰、short/long
 全向课程、armored 固定头下阶梯、long 固定 End 窄墙前向翻越、嵌入恢复与擦墙。
-与既有 20 项 Lizard 合计 **33 项完整矩阵，当前全部 GREEN**。最终哈希快照：
+与蜥蜴/秃鹫/人形配置合计 **45 项完整矩阵，当前全部 GREEN**。蜈蚣最终哈希快照：
 
 - short/long/armored/ribbon：`0F040547BFD02043` / `B66DAAB5D006190E` /
   `A6EDF4704829C261` / `EB6011908D0FAA19`；
