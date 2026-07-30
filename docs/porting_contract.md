@@ -12,8 +12,10 @@
 1. **拷 `core/` 一个文件夹**进主项目（两条路线见 §8.2；命名空间归化 = 一次 sed）。
 2. **按主项目射线规范实现 `ITerrainQuery`**（§6 有对照模板；`core/godot/RaycastTerrainQuery.cs`
    是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
-3. **宿主 tick 里装 0.025s 累加器**驱动 `LizardLocomotionController.Tick`，渲染读 `LerpPos(插值分数)`（§3）；
-   回归先跑 `core/smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
+3. **宿主 tick 里装 0.025s 累加器**驱动选定物种控制器的 `Tick`，渲染读
+   `LerpPos(插值分数)`（§3）；回归先跑对应的 `core/smoke` / `core/spider_smoke`
+   / `core/cicada_smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条
+   headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
 
@@ -28,14 +30,29 @@
 | `SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
 | `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
 | `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
+| `MoveTargetKind.cs` | 并列控制器共用的推进目标来源观测枚举；调试层只读目标数据，不依赖具体物种 | — |
 | `Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
 | `LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
 | `BreedParams.cs` | 品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
 | `BodyFactory.cs` | 通用装配器 + 四预设（default/heavy/sprinter/hexapod） | LizardBreeds |
+| `CentipedeLeg.cs` | 蜈蚣足端：真实地形抓点 + 确定性行波；抓握调制本节支撑，不刚性反拉身体 | 独立 3D 扩展 |
+| `CentipedeLocomotionController.cs` | 蜈蚣专属控制器：双端表面轨迹、逐节局部支撑、全向贴面与有上限自避 | 独立 3D 扩展 |
+| `CentipedeParams.cs` | 全局运动参数 + 默认体型曲线 + 任意节出生参数与稀疏逐节覆写 | 独立 3D 扩展 |
+| `CentipedeFactory.cs` | 质量加权装配器 + short/long/armored/ribbon 四个稳定 ID 预设 | 独立 3D 扩展 |
+| `SpiderLeg.cs` | 蜘蛛足端粒子：plant-and-trail、全方向 FindGrip、稳定 pole 两段 IK 膝点 | BigSpider/Spider 足端与图形层 IK 分层 |
+| `SpiderLocomotionController.cs` | 蜘蛛专属运动控制器：多锚点抓地汇总、支撑低通、归一化推进、线性链拖尾 | 独立 3D 涌现实现 |
+| `SpiderBreedParams.cs` | 有序线性身体链 + 显式腿对锚点配置 | BigSpider 拓扑的可配置扩展 |
+| `SpiderFactory.cs` | 小型/大型正式预设 + 三节多锚点测试预设 | BigSpider 两节八腿拓扑 |
+| `CicadaLocomotionController.cs` | 蝉专属控制器：双 chunk 差分升力、悬停、显式停驻、起飞与 Charge | Cicada.Update / Act |
+| `CicadaParams.cs` | 蝉出生参数（尺寸、飞行动力、翼/触须表现尺度） | Cicada 个体差异的确定性子集 |
+| `CicadaFactory.cs` | 双 chunk 身体装配 + light/dark 两个预设 | Cicada 构造 |
+| `CicadaWingState.cs` / `CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
 | `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
 | `PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
-| `smoke/` | 无引擎冒烟回归 console 工程（§7.2） | — |
+| `smoke/` | 蜥蜴与蜈蚣无引擎冒烟回归 console 工程（§7.2） | — |
+| `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK 与生命周期无引擎回归 | — |
+| `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -54,8 +71,9 @@
 
 ### 1.3 内核明确不做（≙ CLAUDE.md 非目标）
 
-寻路（`MoveDir` 从外面来）、游泳/水中运动、渲染与美术、碰撞体/Area 的创建、
-宿主根节点的移动（集成姿态见 §8.3）、任何日志输出（内核零 `GD.*`/`Console.*`）。
+AI 寻路（`MoveDir`/邻近 `MoveTarget` 从外面来）、战斗、游泳/水中运动、正式渲染与美术、
+碰撞体/Area 的创建、宿主根节点的移动（集成姿态见 §8.3）、任何日志输出
+（内核零 `GD.*`/`Console.*`）。
 
 ## 2. 装配契约（BreedParams → BodyFactory）
 
@@ -123,6 +141,96 @@ LizardLocomotionController controller = BodyFactory.CreateLizardController(origi
 **「笨重感」不要用腿参数表达**（它们碰抓地循环）——用 `SpineSegments`、`BodySizeFac`、
 `TailSegments/TailStiffness`、`BodyStiffness`、`SmoothenLegMovement=false`（绿蜥式拖沓）表达。
 
+### 2.2 蜈蚣并列后端
+
+```csharp
+CentipedeParams p = CentipedeFactory.Long();
+CentipedeLocomotionController controller =
+    CentipedeFactory.CreateController(origin, p);
+```
+
+`CentipedeParams`、`CentipedeSegmentParams`、`CentipedeSegmentOverride` 同样是纯出生配置；
+工厂解析出逐节深拷贝后，控制器运行时不回读源对象。最少 2 节、无编译期上限，当前 smoke
+固定覆盖 32 节。相邻节用质量加权 Rigid 连接，隔一节用 SoftOnly PushOnly 防折叠支柱。
+稳定 ID 为 `centipede/short`、`centipede/long`、`centipede/armored`、
+`centipede/ribbon`，未知 ID 快速失败。
+
+蜈蚣不是 `LizardLocomotionController` 的模式分支：它以双端、带 `ArcLength` 的表面轨迹
+驱动各节目标，并以真实 `CentipedeLeg` 抓点决定逐节支撑。领航端由宿主写
+`RequestedLeadEnd` 显式选择，`LeadEnd` 只报告已应用状态；`MoveDir`/`MoveTarget` 不负责
+推断或切换头尾。两端各自保存有向表面切线；输入投影在换面时退化，则沿当前领航端既有
+切线平行运输续行，而非用世界轴猜方向。完整装配、运动、观察与验证契约见
+[`centipede_controller.md`](centipede_controller.md)。
+
+### 2.3 蜘蛛装配契约
+
+```csharp
+SpiderBreedParams p = SpiderFactory.SmallSpider(); // 或 LargeSpider/ByName(name)
+SpiderLocomotionController spider = SpiderFactory.CreateSpiderController(origin, p);
+```
+
+- `BodySegments` 必须至少两项，按列表顺序装成唯一的 Rigid 线性链；本后端不表达分支或环。
+- 每个 `LegPairSpec.AnchorSegmentIndex` 显式指定锚点节，同一节可挂任意多对腿，也允许多节挂腿。
+  `spider-small` / `spider-large` 固定为两节、四对腿全部挂第 0 节；第 1 节无腿。
+  `SyntheticMultiAnchor()` 只用于回归，证明三节、多锚点没有被控制器写死。
+- 未知 `SpiderFactory.ByName` 名称快速失败；所有节半径/质量/连接参数、腿长、足端参数和锚点
+  索引在装配前验证，避免坏配置静默退化。
+- 身体总推进先按抓地比例缩放，再按锚点上的真实抓地贡献归一化分配；增加腿或挂腿身体节不会
+  线性增速。无腿的后续身体节只由连接和连续拖尾姿态弹簧跟随。
+- `SpiderLeg.Pos` 是唯一足端运动/抓地状态。`RootPos → KneePos → Pos` 是渲染姿态：
+  上下两段长度由余弦定理解，持久 `BendPole` 在共线与换面时保持手性，膝不参加碰撞或承力。
+  足端最大可达距离小于两段长度之和，保证可见弯折。
+- `LegPairSpec.StepLength` 继续表达静态工作区的名义伸展；可选 `TrailReleaseRatio` 独立决定
+  抓点落后多少腿长后抬腿。正式预设另启用 `UseExplicitTouchdownLead`：抬腿时保留足端
+  横向工作区，并把 `TouchdownLeadRatio` 定义的 AEP 冻结在世界空间，摆动期间不再追逐
+  每 tick 前移的身体。四对腿使用由前至后递减的 lead，左右腿反相、相邻腿对交替，组成
+  两组确定性的对角四足步态；大蜘蛛保留长腿、四腿最低支撑和慢抓握，也能完成一次可见前摆。
+  `ForwardStepBias` 仍只调整静态候选中心，不代替正式摆动的冻结 AEP。
+- 身体急转时，仍在旧世界抓点上的腿可以短暂跨过新的局部中线；这属于合法接触期，不能集体
+  强制松脚。该腿下一次抬起并捕获 AEP 时，若其已确认的上次抓面与当前支撑面仍近似一致，
+  会先把跨线横向分量关于本腿根部面镜像一次。仅回到正确半边仍不够：正但很小的站距也会
+  被显式 AEP 永久复制，因此同一 tick 还会把横向分量向该槽位由
+  `FanAngle/PairLateral/StepLength` 推导的名义宽度回收 60%。只有本腿、配对腿的上次抓面
+  都与当前支撑面一致且彼此同面（法线三组 dot 均不小于 0.85）时才回收；不同法线的窄墙/
+  棱角多面抓握不套用。冻结后的世界 AEP 不逐 tick 重映射，已植脚也不滑动。因此没有新增
+  转向模式，也不会以碎步、瞬时失抓或牺牲抱边来隐藏换向过渡。
+- 已抓点若越出可达环，会以 `ReachRecovery` 开始一轮完整摆动；已处于摆动的腿不会被
+  逐 tick 再次初始化。控制器先为全部腿更新同一 tick 的根部坐标，再按“相位匹配或硬超距”
+  的确定性优先级发放有限松脚许可，因此不会出现后腿不断清零摆动、只向前挪一点的假步态。
+- 落脚仍按固定顺序搜索真实 TerrainHit。直接/当前支撑/历史抓面/世界向下/局部扇形候选
+  统一按足端球心到 AEP 的距离仲裁；同侧横向反投影另行保存，只在命中本侧横向面或前方
+  正交新面、且仍处于有限 AEP 距离余量时才可替换旧支撑候选。左腿只找左侧、右腿只找右侧，
+  使超出窄端面轮廓的腿抱住相邻侧面，又不会让普通墙角的远侧面抢走合适落点。它不增加
+  “窄墙”状态；命中仍须通过可达环及目标面真实接触背书。
+- `MoveDir` / `RunSpeed` / `MoveTarget` / `AtMoveTarget` 及
+  `Shift` / `Teleport` / `Launch` 与蜥蜴入口同形；生命周期操作会完整覆盖足端、膝、pole、
+  抓点和步态状态。地面、墙、斜坡、角落、天花板没有模式字段。
+
+### 2.4 Cicada 装配契约
+
+```csharp
+CicadaParams p = CicadaFactory.Light(); // 或 Dark / ByName
+CicadaLocomotionController controller =
+    CicadaFactory.CreateController(origin, Vector3.Forward, p);
+```
+
+- Cicada 是与 Lizard **并列**的 locomotion backend，不复用 `BreedParams`、`BodyFactory` 或
+  plant-and-trail `Limb`。两者只共享 `Body` / chunk / connection / terrain 原语。
+- `CreateController` 会冻结一份参数快照，运行时不再回读调用侧的可变 `CicadaParams`；
+  `BodyMass` 由 Cicada 后端换算为力响应，不要求共享 `Body` 改写 Lizard 的积分语义。
+- 身体固定为前体、后体两个 chunk + 一条 Rigid 连接；默认 RW 单位换算为半径约
+  `0.1875m / 0.175m`、连接长 `0.35m`。前体 `RotationChunk=Rear`，后体反向引用。
+- 四翼和四条触须是确定性表现状态。它们可在停驻时贴面，但不产生升力、不计支撑、不向身体回传力。
+- `MoveDir` 是完整 3D 单位向量，`RunSpeed` 是 `[0,1]` 强度；可选 `MoveTarget` 同样是完整 3D
+  路径点。宿主 AI/导航负责给点，内核不内置寻路。
+- `RequestPerch(TerrainHit)` 只接受有效法线，缓存点、法线、切向前向和 collider ID；地板、墙、
+  天花板走同一公式。稳定停驻时 `Up=Normal`、另外两轴位于切平面，翼/触须不得穿面；
+  普通碰撞不会自动落地，表面验证失败时自动复飞。
+- `TakeOff` / `TryStartCharge` 是显式动作。Charge 方向开始时锁定，动态对象伤害/抓取不属于
+  `ITerrainQuery`，首版只处理静态地形反弹或中断。
+- `Shift` 平移全部世界坐标记忆并保留状态；`Teleport` / `Launch` 清飞行目标、停驻和 Charge。
+- RW 的 `stamina` 主要服务负载、黏附和被抓交互；这些宿主接缝未引入前，不得把它误作普通飞行燃料。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -141,6 +249,17 @@ LizardLocomotionController controller = BodyFactory.CreateLizardController(origi
   站稳判定/重力开关 → 输入反转检测 → 推进力/持久拉直 → terrainSqueeze 门控 →
   `Body.Tick`（受力→积分→约束→碰撞→卡角结构恢复→卡链释放）→ 头速顶死计数 + 局部卡角计数
   → 腿 → 支撑法线更新 → 持久拉直需求衰减。
+- `CentipedeLocomotionController.Tick` 同样由宿主一次性调用：应用 `RequestedLeadEnd`/派生意图 →
+  延伸表面轨迹 → 逐节目标与自避 → 逐节力/`Body.Tick` → 行波足端 → 支撑观察。
+  宿主不得拆开或另排其中阶段。
+- `SpiderLocomotionController.Tick` 内部序同样不可拆分：解析方向/路径点 →
+  读取上 tick 抓地并更新重力开关 → 按抓地贡献施加归一化推进与线性链拖尾姿态力 → `Body.Tick` →
+  顶死换步 → `SpiderLeg.Tick`（足端积分、可达环、碰撞、两段 IK）→ 汇总下一 tick
+  `SupportNormal`。换序会让抓地、推进和膝姿态读取不同相位。
+- `CicadaLocomotionController.Tick` 内部序（锚定 RW `base.Update → Act`）：
+  先按上一轮模式配置身体并执行 `Body.Tick` → 读取本 tick 接触、停驻表面和 Charge 撞击
+  → 更新 `Mode` / `FlightPower` / 输入目标 → 向前后 chunk 注入下一 tick 使用的差分飞行动力
+  → 更新稳定 3D 姿态框架、四翼与触须。渲染不反向影响物理。
 
 ### 3.2 渲染插值
 
@@ -185,6 +304,10 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
   Shift 则全部保留。若宿主以后做可回滚完整快照，这些动态恢复状态必须与 Pos/Vel 一起序列化。
 - 想「删掉重来」（长途瞬移后不在乎连续性）：整体重建仍然最简单。
 
+蜈蚣暴露同名 `Shift`/`Teleport`/`Launch`：`Shift` 连同 `SurfaceTrail`、逐节目标与脚的
+当前/预定抓点整体平移；`Teleport` 另外作废轨迹、抓握、支撑和 `MoveTarget`；`Launch`
+统一叠加全身体速度并交还重力。两类控制器可以共用宿主生命周期事件，但状态不可互换。
+
 ## 4. 输入契约（AI 有两个旋钮 + 一个可选路径点直喂）
 
 | 输入 | 类型/域 | 语义 |
@@ -209,6 +332,21 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
   因抓空而恢复坠落、落地自动回归步态（`--yank` 回归即此场景）。
   **主动位移事件（跳跃/击飞/弹射）必须走 `Launch`**——只放空输入不会给内核向上的
   冲量，视觉身体会继续抓在原地看着权威根飞走。
+
+蜈蚣使用同一三项移动输入：`MoveDir`、`RunSpeed`、可选 `MoveTarget`；到点半径字段名为
+`ArriveRadius`。此外宿主在选择或更换领航端时用 `RequestedLeadEnd` 显式请求
+`CentipedeLeadEnd.Start` 或 `.End`；请求保持到下次变更，并在下一次 `Tick` 的确定性边界
+生效，`LeadEnd` 是控制器已经应用的可读状态。`MoveDir`/`MoveTarget` 不会自动推断或切换
+头尾。若需要按方向、目标或战术自动选端及去抖，由宿主/AI 完成后再写请求。
+当 `MoveDir` 与当前表面法线近乎平行时，控制器会把该端此前保存的有向切线运输到新表面；
+宿主无须在平台外角临时把输入改成 `Down`，该续行规则也不会触发换端。
+`MoveTarget` 仍必须是宿主提供的**邻近可达点**，不是把远处最终目的地直接交给内核。
+控制器不做 AI 寻路；宿主读取 `AtMoveTarget` 后负责换下一点。
+
+沙盒交互与 `--lead=start|end` 都显式锁定 `RequestedLeadEnd`，不会自动换端。只有未传
+`--lead` 的无头 default 巡逻脚本演示一种宿主层策略：按路线方向评分两端，连续 3 tick
+确认后写请求。该策略不进入 `CentipedeLocomotionController`，核心既不运行也不观察其评分/
+去抖状态；回迁时可直接替换为目标项目 AI 的决策。
 
 ### 4.1 宿主 tether 配方（姿态 1 的闭环，≙ §8.3）
 
@@ -242,16 +380,19 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 | `LizardLocomotionController.ApplyGravity` | 身体色：true 红=坠落 / false 青=抓稳（站/爬涌现态的唯一可视开关） |
 | `Limb.LerpPos(t)` / `.Radius` / `.Anchor` | 脚球 + 腿线 |
 | `Limb.Gripping` / `.ReachingForTerrain` / `.IdlePose` | 脚色：绿=抓稳推进 / 橙=迈步找落点 / 灰蓝=摆动或闲置 |
+| `SpiderLocomotionController.ApplyGravity` / `.SupportNormal` | 蜘蛛抓稳状态与完整表面朝向 |
+| `SpiderLeg.LerpRoot(t)` / `.LerpKnee(t)` / `.LerpPos(t)` | 蜘蛛两段腿：根→膝→足端 |
+| `SpiderLeg.Gripping` / `.ReachingForTerrain` / `.GripNormal` | 蜘蛛真实抓点状态；膝点不作为物理接触 |
 
 ### 5.2 AI / 游戏逻辑可读
 
-`LizardLocomotionController.LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
+两个控制器共同提供 `LegsGripping`（抓地腿数）、`ApplyGravity`（是否坠落态）、`SupportNormal`
 （支撑面法线：平地≈上、爬墙≈墙法线——可判「正在爬墙」）、`StallTicks`（顶死程度）、
-`StraightenOutNeeded` / `SpineCornerStuckTicks` / `MaxSpineCornerStuckTicks`（姿态恢复需求、
-局部髋部卡角与本次恢复生命周期峰值；Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
-`AtMoveTarget`（直喂模式到达信号，宿主换点驱动）、`LastMoveTarget`/`LastMoveTargetKind`
-（本 tick 实际推进胡萝卜及其来源分支：Support 钉面 / Crest 翻越 / External 直喂或沿面重定向 /
-Fallback 空中退化——Fallback 长期驻留 = 方向驱动在棱边失去地形参照，可视化为红色）、
+`AtMoveTarget`、`LastMoveTarget` / `LastMoveTargetKind`。蜘蛛另可逐腿读取
+`SpiderLeg.GripNormal` / `HasGrip` / `BendPole` / `KneePos`；弯腿姿态是正式只读输出。
+蜥蜴专属的 `StraightenOutNeeded` / `SpineCornerStuckTicks` /
+`MaxSpineCornerStuckTicks`（姿态恢复需求、局部髋部卡角与本次恢复生命周期峰值；
+Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
 `Limb.GripNormal`/`HasGrip`、`BodyChunk.TerrainContact`/`ContactNormal`、
 `BodyChunk.Rotation`（chunk 朝向 =「参照 chunk → 自己」单位向量，≙ RW BodyChunk.Rotation。
 工厂钉定不变量：头参照髋 → Rotation = 全身轴前向；中段参照后一节 → 本段轴前向；髋参照头 →
@@ -264,6 +405,17 @@ normalized 语义），消费端自行回退。
 上一帧 up）构造正交 `Basis`/Quaternion；forward 与 up 近共线时必须显式选备用 up，避免 roll
 突跳。该补充是 3D 扩展约束——RW 的 2D 单方向向量本身即可唯一确定平面旋转。
 全部是**只读观测**；写它们后果自负。
+
+### 5.3 蜈蚣观察面
+
+蜈蚣渲染同样读取 `Body.Chunks`、非 `SoftOnly` 连接；足端用 `CentipedeLeg.LastPos`
+到 `Pos` 自行插值。
+宿主/调试可另外读取 `Segments`、`Legs`、`SurfaceTrail`、`LeadEnd`、`LeadChunk`、
+`SupportedSegmentCount`、`SupportRatio`、`AtMoveTarget`；每个 `CentipedeSegment`
+公开 `SupportPoint`、`SupportNormal`、`Forward`、`Side`、`TargetCenter`、`ColliderId`、
+`SupportConfidence`/`Supported`。`SurfaceTrail` 采样公开 `Point`、`Normal`、
+`ColliderId`、`ArcLength`。这些同样是只读观测，不是宿主施力入口；领航端的写入口是
+`RequestedLeadEnd`，不要回写 `LeadEnd`。
 
 ## 6. ITerrainQuery 契约（唯一接缝的全部语义）
 
@@ -303,7 +455,10 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
    - 查询参数对象**复用实例**（参考实现即此；射线参数/球形参数/球 shape 各一份常驻。
      `IntersectRay/GetRestInfo` 返回的 Dictionary 是引擎 API 固有分配，无非分配变体）。
 6. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。
-7. **Jolt 验证点**：本仓库 `project.godot` 已启用 Jolt——零法线 HitFromInside、
+7. **ColliderId 是不透明等同性令牌**：0 表示没有碰撞体；非 0 只承诺同一碰撞体在其
+   生命周期内相等，不承诺跨进程数值稳定。确定性探针通过 `FoldOpaqueId` 按首次出现顺序
+   规范化它，保留“相同/不同表面”关系，不把 Godot ObjectID 标签误判成运动漂移。
+8. **Jolt 验证点**：本仓库 `project.godot` 已启用 Jolt——零法线 HitFromInside、
    斜坡/棱线法线连续、`GetRestInfo` 的 MTD 语义**均已在 Jolt 上实证**（全矩阵 +
    embed/wallside 配置）。主项目同为 Jolt，后端语义风险已消除；接入时跑一遍
    `--route=stand`/`--route=wall` 等价场景做环境级确认即可。
@@ -336,18 +491,32 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 #    双跑 bit-exact + 哈希对基线（钉死在 Program.cs 的 ExpectedHash，防「确定但错误」）
 #    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + Launch 恢复
 #    + MoveTarget 到达/取消/传送契约 + RotationChunk 拓扑（互绑/覆盖/钉定/尾链/退化语义）
-#    + wall-pose 墙顶顶死+侧扰动稳定性 + TypeRef 引擎边界扫描。
+#    + wall-pose 墙顶顶死+侧扰动稳定性 + 蜈蚣装配/显式头尾切换/表面课程/生命周期/自避/查询增长
+#    + 蜈蚣脚跨薄墙恢复（中心扫掠/低速球壳 MTD/停驶抓点/同侧碰墙对照）
+#    + TypeRef 引擎边界扫描。
 dotnet run --project core/smoke
 
-# ② Godot 全矩阵（分钟级；改物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ② 蜘蛛无引擎冒烟：小/大双跑独立哈希 + 正式/多锚点拓扑 + 两段 IK/pole +
+#    Shift/Teleport/Launch 完整生命周期 + 极不等长腿可达环 + 反折拖尾恢复 +
+#    未确认抓点超时/目标面背书 + 180° 朝向与直接天花板重抓 +
+#    小/大型蜘蛛逐腿完整步数、每步前向追回、抬脚高度、支撑期根部位移、
+#    同 tick 重置、紧急步和后腿微步比例门 + 小/大型左右 90° 与 180° 急转后的
+#    身体对齐、足端/目标本侧槽恢复、腿对分离、IK/pole 连续性与前进门。
+dotnet run --project core/spider_smoke
+
+# ③ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
+#    小/大窄墙双侧抱持、墙—墙 L 角、墙→天花板，以及小/大型三向急转恢复。
+./tools/run_spider_matrix.sh
+
+# ④ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑤ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
-当前 20 配置除原有时基/品种/嵌入/擦墙门外，固定包含多节脊柱的 `wall-heavy`、
+既有 20 项 **Lizard Godot 矩阵**除原有时基/品种/嵌入/擦墙门外，固定包含多节脊柱的 `wall-heavy`、
 `wall-hexapod` 路点下限，以及四条事件相对回归：`turn-hexapod`（平地 180° 反转后 25 tick 内
 展开并对准）、`wall-turn-hexapod`（竖墙上沿面反转，钉死转轴必须是 `SupportNormal`，恢复期间
 离开目标墙不得连续超过 2 tick）、`wall-tail`（按逐连接计数只归因 PullOnly 尾链；连续逐节释放
@@ -359,9 +528,41 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 头—SpineFollower 前向构型、全身轴与展开姿态必须在 25 tick 内恢复；中段局部轴相对头部局部轴的
 最大角度领先、连续领先 tick 与过 60° 对齐阈值的时间差只作诊断输出，尚不以任意审美阈值判红。
 
-**基线哈希只存两处**（有意改内核后同步更新，别处一律引用）：
-`tools/run_matrix.sh` 顶部的哈希表（Godot 全矩阵）与 `core/smoke/Program.cs` 的
-`ExpectedHash`（无引擎冒烟）。回迁后把这两处一起带走即为目标仓库的基线。
+蜈蚣纯 .NET smoke 的 short/long 双跑 bit-exact 基线为 `655A21496C00E86A` /
+`59CBCF993DF8ACD8`；解析课程覆盖地面、18°斜坡、内角墙、外角墙顶与天花板；固定
+`Start`、恒 `+X` 的解析下阶梯另断言真实立面、低地落脚、继续前进、不回访身体内部及
+不成团。薄墙足端回归另钉住 released foot 的中心扫掠与低速球壳 MTD、停驶 stance 的
+既有抓点遮挡，以及同侧碰墙不得误复位。18 节 long 另在 0.4m 窄墙上分别固定 Start/End
+向前翻越，要求实体头尾到远侧、取得真实远侧抓足、继续离墙后停驶收敛。共同硬门包含
+2 mm 穿透、40 tick 换面、20 tick 逐连接深断链、
+`40 + 8×节数` 尾端通过与 16→32 节查询增长 ≤2.25 倍。
+
+Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/微扰、short/long
+全向课程、armored 固定头下阶梯、long 固定 End 窄墙前向翻越、嵌入恢复与擦墙。
+与既有 20 项 Lizard 合计 **33 项完整矩阵，当前全部 GREEN**。最终哈希快照：
+
+- short/long/armored/ribbon：`0F040547BFD02043` / `B66DAAB5D006190E` /
+  `A6EDF4704829C261` / `EB6011908D0FAA19`；
+- course-short/course-long/step-down-armored：`BB6696619749832D` /
+  `A2BE4857DB102C19` / `ECC5207E14979A28`；
+- narrow-wall-long-end：`413E289A97ABD487`；
+- embed-long/wallside-long：`2C8B2D67731F2B7E` / `501B7C44E06FA68B`。
+
+真实 Jolt 课程中，short/long 的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、
+`maxConnectionRun=3/8`，最大尾端滞后分别为 15/89 tick，对应预算 80/184 tick，
+穿透均为 `0m`。固定头下阶梯的领/尾端于 tick 51/121 落地，净前进 3.387m，
+终态非相邻间距为半径和 1.917 倍，严重成团连续 0 tick。
+固定 End 窄墙场景完成一次前向翻越后停驶 381 tick，终态连接偏差 7%，穿透 `0m`。
+
+可执行基线真相源分别位于：
+
+- Lizard / Centipede：`tools/run_matrix.sh`、`core/smoke/Program.cs` 与
+  `core/smoke/CentipedeSmoke.cs`；
+- Spider：`tools/run_spider_matrix.sh` 与 `core/spider_smoke/Program.cs`；
+- Cicada：`tools/run_cicada_matrix.sh` 与 `core/cicada_smoke/Program.cs`。
+
+有意改变某一后端行为时只更新对应真相源；共享原语改动则全部重新审计，不能用批量改哈希
+代替行为断言。文档数字只作当前状态快照。
 
 ### 7.3 回迁后的回归形态
 

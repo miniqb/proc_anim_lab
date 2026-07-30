@@ -26,11 +26,56 @@ size = Vector3(2, 0.3, 2)
 [sub_resource type="BoxMesh" id="mesh_step"]
 size = Vector3(2, 0.3, 2)
 
+[sub_resource type="BoxShape3D" id="shape_centipede_step_down"]
+size = Vector3(4, 0.8, 2)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_step_down"]
+size = Vector3(4, 0.8, 2)
+
 [sub_resource type="BoxShape3D" id="shape_wall"]
 size = Vector3(0.4, 3, 6)
 
 [sub_resource type="BoxMesh" id="mesh_wall"]
 size = Vector3(0.4, 3, 6)
+
+[sub_resource type="BoxShape3D" id="shape_centipede_floor"]
+size = Vector3(7.1, 0.5, 3)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_floor"]
+size = Vector3(7.1, 0.5, 3)
+
+[sub_resource type="BoxShape3D" id="shape_centipede_landing"]
+size = Vector3(1.8, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_landing"]
+size = Vector3(1.8, 0.4, 3)
+
+[sub_resource type="BoxShape3D" id="shape_centipede_inner_wall"]
+size = Vector3(0.4, 3.133, 3)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_inner_wall"]
+size = Vector3(0.4, 3.133, 3)
+
+[sub_resource type="BoxShape3D" id="shape_centipede_top_beam"]
+size = Vector3(4, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_top_beam"]
+size = Vector3(4, 0.4, 3)
+
+[sub_resource type="BoxShape3D" id="shape_centipede_outer_wall"]
+size = Vector3(0.4, 2, 3)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_outer_wall"]
+size = Vector3(0.4, 2, 3)
+
+[sub_resource type="BoxShape3D" id="shape_centipede_ceiling_beam"]
+size = Vector3(4, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="mesh_centipede_ceiling_beam"]
+size = Vector3(4, 0.4, 3)
+
+[sub_resource type="StandardMaterial3D" id="mat_centipede_course"]
+albedo_color = Color(0.34, 0.48, 0.65, 1)
 
 [sub_resource type="Environment" id="env_default"]
 ambient_light_source = 2
@@ -72,6 +117,16 @@ shape = SubResource("shape_step")
 mesh = SubResource("mesh_step")
 surface_material_override/0 = SubResource("mat_obstacle")
 
+[node name="CentipedeStepDown" type="StaticBody3D" parent="Terrain"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, -8)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/CentipedeStepDown"]
+shape = SubResource("shape_centipede_step_down")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/CentipedeStepDown"]
+mesh = SubResource("mesh_centipede_step_down")
+surface_material_override/0 = SubResource("mat_obstacle")
+
 [node name="Wall" type="StaticBody3D" parent="Terrain" unique_id=889066328]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 1.5, 0)
 
@@ -81,6 +136,71 @@ shape = SubResource("shape_wall")
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Wall" unique_id=1956174945]
 mesh = SubResource("mesh_wall")
 surface_material_override/0 = SubResource("mat_obstacle")
+
+[node name="CentipedeCourse" type="StaticBody3D" parent="Terrain"]
+
+[node name="FloorCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.45, -0.25, 20)
+shape = SubResource("shape_centipede_floor")
+
+[node name="FloorMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.45, -0.25, 20)
+mesh = SubResource("mesh_centipede_floor")
+surface_material_override/0 = SubResource("mat_centipede_course")
+
+[node name="RampCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(0.9510566, -0.30901673, 0, 0.30901673, 0.9510566, 0, 0, 0, 1, 4, 0.75, 20)
+shape = SubResource("shape_ramp")
+
+[node name="RampMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(0.9510566, -0.30901673, 0, 0.30901673, 0.9510566, 0, 0, 0, 1, 4, 0.75, 20)
+mesh = SubResource("mesh_ramp")
+surface_material_override/0 = SubResource("mat_centipede_course")
+
+[node name="LandingCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.69, 1.667, 20)
+shape = SubResource("shape_centipede_landing")
+
+[node name="LandingMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.69, 1.667, 20)
+mesh = SubResource("mesh_centipede_landing")
+surface_material_override/0 = SubResource("mat_centipede_course")
+
+[node name="InnerWallCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.79, 3.4335, 20)
+shape = SubResource("shape_centipede_inner_wall")
+
+[node name="InnerWallMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.79, 3.4335, 20)
+mesh = SubResource("mesh_centipede_inner_wall")
+surface_material_override/0 = SubResource("mat_centipede_course")
+
+[node name="TopBeamCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.59, 4.8, 20)
+shape = SubResource("shape_centipede_top_beam")
+
+[node name="TopBeamMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.59, 4.8, 20)
+mesh = SubResource("mesh_centipede_top_beam")
+surface_material_override/0 = SubResource("mat_centipede_course")
+
+[node name="OuterWallCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12.39, 4, 20)
+shape = SubResource("shape_centipede_outer_wall")
+
+[node name="OuterWallMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12.39, 4, 20)
+mesh = SubResource("mesh_centipede_outer_wall")
+surface_material_override/0 = SubResource("mat_centipede_course")
+
+[node name="CeilingBeamCollision" type="CollisionShape3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.59, 3.2, 20)
+shape = SubResource("shape_centipede_ceiling_beam")
+
+[node name="CeilingBeamMesh" type="MeshInstance3D" parent="Terrain/CentipedeCourse"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.59, 3.2, 20)
+mesh = SubResource("mesh_centipede_ceiling_beam")
+surface_material_override/0 = SubResource("mat_centipede_course")
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=31275829]
 transform = Transform3D(1, 0, 0, 0, 0.9358968, 0.35227424, 0, -0.35227424, 0.9358968, 0, 3, 8)

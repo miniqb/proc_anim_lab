@@ -10,8 +10,9 @@ namespace ProcAnimLab.Sandbox;
 /// 在 _Process 里按物理插值分数渲染。逻辑一律不读 delta——步长恒为 1 tick，
 /// 内核里所有速度/力的单位都是「米/tick」（确定性来源，也与雨世界参数表同构）。
 ///
-/// M3：场景主体是四腿 LizardLocomotionController。WASD 给移动意图（世界 XZ 轴）——推着墙走会被支撑系
-/// 重定向为向上爬（走/爬涌现，无模式键）；左键拖拽任意 chunk。
+/// 场景可装配并列的 LizardLocomotionController 或 CentipedeLocomotionController。
+/// WASD 给移动意图（世界 XZ 轴），Shift+右键直喂目标，左键拖拽任意 chunk；
+/// 蜈蚣用 R 在两端间切换宿主指定的领航端。
 /// 确定性回归：--determinism=N 模式禁用输入，改跑脚本化路点巡走（上坡→下坡→撞墙爬墙
 /// 全部进哈希），提速到 400Hz 跑 N tick 打印状态哈希后退出。40Hz 与 400Hz 哈希必须一致。
 /// </summary>
@@ -31,10 +32,25 @@ public partial class SandboxWorld : Node3D
     [Export] public float CameraMouseSensitivity = 0.003f; // 弧度/像素
 
     private const float TickDt = 0.025f; // 40 tick/s，与 project.godot 的 physics_ticks_per_second 一致
+    private const string CommandLineHelp =
+        "[SANDBOX] usage: --determinism=N [--tps=N] " +
+        "[--breed=default|heavy|sprinter|hexapod|vulture|king|swift|quad | " +
+        "--creature=centipede/short|long|armored|ribbon [--lead=start|end]] " +
+        "[--route=...|fly|perch|centipede-step-down|centipede-narrow-wall] " +
+        "[--spawn=x,y,z] [--perturb=x] " +
+        "[--yank=T] [--expect-hash=X16]\n" +
+        "[SANDBOX] interactive: 1–4 lizards, 5–8 centipedes, 9/0/-/= vultures, " +
+        "R swaps centipede lead, F3 debug";
 
     private float _perturb; // --perturb=x 灵敏度自检：初始位置微扰 → 哈希必须变
     private Vector3 _spawn = new(0f, 2f, 0f); // --spawn=x,y,z 覆盖出生点（坡上/墙边测试用）
-    private long _yankTick = -1; // --yank=T：T tick 调 LizardLocomotionController.Launch 抛掷（「拎起再摔」+击飞 API 的实际覆盖）
+    private string? _centipedeId; // --creature=centipede/...；null 保持既有 --breed 蜥蜴路径
+    private bool _breedExplicit; // --breed 与 --creature 是互斥的装配选择器，防矩阵误跑
+    private CentipedeLeadEnd _requestedCentipedeLeadEnd = CentipedeLeadEnd.Start;
+    private bool _leadExplicit;
+    private int _scriptedCentipedeLeadConfirmTicks;
+    private bool _showCommandHelp;
+    private long _yankTick = -1; // --yank=T：T tick 调当前控制器 Launch（「拎起再摔」+击飞 API 覆盖）
     private int _determinismTicks; // 场景事件在结束前预留恢复预算，避免最后一帧新开事件形成假红
     private ulong? _expectHash; // --expect-hash=X16：终值哈希对基线断言（回归脚本传文档基线，防「确定但错误」）
     private bool _fatal; // CLI 畸形等致命错：停帧防 NRE 无限刷屏，退出码 2
@@ -49,7 +65,6 @@ public partial class SandboxWorld : Node3D
         new(0.5f, 0f, 1.8f),
         new(-7.5f, 0f, 0f),
     };
-
     /// <summary>--route=wall：两路点垂直夹着 x=-6 的墙来回穿——每 +1 个 waypointsReached
     /// = 一次成功翻越（含正反两向），配 --spawn=-4,0.5,0 即「正面推墙」的翻越成功率测试。</summary>
     private static readonly Vector3[] WallRoute =
@@ -57,6 +72,7 @@ public partial class SandboxWorld : Node3D
         new(-7.5f, 0f, 0f),
         new(-4f, 0f, 0f),
     };
+    private const float CentipedeNarrowWallFarFaceX = -6.2f;
 
     /// <summary>--route=turn：远离障碍物的纯平地 180° 往返。沿 Z 轴布置，避免坡、台阶和墙，
     /// 只验证多节脊柱能否绕支撑法线完成掉头，而不是让头/髋从彼此中间穿过去。</summary>
@@ -129,6 +145,45 @@ public partial class SandboxWorld : Node3D
     private bool _carrotTurnDrive;
     private bool _vultureRouteSelected; // --route=fly/perch（秃鹫专属路线）
     private bool _vulturePerchDrive;    // --route=perch：路点跑完后喂地面目标降落
+    private bool _centipedeCourseDrive;
+    private bool _centipedeStepDownDrive;
+    private bool _centipedeNarrowWallDrive;
+    private int _centipedeNarrowWallSettledTicks;
+    private string _routeName = "default";
+
+    private enum CentipedeCourseDrivePhase
+    {
+        AcrossFloorAndTop,
+        DownOuterWall,
+        AlongCeiling,
+    }
+
+    private enum CentipedeCourseStage
+    {
+        Floor,
+        Slope,
+        InnerWall,
+        Top,
+        OuterWall,
+        Ceiling,
+        Count,
+    }
+
+    private static readonly string[] CentipedeCourseStageNames =
+    {
+        "floor", "slope", "inner-wall", "top", "outer-wall", "ceiling",
+    };
+
+    // --route=centipede-step-down：z=-8 的专用平台保留旧 Step 的箱体外角语义，但足够长，
+    // 可让 armored 全身先在顶面展开。固定 Start 领航并持续 +X，专测水平输入跨越外角时
+    // 能否保留向下切向，随后让尾端完整落到地板；不靠宿主在换面后补 Vector3.Down。
+    private const float CentipedeStepDownEdgeX = 2f;
+    private const float CentipedeStepDownTopY = 0.8f;
+    private const float CentipedeStepDownLandingY = 0.40f;
+    private const float CentipedeStepDownMinimumProgress = 2.5f;
+    private const float CentipedeStepDownSevereOverlapRatio = 0.55f;
+    private const float CentipedeStepDownFinalSeparationRatio = 0.75f;
+    private const int CentipedeStepDownPileRunBudget = 8;
 
     private enum RegressionScenario
     {
@@ -144,6 +199,8 @@ public partial class SandboxWorld : Node3D
 
     private readonly List<Body> _bodies = new();
     private LizardLocomotionController _lizardController = null!;
+    private CentipedeLocomotionController? _centipedeController;
+    private ISandboxCreatureAdapter _creature = null!;
     private BreedParams _breed = BodyFactory.Default();
     private VultureFlightController? _vultureController; // 非 null = 当前生物是秃鹫
     private VultureBreedParams? _vultureBreed;           // --breed= 落在秃鹫表 → 秃鹫模式
@@ -151,7 +208,7 @@ public partial class SandboxWorld : Node3D
     private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
     private readonly DragController _drag = new();
-    private BreedSelectorUI? _breedUI;
+    private CreatureSelectorUI? _creatureUI;
     private DeterminismProbe? _probe;
     private Camera3D _camera = null!;
     private float _camYaw;
@@ -183,76 +240,154 @@ public partial class SandboxWorld : Node3D
             GetTree().Quit(2);
             return;
         }
+        if (_showCommandHelp)
+        {
+            _fatal = true;
+            GD.Print(CommandLineHelp);
+            GetTree().Quit();
+            return;
+        }
         _rayDebug = new RayDebugDraw(_terrain);
         _rayDebug.Build(this);
         if (_vultureBreed is { } vultureBreed)
         {
             SpawnVulture(vultureBreed, _spawn);
         }
-        else
+        else if (_centipedeId is null)
         {
             SpawnLizard(_breed, _spawn);
         }
+        else
+        {
+            SpawnCentipede(_centipedeId, _spawn);
+        }
         if (_perturb != 0f)
         {
-            // 与旧版 _lizardController.Body.Chunks[0] 同一对象（_bodies[0] 即当前生物的 Body）。
-            _bodies[0].Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
-            _bodies[0].Chunks[0].LastPos = _bodies[0].Chunks[0].Pos;
+            _creature.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
+            _creature.Body.Chunks[0].LastPos = _creature.Body.Chunks[0].Pos;
         }
         if (_probe is null)
         {
-            // 确定性回归模式禁交互输入（含品种切换），UI 面板只在交互模式下建——与数字键的既有限制对齐。
-            // 品种表 = 蜥蜴四预设 + 秃鹫四预设（数字键续接编号，选中即换生物类别）。
+            // 确定性回归模式禁交互输入（含生物切换），选择面板只在交互模式下建。
+            // 生物表 = 蜥蜴四预设 + 蜈蚣四预设 + 秃鹫四预设（数字行续接编号，选中即换生物类别）。
             BreedParams[] breeds = BodyFactory.AllBreeds();
+            CentipedeParams[] centipedes = CentipedeFactory.AllPresets();
             VultureBreedParams[] vultures = BodyFactory.AllVultureBreeds();
-            var names = new string[breeds.Length + vultures.Length];
+            var names = new string[breeds.Length + centipedes.Length + vultures.Length];
             for (int i = 0; i < breeds.Length; i++)
             {
-                names[i] = breeds[i].Name;
+                names[i] = $"lizard/{breeds[i].Name}";
+            }
+            for (int i = 0; i < centipedes.Length; i++)
+            {
+                names[breeds.Length + i] = centipedes[i].StableId;
             }
             for (int i = 0; i < vultures.Length; i++)
             {
-                names[breeds.Length + i] = "vulture:" + vultures[i].Name;
+                names[breeds.Length + centipedes.Length + i] = $"vulture/{vultures[i].Name}";
             }
-            _breedUI = new BreedSelectorUI();
-            _breedUI.Build(this, names, SelectBreed);
-            _breedUI.SyncSelection(_vultureBreed is { } vb
-                ? breeds.Length + Array.FindIndex(vultures, v => v.Name == vb.Name)
-                : Array.FindIndex(breeds, b => b.Name == _breed.Name));
+            _creatureUI = new CreatureSelectorUI();
+            _creatureUI.Build(this, names, SelectCreature);
+            int selected = _vultureBreed is { } vb
+                ? breeds.Length + centipedes.Length + Array.FindIndex(vultures, v => v.Name == vb.Name)
+                : _centipedeId is null
+                    ? Array.FindIndex(breeds, b => b.Name == _breed.Name)
+                    : breeds.Length + Array.FindIndex(centipedes, p => p.StableId == _centipedeId);
+            _creatureUI.SyncSelection(selected);
+            SyncLeadEndUI();
         }
-        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, " +
-                 $"breed={(_vultureBreed is { } vbn ? "vulture:" + vbn.Name : _breed.Name)}, " +
-                 $"determinism={(_probe is not null ? "on" : "off")}");
+        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, creature={_creature.StableId}, " +
+                 $"determinism={(_probe is not null ? "on" : "off")}" +
+                 (_centipedeController is null
+                     ? string.Empty
+                     : $", requestedLead={_centipedeController.RequestedLeadEnd}"));
     }
 
     /// <summary>（重）生成行走体：替换物理对象并重建渲染节点（数字键换品种共用此路径）。</summary>
     private void SpawnLizard(BreedParams breed, Vector3 origin)
     {
+        _centipedeId = null;
+        _centipedeController = null;
         _breed = breed;
         _vultureController = null;
         _vultureBreed = null;
         _lizardController = BodyFactory.CreateLizardController(origin, breed);
+        _creature = new LizardSandboxCreatureAdapter(_lizardController, breed.Name);
         _lizardController.Body.ConstraintIterations = ConstraintIterations;
         _bodies.Clear();
         _bodies.Add(_lizardController.Body);
         _drag.Release();
         _renderer.Clear();
-        _renderer.Build(this, _bodies, _lizardController.Limbs, _lizardController);
+        _creature.BuildRenderer(_renderer, this);
+    }
+
+    /// <summary>按稳定 ID 装配蜈蚣；未知 ID 已在 CLI/选择表边界快速失败。</summary>
+    private void SpawnCentipede(string stableId, Vector3 origin)
+    {
+        _centipedeId = stableId;
+        _lizardController = null!;
+        _vultureController = null;
+        _vultureBreed = null;
+        _centipedeController = CentipedeFactory.CreateController(origin, stableId);
+        _centipedeController.RequestedLeadEnd = _requestedCentipedeLeadEnd;
+        _scriptedCentipedeLeadConfirmTicks = 0;
+        // Inspector 的历史默认值 3 属于短链蜥蜴；不能反向降低蜈蚣工厂为长链收敛设定的下限。
+        _centipedeController.Body.ConstraintIterations = Math.Max(
+            ConstraintIterations, _centipedeController.Body.ConstraintIterations);
+        _creature = new CentipedeSandboxCreatureAdapter(_centipedeController, stableId);
+        ResetCentipedeCourseMetrics(_centipedeController);
+        _bodies.Clear();
+        _bodies.Add(_centipedeController.Body);
+        _drag.Release();
+        _renderer.Clear();
+        _creature.BuildRenderer(_renderer, this);
+    }
+
+    private void ResetCentipedeCourseMetrics(CentipedeLocomotionController controller)
+    {
+        _centipedeCoursePhase = CentipedeCourseDrivePhase.AcrossFloorAndTop;
+        _centipedeCourseLeadTicks = new long[(int)CentipedeCourseStage.Count];
+        _centipedeCourseTailTicks = new long[(int)CentipedeCourseStage.Count];
+        Array.Fill(_centipedeCourseLeadTicks, -1L);
+        Array.Fill(_centipedeCourseTailTicks, -1L);
+        _centipedeCourseConnectionRuns = new int[controller.Body.Connections.Count];
+        _centipedeCourseConnectionMaxRuns = new int[controller.Body.Connections.Count];
+        _centipedeConnectionRuns = new int[controller.Body.Connections.Count];
+        _centipedeCourseNoneRun = 0;
+        _centipedeCourseMaxNoneRun = 0;
+        _centipedeCourseBlockedRun = 0;
+        _centipedeCourseMaxBlockedRun = 0;
+        _centipedeStepDownStartCenterX = float.NaN;
+        _centipedeStepDownNetProgress = 0f;
+        _centipedeStepDownLeadTick = -1;
+        _centipedeStepDownTailTick = -1;
+        _centipedeStepDownLeadWallTick = -1;
+        _centipedeStepDownTailWallTick = -1;
+        _centipedeStepDownLeadWallTicks = 0;
+        _centipedeStepDownTailWallTicks = 0;
+        _centipedeStepDownMinSeparationRatio = float.PositiveInfinity;
+        _centipedeStepDownFinalSeparationRatio = float.PositiveInfinity;
+        _centipedeStepDownPileRun = 0;
+        _centipedeStepDownMaxPileRun = 0;
+        _centipedeStepDownLeadChanged = false;
     }
 
     /// <summary>（重）生成秃鹫：与 SpawnLizard 平行的装配路径（渲染带翅链与羽毛线扇）。</summary>
     private void SpawnVulture(VultureBreedParams breed, Vector3 origin)
     {
+        _centipedeId = null;
+        _centipedeController = null;
+        _lizardController = null!;
         _vultureBreed = breed;
         VultureFlightController controller = BodyFactory.CreateVultureController(origin, breed);
         _vultureController = controller;
         controller.Body.ConstraintIterations = ConstraintIterations;
+        _creature = new VultureSandboxCreatureAdapter(controller, breed);
         _bodies.Clear();
         _bodies.Add(controller.Body);
         _drag.Release();
         _renderer.Clear();
-        _renderer.Build(this, _bodies, null, null, controller.Wings, controller,
-            breed.FeathersPerWing);
+        _creature.BuildRenderer(_renderer, this);
     }
 
     public override void _PhysicsProcess(double delta)
@@ -304,23 +439,38 @@ public partial class SandboxWorld : Node3D
         }
         else
         {
-            SteerAlongWaypoints();
+            if (_centipedeController is null)
+            {
+                SteerAlongWaypoints();
+            }
+            else
+            {
+                SteerCentipedeAlongWaypoints();
+            }
         }
 
         if (_yankTick >= 0 && _tick == _yankTick)
         {
             // 走正式击飞 API（曾直接抠 Head.Vel 五个 tick——Launch 因此零回归覆盖，终审 C11）。
-            _lizardController.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+            _creature.Launch(new Vector3(0.1f, 0.4f, 0.15f));
         }
 
         // 地形查询经 _rayDebug 转发（纯观测装饰器）：F3 可视化打出的所有射线。
         var ctx = new TickContext(_gravityPerTick, _rayDebug, _tick);
-        _lizardController.Tick(ctx);
+        _creature.Tick(ctx);
 
         if (_probe is not null)
         {
-            TrackQualityMetrics();
-            _probe.Record(_tick, _bodies, _lizardController.Limbs);
+            if (_centipedeController is null)
+            {
+                TrackQualityMetrics();
+                _probe.Record(_tick, _bodies, _lizardController.Limbs);
+            }
+            else
+            {
+                TrackCentipedeQualityMetrics();
+                _probe.Record(_tick, _bodies, _creature);
+            }
             if (_probe.Finished)
             {
                 GetTree().Quit(DumpFinalState());
@@ -336,8 +486,8 @@ public partial class SandboxWorld : Node3D
     {
         if (WantCameraFly)
         {
-            _lizardController.MoveDir = Vector3.Zero;
-            _lizardController.RunSpeed = 0f;
+            _creature.MoveDir = Vector3.Zero;
+            _creature.RunSpeed = 0f;
             return;
         }
 
@@ -349,9 +499,9 @@ public partial class SandboxWorld : Node3D
 
         if (dir != Vector3.Zero)
         {
-            _lizardController.MoveTarget = null;
-            _lizardController.MoveDir = dir.Normalized();
-            _lizardController.RunSpeed = 1f;
+            _creature.MoveTarget = null;
+            _creature.MoveDir = dir.Normalized();
+            _creature.RunSpeed = 1f;
             return;
         }
 
@@ -362,25 +512,25 @@ public partial class SandboxWorld : Node3D
             Vector3 rayDir = _camera.ProjectRayNormal(mouse);
             if (_rayDebug.Raycast(origin, origin + rayDir * 100f, out TerrainHit hit))
             {
-                _lizardController.MoveTarget = hit.Point;
+                _creature.MoveTarget = hit.Point;
             }
         }
 
-        if (_lizardController.MoveTarget is not null)
+        if (_creature.MoveTarget is not null)
         {
-            if (_lizardController.AtMoveTarget)
+            if (_creature.AtMoveTarget)
             {
-                _lizardController.MoveTarget = null;
-                _lizardController.RunSpeed = 0f;
-                _lizardController.MoveDir = Vector3.Zero;
+                _creature.MoveTarget = null;
+                _creature.RunSpeed = 0f;
+                _creature.MoveDir = Vector3.Zero;
                 return;
             }
-            _lizardController.RunSpeed = 1f;
+            _creature.RunSpeed = 1f;
             return;
         }
 
-        _lizardController.MoveDir = Vector3.Zero;
-        _lizardController.RunSpeed = 0f;
+        _creature.MoveDir = Vector3.Zero;
+        _creature.RunSpeed = 0f;
     }
 
     /// <summary>秃鹫交互输入：WASD 世界 XZ + Space 升 / C 降（3D 意图，与蜥蜴的平面意图
@@ -720,6 +870,205 @@ public partial class SandboxWorld : Node3D
         _lizardController.RunSpeed = 1f;
     }
 
+    /// <summary>
+    /// 蜈蚣确定性宿主路线。路点和到达计数沿用既有场景数据，但不进入任何蜥蜴专属
+    /// 转身/脊柱恢复逻辑。无头 default 巡逻用本宿主自己的端点评分/去抖策略明确写入
+    /// RequestedLeadEnd；交互模式与传入 --lead 的回归都不会启用该策略。
+    /// </summary>
+    private void SteerCentipedeAlongWaypoints()
+    {
+        if (_centipedeNarrowWallDrive)
+        {
+            SteerCentipedeNarrowWall();
+            return;
+        }
+        if (_centipedeStepDownDrive)
+        {
+            SteerCentipedeStepDown();
+            return;
+        }
+        if (_centipedeCourseDrive)
+        {
+            SteerCentipedeCourse();
+            return;
+        }
+        if (_waypoints.Length == 0)
+        {
+            _creature.MoveTarget = null;
+            _creature.MoveDir = Vector3.Zero;
+            _creature.RunSpeed = 0f;
+            return;
+        }
+
+        if (_carrotDrive)
+        {
+            if (_creature.AtMoveTarget)
+            {
+                _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
+                _waypointsReached++;
+            }
+            Vector3 wp = _waypoints[_waypointIndex];
+            Vector3 fed = wp;
+            if (_rayDebug.Raycast(wp + Vector3.Up * 3f, wp + Vector3.Down, out TerrainHit hit))
+            {
+                fed = hit.Point;
+            }
+            _creature.MoveTarget = fed;
+            _creature.RunSpeed = 1f;
+            return;
+        }
+
+        _creature.MoveTarget = null;
+        Vector3 target = _waypoints[_waypointIndex];
+        Vector3 toTarget = target - _creature.LeadChunk.Pos;
+        toTarget.Y = 0f;
+        if (toTarget.Length() < 0.4f)
+        {
+            _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
+            _waypointsReached++;
+            target = _waypoints[_waypointIndex];
+            toTarget = target - _creature.LeadChunk.Pos;
+            toTarget.Y = 0f;
+        }
+        _creature.MoveDir = toTarget.LengthSquared() < 1e-12f
+            ? Vector3.Zero
+            : toTarget.Normalized();
+        _creature.RunSpeed = 1f;
+        ApplyScriptedCentipedeLeadPolicy();
+    }
+
+    /// <summary>
+    /// 固定 End 端向前翻越旧 0.4m 墙一次，随后停驶。固定收敛窗口避免把某个运动相位
+    /// 恰巧采为终态，专项同时受通用 10% 连接偏差和 2mm 穿透门约束。
+    /// </summary>
+    private void SteerCentipedeNarrowWall()
+    {
+        _creature.MoveTarget = null;
+        if (_waypointsReached >= 1)
+        {
+            _creature.MoveDir = Vector3.Zero;
+            _creature.RunSpeed = 0f;
+            _centipedeNarrowWallSettledTicks++;
+            return;
+        }
+
+        Vector3 target = _waypoints[_waypointIndex];
+        Vector3 toTarget = target - _creature.LeadChunk.Pos;
+        toTarget.Y = 0f;
+        if (toTarget.Length() < 0.4f)
+        {
+            _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
+            _waypointsReached++;
+            target = _waypoints[_waypointIndex];
+            toTarget = target - _creature.LeadChunk.Pos;
+            toTarget.Y = 0f;
+        }
+        _creature.MoveDir = toTarget.LengthSquared() < 1e-12f
+            ? Vector3.Zero
+            : toTarget.Normalized();
+        _creature.RunSpeed = 1f;
+    }
+
+    /// <summary>
+    /// 固定 Start 端、恒定水平输入穿过平台外角。这里故意不根据支撑法线切换成 Down：
+    /// 下降切向必须由控制器对上一段表面轨迹做平行运输，而不是由测试宿主演出答案。
+    /// 尾端抵达下层地板后停驶，留下充足预算观察身体是否重新展开。
+    /// </summary>
+    private void SteerCentipedeStepDown()
+    {
+        CentipedeLocomotionController controller = _centipedeController!;
+        controller.MoveTarget = null;
+        controller.MoveDir = Vector3.Right;
+        controller.RunSpeed = _centipedeStepDownTailTick >= 0 ? 0f : 1f;
+    }
+
+    /// <summary>
+    /// 仅属于无头巡逻脚本的示例上层策略。它可以看路线方向并显式写 RequestedLeadEnd；
+    /// 控制器本身不再看 MoveDir/MoveTarget 做头尾决策。--lead 会完全关闭此策略。
+    /// </summary>
+    private void ApplyScriptedCentipedeLeadPolicy()
+    {
+        if (_leadExplicit || !ReferenceEquals(_waypoints, DefaultRoute))
+        {
+            return;
+        }
+        CentipedeLocomotionController controller = _centipedeController!;
+        Vector3 intent = _creature.MoveDir;
+        if (intent.LengthSquared() < 1e-10f)
+        {
+            _scriptedCentipedeLeadConfirmTicks = 0;
+            return;
+        }
+        intent = intent.Normalized();
+        Vector3 startOut = controller.Segments[0].Chunk.Pos
+            - controller.Segments[1].Chunk.Pos;
+        startOut = startOut.LengthSquared() > 1e-10f ? startOut.Normalized() : intent;
+        Vector3 endOut = controller.Segments[^1].Chunk.Pos
+            - controller.Segments[^2].Chunk.Pos;
+        endOut = endOut.LengthSquared() > 1e-10f ? endOut.Normalized() : intent;
+        float startScore = intent.Dot(startOut);
+        float endScore = intent.Dot(endOut);
+        CentipedeLeadEnd preferred = startScore >= endScore
+            ? CentipedeLeadEnd.Start : CentipedeLeadEnd.End;
+        if (preferred == controller.LeadEnd || Mathf.Abs(startScore - endScore) <= 0.2f)
+        {
+            _scriptedCentipedeLeadConfirmTicks = 0;
+            return;
+        }
+        if (++_scriptedCentipedeLeadConfirmTicks >= 3)
+        {
+            _requestedCentipedeLeadEnd = preferred;
+            controller.RequestedLeadEnd = preferred;
+            _scriptedCentipedeLeadConfirmTicks = 0;
+        }
+    }
+
+    /// <summary>
+    /// z=20 专用课程的宿主输入。Right 在地面/斜坡/内角墙上分别自然投影为前进/前进/
+    /// 世界向上；领端真正取得外墙 +X 法线后才切 Down，取得梁底 -Y 法线后切 Left。
+    /// 不用位置计时器替代接触证据，避免控制器未换面时宿主仍把路线“演完”。
+    /// </summary>
+    private void SteerCentipedeCourse()
+    {
+        CentipedeLocomotionController controller = _centipedeController!;
+        bool completed = _centipedeCourseTailTicks.Length > (int)CentipedeCourseStage.Ceiling
+            && _centipedeCourseTailTicks[(int)CentipedeCourseStage.Ceiling] >= 0;
+        if (completed)
+        {
+            // 六阶段与尾随预算已经完成；有限梁底到此即为课程终点。保留 Left 朝向但停驶，
+            // 让任意较长探针预算都观测同一个稳定终态，而不是把驶出白盒末端后的自由落体
+            // 误算成换面/约束回归。
+            controller.MoveTarget = null;
+            controller.MoveDir = Vector3.Left;
+            controller.RunSpeed = 0f;
+            return;
+        }
+        CentipedeSegment lead = controller.RequestedLeadEnd == CentipedeLeadEnd.Start
+            ? controller.Segments[0] : controller.Segments[^1];
+        Vector3 normal = lead.SupportNormal;
+        if (_centipedeCoursePhase == CentipedeCourseDrivePhase.AcrossFloorAndTop
+            && lead.SupportConfidence > 0.15f
+            && lead.Chunk.Pos.X > 12.1f && normal.X > 0.65f)
+        {
+            _centipedeCoursePhase = CentipedeCourseDrivePhase.DownOuterWall;
+        }
+        if (_centipedeCoursePhase == CentipedeCourseDrivePhase.DownOuterWall
+            && lead.SupportConfidence > 0.15f
+            && lead.Chunk.Pos.Y < 3.35f && normal.Y < -0.65f)
+        {
+            _centipedeCoursePhase = CentipedeCourseDrivePhase.AlongCeiling;
+        }
+
+        controller.MoveTarget = null;
+        controller.MoveDir = _centipedeCoursePhase switch
+        {
+            CentipedeCourseDrivePhase.DownOuterWall => Vector3.Down,
+            CentipedeCourseDrivePhase.AlongCeiling => Vector3.Left,
+            _ => Vector3.Right,
+        };
+        controller.RunSpeed = 1f;
+    }
+
     /// <summary>SoftOnly 防折叠支柱允许有弹性形变；低于静止长度 10% 且持续存在才计求解违反。
     /// 角度只保留为可读观测：同一个 100° 对 BodyStiffness=.3（理论允许约 81°）与 .5
     /// （理论允许约 97°）并不等价，不能再作为跨品种硬门。</summary>
@@ -825,12 +1174,40 @@ public partial class SandboxWorld : Node3D
     private float _endDevRatio;      // tick 末（碰撞后）连接偏差率（偏差/该连接 RestLength），每 tick 覆盖 → 终值即终态
     private float _maxEndDevRatio;   // 同上的峰值（落地冲击等瞬态也计入，只观测不判定）
     private long _stretchTicks;      // tick 末偏差率 >0.5 的 tick 数：瞬态尖峰只占几 tick，跨墙卡链会长期累积
-    private long _deepRun;           // 当前连续「深度违反」（偏差率 >1 = 卡链释放的触发带）tick 数
-    private long _maxDeepRun;        // 深度违反的最长连跑——判定用：释放机制保证单环 ≤10、整链级联 ≤~50，
-                                     // 断裂未恢复是 800+；终态快照式判据会在合法释放窗口上误报，这个不会
+    private long _deepRun;           // Lizard 当前连续 >100% 深违反（历史门保持不变）
+    private long _maxDeepRun;        // 当前生物的最长单连接连跑；Centipede 另按每条连接 >10% 独立计
     private bool _nonFinite;         // 任意 chunk/limb 状态出现 NaN/Inf（一票 FAIL）
     private float _minTerrainSqueeze = 1f;
     private float _maxPostRecoveryPenetration;
+    private float _maxCentipedeBodyPenetration;
+    private float _maxCentipedeFootPenetration;
+    private string _maxPenetrationSource = "none";
+    private long _maxPenetrationTick = -1;
+    private double _centipedeSupportRatioSum;
+    private bool _invalidCentipedeTrailArc;
+    private CentipedeCourseDrivePhase _centipedeCoursePhase;
+    private long[] _centipedeCourseLeadTicks = Array.Empty<long>();
+    private long[] _centipedeCourseTailTicks = Array.Empty<long>();
+    private int[] _centipedeCourseConnectionRuns = Array.Empty<int>();
+    private int[] _centipedeCourseConnectionMaxRuns = Array.Empty<int>();
+    private int[] _centipedeConnectionRuns = Array.Empty<int>();
+    private int _centipedeCourseNoneRun;
+    private int _centipedeCourseMaxNoneRun;
+    private int _centipedeCourseBlockedRun;
+    private int _centipedeCourseMaxBlockedRun;
+    private float _centipedeStepDownStartCenterX = float.NaN;
+    private float _centipedeStepDownNetProgress;
+    private long _centipedeStepDownLeadTick = -1;
+    private long _centipedeStepDownTailTick = -1;
+    private long _centipedeStepDownLeadWallTick = -1;
+    private long _centipedeStepDownTailWallTick = -1;
+    private int _centipedeStepDownLeadWallTicks;
+    private int _centipedeStepDownTailWallTicks;
+    private float _centipedeStepDownMinSeparationRatio = float.PositiveInfinity;
+    private float _centipedeStepDownFinalSeparationRatio = float.PositiveInfinity;
+    private int _centipedeStepDownPileRun;
+    private int _centipedeStepDownMaxPileRun;
+    private bool _centipedeStepDownLeadChanged;
 
     // —— 秃鹫路线指标（fly/perch；与蜥蜴指标块互斥使用）——
     private long _vultureLandedTick = -1; // perch：首次「吸附且非飞行」的 tick
@@ -977,6 +1354,324 @@ public partial class SandboxWorld : Node3D
         {
             _nonFinite |= !l.Pos.IsFinite();
         }
+    }
+
+    /// <summary>蜈蚣专属质量指标；不复用蜥蜴脊柱角/尾链/TurnAssist 场景状态。</summary>
+    private void TrackCentipedeQualityMetrics()
+    {
+        CentipedeLocomotionController controller = _centipedeController!;
+        Body body = controller.Body;
+        _maxConstraintDev = Mathf.Max(_maxConstraintDev, body.LastRelaxDeviation);
+
+        // LeadEnd 可被宿主显式切换；若直接累计 LeadChunk，会把端点切换误记成整段身体的瞬移里程。
+        Vector3 leadPos = controller.LeadChunk.Pos;
+        Vector3 center = Vector3.Zero;
+        foreach (CentipedeSegment segment in controller.Segments)
+        {
+            center += segment.Chunk.Pos;
+        }
+        center /= controller.Segments.Count;
+        bool hasMoveIntent = controller.RunSpeed > 1e-5f
+            && (controller.MoveTarget is not null || controller.MoveDir.LengthSquared() > 1e-10f);
+        if (_lastHeadPos != Vector3.Zero && hasMoveIntent && controller.SupportedSegmentCount > 0)
+        {
+            _walkDistance += center.DistanceTo(_lastHeadPos);
+        }
+        _lastHeadPos = center;
+        _gripTickSum += _creature.GrippingAppendageCount;
+        _centipedeSupportRatioSum += controller.SupportRatio;
+        if (controller.SupportRatio >= 0.5f)
+        {
+            _gravityOffTicks++;
+        }
+        _maxHeadY = Mathf.Max(_maxHeadY, leadPos.Y);
+
+        float endRatio = 0f;
+        for (int connectionIndex = 0;
+             connectionIndex < body.Connections.Count;
+             connectionIndex++)
+        {
+            ChunkConnection conn = body.Connections[connectionIndex];
+            if (conn.SoftOnly)
+            {
+                _centipedeConnectionRuns[connectionIndex] = 0;
+                continue;
+            }
+            float error = (conn.B.Pos - conn.A.Pos).Length() - conn.RestLength;
+            float deviation = conn.ConstraintMode switch
+            {
+                ChunkConnection.Mode.PullOnly => Mathf.Max(0f, error),
+                ChunkConnection.Mode.PushOnly => Mathf.Max(0f, -error),
+                _ => Mathf.Abs(error),
+            };
+            float ratio = conn.RestLength > 1e-6f ? deviation / conn.RestLength : 0f;
+            endRatio = Mathf.Max(endRatio, ratio);
+            _centipedeConnectionRuns[connectionIndex] = ratio > 0.10f
+                ? _centipedeConnectionRuns[connectionIndex] + 1
+                : 0;
+            _maxDeepRun = Math.Max(
+                _maxDeepRun, _centipedeConnectionRuns[connectionIndex]);
+        }
+        _endDevRatio = endRatio;
+        _maxEndDevRatio = Mathf.Max(_maxEndDevRatio, endRatio);
+        if (endRatio > 0.5f)
+        {
+            _stretchTicks++;
+        }
+        // 逐连接计数：相邻环依次越线不等于同一环持续断裂。与 core smoke/专用课程
+        // 使用同一 10%/20 tick 定义，避免长体把沿链传播的合法恢复窗口误合并。
+
+        for (int i = 0; i < body.Chunks.Count; i++)
+        {
+            BodyChunk chunk = body.Chunks[i];
+            bool finite = chunk.Pos.IsFinite() && chunk.LastPos.IsFinite() && chunk.Vel.IsFinite()
+                && float.IsFinite(chunk.TerrainRadius);
+            _nonFinite |= !finite;
+            if (finite)
+            {
+                ObserveCentipedePenetration($"chunk:{i}", chunk.Pos, chunk.TerrainRadius, isFoot: false);
+            }
+        }
+        foreach (CentipedeSegment segment in controller.Segments)
+        {
+            _nonFinite |= !segment.SupportPoint.IsFinite()
+                || !segment.SupportNormal.IsFinite()
+                || !segment.Forward.IsFinite()
+                || !segment.Side.IsFinite()
+                || !segment.TargetCenter.IsFinite()
+                || !float.IsFinite(segment.SupportConfidence);
+        }
+        float previousArc = -1e-6f;
+        foreach (CentipedeSurfaceSample sample in controller.SurfaceTrail)
+        {
+            _nonFinite |= !sample.Point.IsFinite() || !sample.Normal.IsFinite()
+                || !float.IsFinite(sample.ArcLength);
+            _invalidCentipedeTrailArc |= sample.ArcLength + 1e-6f < previousArc;
+            previousArc = sample.ArcLength;
+        }
+        _nonFinite |= !controller.MoveDir.IsFinite() || !float.IsFinite(controller.RunSpeed)
+            || (controller.MoveTarget is { } moveTarget && !moveTarget.IsFinite())
+            || !controller.LastMoveTarget.IsFinite() || !float.IsFinite(controller.SupportRatio);
+        for (int i = 0; i < controller.Legs.Count; i++)
+        {
+            CentipedeLeg leg = controller.Legs[i];
+            bool finite = leg.Pos.IsFinite() && leg.LastPos.IsFinite() && leg.Vel.IsFinite()
+                && leg.GripPoint.IsFinite() && leg.GripNormal.IsFinite()
+                && float.IsFinite(leg.Radius) && float.IsFinite(leg.Phase);
+            _nonFinite |= !finite;
+            if (finite)
+            {
+                ObserveCentipedePenetration($"leg:{i}", leg.Pos, leg.Radius, isFoot: true);
+            }
+        }
+        _nonFinite |= !_creature.AppendageStateIsFinite;
+        if (_centipedeStepDownDrive)
+        {
+            TrackCentipedeStepDownMetrics(controller, center);
+        }
+        if (_centipedeCourseDrive)
+        {
+            TrackCentipedeCourseMetrics(controller);
+        }
+    }
+
+    private void TrackCentipedeStepDownMetrics(
+        CentipedeLocomotionController controller, Vector3 center)
+    {
+        if (!float.IsFinite(_centipedeStepDownStartCenterX))
+        {
+            _centipedeStepDownStartCenterX = center.X;
+        }
+        _centipedeStepDownNetProgress = center.X - _centipedeStepDownStartCenterX;
+        _centipedeStepDownLeadChanged |= controller.LeadEnd != CentipedeLeadEnd.Start
+            || controller.RequestedLeadEnd != CentipedeLeadEnd.Start;
+
+        CentipedeSegment lead = controller.Segments[0];
+        CentipedeSegment tail = controller.Segments[^1];
+        bool leadOnOuterWall = lead.SupportConfidence >= 0.15f
+            && lead.SupportNormal.X >= 0.80f
+            && lead.Chunk.Pos.Y > CentipedeStepDownLandingY
+            && lead.Chunk.Pos.Y < CentipedeStepDownTopY + lead.Chunk.Radius + 0.10f;
+        bool tailOnOuterWall = tail.SupportConfidence >= 0.15f
+            && tail.SupportNormal.X >= 0.80f
+            && tail.Chunk.Pos.Y > CentipedeStepDownLandingY
+            && tail.Chunk.Pos.Y < CentipedeStepDownTopY + tail.Chunk.Radius + 0.10f;
+        if (leadOnOuterWall)
+        {
+            _centipedeStepDownLeadWallTick = _centipedeStepDownLeadWallTick < 0
+                ? _tick : _centipedeStepDownLeadWallTick;
+            _centipedeStepDownLeadWallTicks++;
+        }
+        if (tailOnOuterWall)
+        {
+            _centipedeStepDownTailWallTick = _centipedeStepDownTailWallTick < 0
+                ? _tick : _centipedeStepDownTailWallTick;
+            _centipedeStepDownTailWallTicks++;
+        }
+        if (_centipedeStepDownLeadTick < 0
+            && lead.Chunk.Pos.X - lead.Chunk.Radius > CentipedeStepDownEdgeX + 0.02f
+            && lead.Chunk.Pos.Y < CentipedeStepDownLandingY
+            && lead.SupportConfidence >= 0.15f && lead.SupportNormal.Y >= 0.70f)
+        {
+            _centipedeStepDownLeadTick = _tick;
+        }
+        if (_centipedeStepDownTailTick < 0
+            && tail.Chunk.Pos.X - tail.Chunk.Radius > CentipedeStepDownEdgeX + 0.02f
+            && tail.Chunk.Pos.Y < CentipedeStepDownLandingY
+            && tail.SupportConfidence >= 0.15f && tail.SupportNormal.Y >= 0.70f)
+        {
+            _centipedeStepDownTailTick = _tick;
+        }
+
+        float tickMinSeparationRatio = float.PositiveInfinity;
+        for (int i = 0; i < controller.Segments.Count; i++)
+        {
+            BodyChunk a = controller.Segments[i].Chunk;
+            // 相邻与隔一节由刚性连接/SoftOnly 支柱决定，只有索引差 >2 才属于身体自交。
+            for (int j = i + 3; j < controller.Segments.Count; j++)
+            {
+                BodyChunk b = controller.Segments[j].Chunk;
+                float radiusSum = a.Radius + b.Radius;
+                if (radiusSum > 1e-6f)
+                {
+                    tickMinSeparationRatio = Mathf.Min(
+                        tickMinSeparationRatio, a.Pos.DistanceTo(b.Pos) / radiusSum);
+                }
+            }
+        }
+        _centipedeStepDownFinalSeparationRatio = tickMinSeparationRatio;
+        _centipedeStepDownMinSeparationRatio = Mathf.Min(
+            _centipedeStepDownMinSeparationRatio, tickMinSeparationRatio);
+        _centipedeStepDownPileRun =
+            tickMinSeparationRatio < CentipedeStepDownSevereOverlapRatio
+                ? _centipedeStepDownPileRun + 1
+                : 0;
+        _centipedeStepDownMaxPileRun = Math.Max(
+            _centipedeStepDownMaxPileRun, _centipedeStepDownPileRun);
+    }
+
+    private void TrackCentipedeCourseMetrics(CentipedeLocomotionController controller)
+    {
+        CentipedeSegment lead = controller.LeadEnd == CentipedeLeadEnd.Start
+            ? controller.Segments[0] : controller.Segments[^1];
+        CentipedeSegment tail = controller.LeadEnd == CentipedeLeadEnd.Start
+            ? controller.Segments[^1] : controller.Segments[0];
+        int leadStage = ClassifyCentipedeCourseStage(lead, includeLanding: false);
+        int tailStage = ClassifyCentipedeCourseStage(tail, includeLanding: false);
+        if (leadStage >= 0 && _centipedeCourseLeadTicks[leadStage] < 0)
+        {
+            _centipedeCourseLeadTicks[leadStage] = _tick;
+        }
+        if (tailStage >= 0 && _centipedeCourseTailTicks[tailStage] < 0)
+        {
+            _centipedeCourseTailTicks[tailStage] = _tick;
+        }
+
+        // “None”指领端已进入课程后却不属于任一连续支撑区，而不是出生下落。
+        // landing 归入 slope 区间，仅用于连续性统计；斜坡首达仍要求真实 18° 法线。
+        bool courseStarted = _centipedeCourseLeadTicks[(int)CentipedeCourseStage.Floor] >= 0;
+        bool courseCompleted = _centipedeCourseTailTicks[(int)CentipedeCourseStage.Ceiling] >= 0;
+        int supportRegion = ClassifyCentipedeCourseStage(lead, includeLanding: true);
+        _centipedeCourseNoneRun = courseStarted && !courseCompleted && supportRegion < 0
+            ? _centipedeCourseNoneRun + 1
+            : 0;
+        _centipedeCourseMaxNoneRun = Math.Max(
+            _centipedeCourseMaxNoneRun, _centipedeCourseNoneRun);
+        _centipedeCourseBlockedRun = courseStarted && !courseCompleted
+            && controller.LeadSurfaceBlocked
+                ? _centipedeCourseBlockedRun + 1
+                : 0;
+        _centipedeCourseMaxBlockedRun = Math.Max(
+            _centipedeCourseMaxBlockedRun, _centipedeCourseBlockedRun);
+
+        for (int i = 0; i < controller.Body.Connections.Count; i++)
+        {
+            ChunkConnection connection = controller.Body.Connections[i];
+            if (connection.SoftOnly)
+            {
+                _centipedeCourseConnectionRuns[i] = 0;
+                continue;
+            }
+            float error = Mathf.Abs(
+                connection.A.Pos.DistanceTo(connection.B.Pos) - connection.RestLength);
+            float ratio = connection.RestLength > 1e-6f ? error / connection.RestLength : 0f;
+            _centipedeCourseConnectionRuns[i] = ratio > 0.10f
+                ? _centipedeCourseConnectionRuns[i] + 1
+                : 0;
+            _centipedeCourseConnectionMaxRuns[i] = Math.Max(
+                _centipedeCourseConnectionMaxRuns[i],
+                _centipedeCourseConnectionRuns[i]);
+        }
+    }
+
+    private static int ClassifyCentipedeCourseStage(
+        CentipedeSegment segment, bool includeLanding)
+    {
+        if (segment.SupportConfidence < 0.15f
+            || Mathf.Abs(segment.Chunk.Pos.Z - 20f) > 1.8f)
+        {
+            return -1;
+        }
+
+        Vector3 p = segment.Chunk.Pos;
+        Vector3 n = segment.SupportNormal;
+        if (n.Y < -0.70f && p.Y < 3.45f && p.X > 8.35f && p.X < 12.85f)
+        {
+            return (int)CentipedeCourseStage.Ceiling;
+        }
+        if (n.X > 0.70f && p.X > 12.1f && p.Y > 2.75f && p.Y < 5.2f)
+        {
+            return (int)CentipedeCourseStage.OuterWall;
+        }
+        if (n.X < -0.70f && p.X > 8.25f && p.X < 9.05f
+            && p.Y > 1.55f && p.Y < 5.2f)
+        {
+            return (int)CentipedeCourseStage.InnerWall;
+        }
+
+        var rampNormal = new Vector3(-0.30901673f, 0.9510566f, 0f);
+        if (n.Dot(rampNormal) > 0.94f && p.X > 0.75f && p.X < 7.1f
+            && p.Y < 2.25f)
+        {
+            return (int)CentipedeCourseStage.Slope;
+        }
+        if (n.Y > 0.75f && p.Y > 4.45f && p.X > 8.25f && p.X < 12.85f)
+        {
+            return (int)CentipedeCourseStage.Top;
+        }
+        if (n.Y > 0.75f && p.Y < 0.75f && p.X < 1.35f)
+        {
+            return (int)CentipedeCourseStage.Floor;
+        }
+        if (includeLanding && n.Y > 0.70f
+            && p.X >= 6.45f && p.X < 8.75f && p.Y < 2.25f)
+        {
+            return (int)CentipedeCourseStage.Slope;
+        }
+        return -1;
+    }
+
+    private void ObserveCentipedePenetration(string source, Vector3 center, float radius, bool isFoot)
+    {
+        if (!_rayDebug.SpherePenetration(center, radius, out _, out float depth))
+        {
+            return;
+        }
+        if (isFoot)
+        {
+            _maxCentipedeFootPenetration = Mathf.Max(_maxCentipedeFootPenetration, depth);
+        }
+        else
+        {
+            _maxCentipedeBodyPenetration = Mathf.Max(_maxCentipedeBodyPenetration, depth);
+        }
+        if (depth <= _maxPostRecoveryPenetration || depth <= 1e-6f)
+        {
+            return;
+        }
+        _maxPostRecoveryPenetration = depth;
+        _maxPenetrationSource = source;
+        _maxPenetrationTick = _tick;
     }
 
     private void TrackScenarioMetrics(float spineAngleDeg, float spineSupportDeficitRatio)
@@ -1207,6 +1902,10 @@ public partial class SandboxWorld : Node3D
     /// 只打印不断言的旧版是假绿——NaN、尾链跨墙断裂、哈希漂移全都照样退 0。</summary>
     private int DumpFinalState()
     {
+        if (_centipedeController is not null)
+        {
+            return DumpCentipedeFinalState();
+        }
         GD.Print($"[METRIC] maxConstraintDev={_maxConstraintDev:F4} " +
                  $"({_maxConstraintDev / _bodies[0].Connections[0].RestLength * 100f:F1}% of rest) " +
                  $"maxFoldIntrusion={_maxFoldIntrusion:F3}m foldTicks={_foldTicks} " +
@@ -1585,6 +2284,269 @@ public partial class SandboxWorld : Node3D
         return pass ? 0 : 1;
     }
 
+    private int DumpCentipedeFinalState()
+    {
+        CentipedeLocomotionController controller = _centipedeController!;
+        float narrowWallWholeBodyClearance = float.PositiveInfinity;
+        int narrowWallFinalGrips = 0;
+        if (_centipedeNarrowWallDrive)
+        {
+            foreach (CentipedeSegment segment in controller.Segments)
+            {
+                narrowWallWholeBodyClearance = Mathf.Min(
+                    narrowWallWholeBodyClearance,
+                    CentipedeNarrowWallFarFaceX
+                    - (segment.Chunk.Pos.X + segment.Chunk.Radius));
+            }
+            foreach (CentipedeLeg leg in controller.Legs)
+            {
+                if (leg.Gripping)
+                {
+                    narrowWallFinalGrips++;
+                }
+            }
+        }
+        int legBarrierRecoveries = 0;
+        foreach (CentipedeLeg leg in controller.Legs)
+        {
+            legBarrierRecoveries += leg.TerrainBarrierRecoveries;
+        }
+        float firstRest = _bodies[0].Connections.Count > 0
+            ? _bodies[0].Connections[0].RestLength
+            : 1f;
+        GD.Print($"[METRIC] creature={_creature.StableId} segments={controller.Segments.Count} " +
+                 $"maxConstraintDev={_maxConstraintDev:F4} " +
+                 $"({_maxConstraintDev / firstRest * 100f:F1}% of rest) " +
+                 $"walkDistance={_walkDistance:F2}m waypointsReached={_waypointsReached} " +
+                 $"avgLegsGripping={(float)_gripTickSum / _tick:F2}/{controller.Legs.Count} " +
+                 $"avgSupport={_centipedeSupportRatioSum / _tick:P0} " +
+                 $"supportMajority={(float)_gravityOffTicks / _tick:P0} maxLeadY={_maxHeadY:F2} " +
+                 $"endDev={_endDevRatio:F2}x maxEndDev={_maxEndDevRatio:F2}x " +
+                 $"stretchTicks={_stretchTicks} maxDeepRun={_maxDeepRun} " +
+                 $"snagReleases={controller.Body.SnagReleases} " +
+                 $"legBarrierRecoveries={legBarrierRecoveries} " +
+                 $"penetration={_maxPostRecoveryPenetration:F6}m " +
+                 $"bodyPenetration={_maxCentipedeBodyPenetration:F6}m " +
+                 $"footPenetration={_maxCentipedeFootPenetration:F6}m " +
+                 $"penetrationAt={_maxPenetrationSource}@{_maxPenetrationTick}");
+        GD.Print($"[FINAL] centipede leadEnd={controller.LeadEnd} " +
+                 $"supported={controller.SupportedSegmentCount}/{controller.Segments.Count} " +
+                 $"supportRatio={controller.SupportRatio:F3} atTarget={controller.AtMoveTarget} " +
+                 $"targetKind={controller.LastMoveTargetKind} trailSamples={controller.SurfaceTrail.Count}");
+        int courseMaxConnectionRun = 0;
+        int courseMaxTailLag = 0;
+        int courseTailBudget = 40 + 8 * controller.Segments.Count;
+        if (_centipedeCourseDrive)
+        {
+            var connectionRuns = new List<string>();
+            for (int i = 0; i < _centipedeCourseConnectionMaxRuns.Length; i++)
+            {
+                courseMaxConnectionRun = Math.Max(
+                    courseMaxConnectionRun, _centipedeCourseConnectionMaxRuns[i]);
+                if (!controller.Body.Connections[i].SoftOnly)
+                {
+                    connectionRuns.Add($"{i}:{_centipedeCourseConnectionMaxRuns[i]}");
+                }
+            }
+            for (int i = 0; i < (int)CentipedeCourseStage.Count; i++)
+            {
+                long leadTick = _centipedeCourseLeadTicks[i];
+                long tailTick = _centipedeCourseTailTicks[i];
+                long lag = leadTick >= 0 && tailTick >= 0 ? tailTick - leadTick : -1;
+                if (lag >= 0)
+                {
+                    courseMaxTailLag = Math.Max(courseMaxTailLag, (int)lag);
+                }
+                GD.Print($"[CENTIPEDE-COURSE] stage={CentipedeCourseStageNames[i]} " +
+                         $"lead={leadTick} tail={tailTick} lag={lag}");
+            }
+            GD.Print($"[CENTIPEDE-COURSE] drive={_centipedeCoursePhase} " +
+                     $"maxNoneRun={_centipedeCourseMaxNoneRun} " +
+                     $"maxBlockedRun={_centipedeCourseMaxBlockedRun} " +
+                     $"maxConnectionRun={courseMaxConnectionRun} " +
+                     $"maxTailLag={courseMaxTailLag} tailBudget={courseTailBudget} " +
+                     $"connectionRuns=[{string.Join(',', connectionRuns)}]");
+        }
+        if (_centipedeStepDownDrive)
+        {
+            long tailLag = _centipedeStepDownLeadTick >= 0 && _centipedeStepDownTailTick >= 0
+                ? _centipedeStepDownTailTick - _centipedeStepDownLeadTick
+                : -1;
+            GD.Print($"[CENTIPEDE-STEP-DOWN] lead={_centipedeStepDownLeadTick} " +
+                     $"tail={_centipedeStepDownTailTick} lag={tailLag} " +
+                     $"leadWall={_centipedeStepDownLeadWallTick}/" +
+                     $"{_centipedeStepDownLeadWallTicks} " +
+                     $"tailWall={_centipedeStepDownTailWallTick}/" +
+                     $"{_centipedeStepDownTailWallTicks} " +
+                     $"netProgress={_centipedeStepDownNetProgress:F3}m " +
+                     $"minNonAdjacent={_centipedeStepDownMinSeparationRatio:F3}x " +
+                     $"finalNonAdjacent={_centipedeStepDownFinalSeparationRatio:F3}x " +
+                     $"maxPileRun={_centipedeStepDownMaxPileRun} " +
+                     $"leadChanged={_centipedeStepDownLeadChanged}");
+        }
+        if (_centipedeNarrowWallDrive)
+        {
+            GD.Print($"[CENTIPEDE-NARROW-WALL] waypoints={_waypointsReached}/1 " +
+                     $"settled={_centipedeNarrowWallSettledTicks}/80 " +
+                     $"lead={controller.LeadEnd}/End " +
+                     $"wholeBodyClearance={narrowWallWholeBodyClearance:F3}/-0.002m " +
+                     $"finalGrips={narrowWallFinalGrips} maxLeadY={_maxHeadY:F2}/3.05");
+        }
+        for (int i = 0; i < controller.Segments.Count; i++)
+        {
+            CentipedeSegment segment = controller.Segments[i];
+            BodyChunk chunk = segment.Chunk;
+            GD.Print($"[FINAL] body=0 chunk={i} pos=({chunk.Pos.X:F4},{chunk.Pos.Y:F4},{chunk.Pos.Z:F4}) " +
+                     $"vel={chunk.Vel.Length():F5} contact={chunk.TerrainContact} r={chunk.Radius:F2} " +
+                     $"support={segment.SupportConfidence:F3} normal=({segment.SupportNormal.X:F3}," +
+                     $"{segment.SupportNormal.Y:F3},{segment.SupportNormal.Z:F3})");
+        }
+        for (int i = 0; i < controller.Legs.Count; i++)
+        {
+            CentipedeLeg leg = controller.Legs[i];
+            GD.Print($"[FINAL] centipedeLeg={i} segment={leg.Anchor.Index} " +
+                     $"pos=({leg.Pos.X:F4},{leg.Pos.Y:F4},{leg.Pos.Z:F4}) " +
+                     $"grip={leg.GripCounter} hasGrip={leg.HasGrip} swinging={leg.IsSwinging}");
+        }
+
+        var reasons = new List<string>();
+        if (_nonFinite)
+        {
+            reasons.Add("蜈蚣状态出现 NaN/Inf");
+        }
+        if (_maxDeepRun > 20)
+        {
+            reasons.Add($"连接深度断裂持续 {_maxDeepRun} tick（>20）");
+        }
+        if (_endDevRatio > 0.10f)
+        {
+            reasons.Add($"终态连接偏差 {_endDevRatio:P1}（>10%）");
+        }
+        if (_maxPostRecoveryPenetration > 0.002f)
+        {
+            reasons.Add($"身体/足端穿透 {_maxPostRecoveryPenetration:F4}m（>0.002m）");
+        }
+        if (_invalidCentipedeTrailArc)
+        {
+            reasons.Add("表面轨迹累计弧长非单调");
+        }
+        if (_centipedeStepDownDrive)
+        {
+            long tailLag = _centipedeStepDownLeadTick >= 0 && _centipedeStepDownTailTick >= 0
+                ? _centipedeStepDownTailTick - _centipedeStepDownLeadTick
+                : -1;
+            if (_centipedeStepDownLeadChanged)
+            {
+                reasons.Add("下阶梯期间显式 Start 领航端发生变化");
+            }
+            if (_centipedeStepDownLeadWallTick < 0 || _centipedeStepDownLeadWallTicks < 1
+                || _centipedeStepDownTailWallTick < 0 || _centipedeStepDownTailWallTicks < 1)
+            {
+                reasons.Add($"下阶梯未取得真实外侧立面支撑（lead=" +
+                            $"{_centipedeStepDownLeadWallTick}/{_centipedeStepDownLeadWallTicks}, " +
+                            $"tail={_centipedeStepDownTailWallTick}/{_centipedeStepDownTailWallTicks}）");
+            }
+            if (_centipedeStepDownLeadTick < 0 || _centipedeStepDownTailTick < 0)
+            {
+                reasons.Add($"固定头下阶梯未完整通过（lead={_centipedeStepDownLeadTick}, " +
+                            $"tail={_centipedeStepDownTailTick}）");
+            }
+            else if (tailLag < 0 || tailLag > courseTailBudget)
+            {
+                reasons.Add($"下阶梯尾端滞后 {tailLag} tick（要求 0..{courseTailBudget}）");
+            }
+            if (_centipedeStepDownNetProgress < CentipedeStepDownMinimumProgress)
+            {
+                reasons.Add($"下阶梯身体净前进 {_centipedeStepDownNetProgress:F2}m" +
+                            $"（<{CentipedeStepDownMinimumProgress:F2}m）");
+            }
+            if (_centipedeStepDownMaxPileRun > CentipedeStepDownPileRunBudget)
+            {
+                reasons.Add($"下阶梯非相邻节严重重叠连续 {_centipedeStepDownMaxPileRun} tick" +
+                            $"（>{CentipedeStepDownPileRunBudget}）");
+            }
+            if (_centipedeStepDownFinalSeparationRatio < CentipedeStepDownFinalSeparationRatio)
+            {
+                reasons.Add($"下阶梯终态非相邻节最小间距仅 " +
+                            $"{_centipedeStepDownFinalSeparationRatio:F2}×半径和" +
+                            $"（<{CentipedeStepDownFinalSeparationRatio:F2}）");
+            }
+        }
+        if (_centipedeNarrowWallDrive)
+        {
+            if (_waypointsReached < 1)
+            {
+                reasons.Add($"窄墙向前翻越只完成 {_waypointsReached}/1 次");
+            }
+            if (_centipedeNarrowWallSettledTicks < 80)
+            {
+                reasons.Add($"窄墙翻越后只收敛 {_centipedeNarrowWallSettledTicks}/80 tick");
+            }
+            if (controller.LeadEnd != CentipedeLeadEnd.End
+                || controller.RequestedLeadEnd != CentipedeLeadEnd.End)
+            {
+                reasons.Add("窄墙回归期间显式 End 领航端发生变化");
+            }
+            if (narrowWallWholeBodyClearance < -0.002f)
+            {
+                reasons.Add($"窄墙停驶后仍有身体球未完整越过远侧墙面" +
+                            $"（clearance={narrowWallWholeBodyClearance:F3}m < -0.002m）");
+            }
+            if (narrowWallFinalGrips < 1)
+            {
+                reasons.Add("窄墙停驶终态没有真实抓足");
+            }
+            if (_maxHeadY < 3.05f)
+            {
+                reasons.Add($"窄墙领航端最高仅 {_maxHeadY:F2}m（<3.05m，未越过墙顶）");
+            }
+        }
+        if (_centipedeCourseDrive)
+        {
+            for (int i = 0; i < (int)CentipedeCourseStage.Count; i++)
+            {
+                long leadTick = _centipedeCourseLeadTicks[i];
+                long tailTick = _centipedeCourseTailTicks[i];
+                if (leadTick < 0 || tailTick < 0)
+                {
+                    reasons.Add($"课程阶段 {CentipedeCourseStageNames[i]} 未完整通过" +
+                                $"（lead={leadTick}, tail={tailTick}）");
+                    continue;
+                }
+                long lag = tailTick - leadTick;
+                if (lag < 0)
+                {
+                    reasons.Add($"课程阶段 {CentipedeCourseStageNames[i]} 尾端先于领端到达" +
+                                $"（lag={lag}）");
+                }
+                else if (lag > courseTailBudget)
+                {
+                    reasons.Add($"课程阶段 {CentipedeCourseStageNames[i]} 尾端滞后 {lag} tick" +
+                                $"（>{courseTailBudget}）");
+                }
+            }
+            if (_centipedeCourseMaxNoneRun > 40)
+            {
+                reasons.Add($"课程换面无有效支撑连续 {_centipedeCourseMaxNoneRun} tick（>40）");
+            }
+            if (_centipedeCourseMaxBlockedRun > 40)
+            {
+                reasons.Add($"课程领航路径阻塞连续 {_centipedeCourseMaxBlockedRun} tick（>40）");
+            }
+            if (courseMaxConnectionRun > 20)
+            {
+                reasons.Add($"课程相邻连接偏差 >10% 连续 {courseMaxConnectionRun} tick（>20）");
+            }
+        }
+        if (_expectHash is ulong expect && _probe!.Hash != expect)
+        {
+            reasons.Add($"哈希 {_probe.Hash:X16} ≠ 基线 {expect:X16}");
+        }
+        bool pass = reasons.Count == 0;
+        GD.Print(pass ? "[RESULT] PASS" : $"[RESULT] FAIL: {string.Join("; ", reasons)}");
+        return pass ? 0 : 1;
+    }
+
     public override void _Process(double delta)
     {
         if (_fatal)
@@ -1593,14 +2555,7 @@ public partial class SandboxWorld : Node3D
         }
         UpdateCameraFly((float)delta);
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
-        if (_vultureController is { } vulture)
-        {
-            _rayDebug.Draw(_camera, vulture);
-        }
-        else
-        {
-            _rayDebug.Draw(_camera, _lizardController);
-        }
+        _creature.DrawDebug(_rayDebug, _camera);
     }
 
     /// <summary>右键held且不按Shift = 想要飞行摄像机（与 Shift+右键放胡萝卜互斥）。
@@ -1643,8 +2598,8 @@ public partial class SandboxWorld : Node3D
         }
     }
 
-    /// <summary>F3：开关射线+推进目标（胡萝卜）可视化（只影响绘制）。数字键 1~9：现场换品种重生
-    /// （交互模式限定，与左上角下拉面板走同一个 SelectBreed 入口，互相同步）。
+    /// <summary>F3：开关射线+推进目标（胡萝卜）可视化（只影响绘制）。数字键 1~4 保留蜥蜴，
+    /// 5~8 切换蜈蚣实例；R 切换当前蜈蚣由哪一端领航（都只在交互模式生效）。
     /// 鼠标移动：飞行摄像机态下累加偏航/俯仰旋转相机（俯仰钳制防止翻过头顶）。</summary>
     public override void _Input(InputEvent @event)
     {
@@ -1669,42 +2624,78 @@ public partial class SandboxWorld : Node3D
             GD.Print($"[SANDBOX] ray debug {(_rayDebug.Enabled ? "on" : "off")}");
             return;
         }
-        if (_probe is not null || key.PhysicalKeycode < Key.Key1 || key.PhysicalKeycode > Key.Key9)
+        if (key.PhysicalKeycode == Key.R)
+        {
+            if (_probe is null && _centipedeController is not null)
+            {
+                _requestedCentipedeLeadEnd =
+                    _centipedeController.RequestedLeadEnd == CentipedeLeadEnd.Start
+                        ? CentipedeLeadEnd.End
+                        : CentipedeLeadEnd.Start;
+                _centipedeController.RequestedLeadEnd = _requestedCentipedeLeadEnd;
+                SyncLeadEndUI();
+                GD.Print($"[SANDBOX] centipede requested lead -> {_requestedCentipedeLeadEnd}");
+            }
+            return;
+        }
+        // 数字行 1..9,0,-,= 依次映射 12 个生物（4 蜥蜴 + 4 蜈蚣 + 4 秃鹫）。
+        int creatureIndex = key.PhysicalKeycode switch
+        {
+            >= Key.Key1 and <= Key.Key9 => (int)(key.PhysicalKeycode - Key.Key1),
+            Key.Key0 => 9,
+            Key.Minus => 10,
+            Key.Equal => 11,
+            _ => -1,
+        };
+        if (_probe is not null || creatureIndex < 0)
         {
             return;
         }
-        SelectBreed((int)(key.PhysicalKeycode - Key.Key1));
+        SelectCreature(creatureIndex);
     }
 
-    /// <summary>数字键与下拉面板共用的换品种入口，保证两个输入源互相同步。
-    /// 编号：蜥蜴四预设在前、秃鹫四预设续接——选中即换生物类别（蜥蜴↔秃鹫）。</summary>
-    private void SelectBreed(int index)
+    /// <summary>数字行与下拉面板共用的换生物入口；蜥蜴四预设在前、蜈蚣四预设居中、
+    /// 秃鹫四预设续接——选中即换生物类别。</summary>
+    private void SelectCreature(int index)
     {
         BreedParams[] breeds = BodyFactory.AllBreeds();
+        CentipedeParams[] centipedes = CentipedeFactory.AllPresets();
         VultureBreedParams[] vultures = BodyFactory.AllVultureBreeds();
-        if (index < 0 || index >= breeds.Length + vultures.Length)
+        if (index < 0 || index >= breeds.Length + centipedes.Length + vultures.Length)
         {
             return;
         }
         // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
-        Vector3 basePos = _vultureController is { } vc
-            ? vc.RearSpine.Pos
-            : _lizardController.Hips.Pos;
+        Vector3 origin = _creature.RespawnAnchor.Pos + Vector3.Up * 0.5f;
         if (index < breeds.Length)
         {
-            SpawnLizard(breeds[index], basePos + Vector3.Up * 0.5f);
-            GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
+            SpawnLizard(breeds[index], origin);
+        }
+        else if (index < breeds.Length + centipedes.Length)
+        {
+            SpawnCentipede(centipedes[index - breeds.Length].StableId, origin);
         }
         else
         {
-            VultureBreedParams vb = vultures[index - breeds.Length];
-            SpawnVulture(vb, basePos + Vector3.Up * 0.5f);
-            GD.Print($"[SANDBOX] breed -> vulture:{vb.Name}");
+            SpawnVulture(vultures[index - breeds.Length - centipedes.Length], origin);
         }
-        _breedUI?.SyncSelection(index);
+        _creatureUI?.SyncSelection(index);
+        SyncLeadEndUI();
+        GD.Print($"[SANDBOX] creature -> {_creature.StableId}" +
+                 (_centipedeController is null
+                     ? string.Empty
+                     : $", requestedLead={_centipedeController.RequestedLeadEnd}"));
     }
 
-    /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。
+    private void SyncLeadEndUI()
+    {
+        _creatureUI?.SyncLeadEnd(_centipedeController is null
+            ? null
+            : _centipedeController.RequestedLeadEnd.ToString().ToLowerInvariant());
+    }
+
+    /// <summary>解析 `-- --determinism=N [--tps=400] [--creature=… --lead=start|end]`：
+    /// 无头回归模式，禁输入、可加速跑。`--help` 打印完整宿主用法。
     /// 返回 false = 参数畸形（含未知开关、非有限数）。必须快速失败——解析半途抛异常曾把
     /// _Ready 留在残局，随后 _PhysicsProcess 每帧 NRE、进程不退出、日志无限膨胀。</summary>
     private bool ParseDeterminismArgs()
@@ -1714,7 +2705,11 @@ public partial class SandboxWorld : Node3D
         {
             try
             {
-                if (arg.StartsWith("--determinism="))
+                if (arg is "--help" or "-h")
+                {
+                    _showCommandHelp = true;
+                }
+                else if (arg.StartsWith("--determinism="))
                 {
                     int ticks = int.Parse(arg["--determinism=".Length..], inv);
                     if (ticks <= 0)
@@ -1738,45 +2733,71 @@ public partial class SandboxWorld : Node3D
                 {
                     _yankTick = long.Parse(arg["--yank=".Length..], inv);
                 }
+                else if (arg == "--route=centipede-course")
+                {
+                    _waypoints = StandRoute;
+                    _centipedeCourseDrive = true;
+                    _routeName = "centipede-course";
+                }
+                else if (arg == "--route=centipede-step-down")
+                {
+                    _waypoints = StandRoute;
+                    _centipedeStepDownDrive = true;
+                    _routeName = "centipede-step-down";
+                }
+                else if (arg == "--route=centipede-narrow-wall")
+                {
+                    _waypoints = WallRoute;
+                    _centipedeNarrowWallDrive = true;
+                    _routeName = "centipede-narrow-wall";
+                }
                 else if (arg == "--route=wall")
                 {
                     _waypoints = WallRoute;
+                    _routeName = "wall";
                 }
                 else if (arg == "--route=turn")
                 {
                     _waypoints = TurnRoute;
                     _regressionScenario = RegressionScenario.Turn;
+                    _routeName = "turn";
                 }
                 else if (arg == "--route=wall-turn")
                 {
                     _waypoints = StandRoute;
                     _regressionScenario = RegressionScenario.Turn;
                     _wallTurnDrive = true;
+                    _routeName = "wall-turn";
                 }
                 else if (arg == "--route=wall-tail")
                 {
                     _waypoints = WallRoute;
                     _regressionScenario = RegressionScenario.Tail;
+                    _routeName = "wall-tail";
                 }
                 else if (arg == "--route=wall-corner")
                 {
                     _waypoints = WallRoute;
                     _regressionScenario = RegressionScenario.Corner;
+                    _routeName = "wall-corner";
                 }
                 else if (arg == "--route=stand")
                 {
                     _waypoints = StandRoute;
+                    _routeName = "stand";
                 }
                 else if (arg == "--route=carrot")
                 {
                     _waypoints = CarrotRoute;
                     _carrotDrive = true;
+                    _routeName = "carrot";
                 }
                 else if (arg == "--route=carrot-turn")
                 {
                     _waypoints = StandRoute;
                     _regressionScenario = RegressionScenario.CarrotTurn;
                     _carrotTurnDrive = true;
+                    _routeName = "carrot-turn";
                 }
                 else if (arg == "--route=fly")
                 {
@@ -1801,6 +2822,28 @@ public partial class SandboxWorld : Node3D
                     {
                         _breed = BodyFactory.ByName(breedName);
                     }
+                    _breedExplicit = true;
+                }
+                else if (arg.StartsWith("--creature="))
+                {
+                    string stableId = arg["--creature=".Length..];
+                    if (!CentipedeFactory.TryByStableId(stableId, out _))
+                    {
+                        throw new System.FormatException(
+                            "未知 creature ID；可用 centipede/short|long|armored|ribbon");
+                    }
+                    _centipedeId = stableId;
+                }
+                else if (arg.StartsWith("--lead="))
+                {
+                    _requestedCentipedeLeadEnd = arg["--lead=".Length..] switch
+                    {
+                        "start" => CentipedeLeadEnd.Start,
+                        "end" => CentipedeLeadEnd.End,
+                        _ => throw new System.FormatException(
+                            "未知 lead；可用 --lead=start|end"),
+                    };
+                    _leadExplicit = true;
                 }
                 else if (arg.StartsWith("--perturb="))
                 {
@@ -1856,6 +2899,52 @@ public partial class SandboxWorld : Node3D
         {
             // 蜥蜴路线的指标/判定读不到秃鹫控制器——静默跑错配置比报错更危险。
             GD.PrintErr("[SANDBOX] 秃鹫确定性回归需要 --route=fly 或 --route=perch");
+            return false;
+        }
+        if (_centipedeId is not null && _breedExplicit)
+        {
+            GD.PrintErr("[SANDBOX] --breed 与 --creature 互斥；一次只能装配一种生物");
+            return false;
+        }
+        if (_leadExplicit && _centipedeId is null)
+        {
+            GD.PrintErr("[SANDBOX] --lead 仅适用于 --creature=centipede/...");
+            return false;
+        }
+        if (_centipedeCourseDrive && _centipedeId is null)
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-course 仅适用于 centipede");
+            return false;
+        }
+        if (_centipedeStepDownDrive && _centipedeId is null)
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-step-down 仅适用于 centipede");
+            return false;
+        }
+        if (_centipedeNarrowWallDrive && _centipedeId is null)
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-narrow-wall 仅适用于 centipede");
+            return false;
+        }
+        if (_centipedeStepDownDrive
+            && (!_leadExplicit || _requestedCentipedeLeadEnd != CentipedeLeadEnd.Start))
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-step-down 需要显式 --lead=start");
+            return false;
+        }
+        if (_centipedeNarrowWallDrive
+            && (!_leadExplicit || _requestedCentipedeLeadEnd != CentipedeLeadEnd.End))
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-narrow-wall 需要显式 --lead=end");
+            return false;
+        }
+        if (_centipedeId is not null && _regressionScenario != RegressionScenario.None)
+        {
+            // 这些路线的驱动与硬门直接读取 LizardLocomotionController 的脊柱/尾链状态。
+            // 让蜈蚣静止跑完再报 PASS 是危险假绿；蜈蚣课程使用独立路线与断言接入前先硬拒。
+            GD.PrintErr($"[SANDBOX] --route={_routeName} 仅适用于 lizard；" +
+                        "centipede 当前可用 default|wall|stand|carrot|centipede-course|" +
+                        "centipede-step-down|centipede-narrow-wall");
             return false;
         }
         return true;

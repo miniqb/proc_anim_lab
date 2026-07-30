@@ -53,6 +53,7 @@ internal static class Program
         bool vultureShiftOk = CheckVultureShift(out string vultureShiftMsg);
         bool vultureAssemblyOk = CheckVultureAssembly(out string vultureAssemblyMsg);
         bool vultureContractOk = CheckVultureReviewFixes(out string vultureContractMsg);
+        bool centipedeOk = CentipedeSmoke.RunAll(out string centipedeMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -71,6 +72,7 @@ internal static class Program
         Console.WriteLine($"[CORE-VULTURE-SHIFT] {vultureShiftMsg}");
         Console.WriteLine($"[CORE-VULTURE-ASSEMBLY] {vultureAssemblyMsg}");
         Console.WriteLine($"[CORE-VULTURE-CONTRACT] {vultureContractMsg}");
+        Console.WriteLine($"[CORE-CENTIPEDE] {centipedeMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -148,6 +150,10 @@ internal static class Program
         if (!vultureContractOk)
         {
             reasons.Add("秃鹫评审修复回归失效（密集喂点/零油门停车/混合翅态升力/俯冲降落）");
+        }
+        if (!centipedeOk)
+        {
+            reasons.Add("蜈蚣装配、确定性、双端领航、生命周期、自避、查询缩放或课程地形回归失败");
         }
 
         bool pass = reasons.Count == 0;
