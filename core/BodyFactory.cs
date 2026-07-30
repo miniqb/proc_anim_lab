@@ -112,6 +112,213 @@ public static class BodyFactory
         return Default();
     }
 
+    // —— 秃鹫品种预设（≙ RW Vulture 构造 + IsKing/IsMiros 分支；与蜥蜴表平行，不混表）——
+
+    /// <summary>基准秃鹫（≙ 普通 Vulture）：双翅 8 节、展开 5.5m 翼长，参数全部直取反编译换算。</summary>
+    public static VultureBreedParams Vulture() => new();
+
+    /// <summary>王鹫（≙ King Vulture）：体格 ×1.15、质量 ×1.4、10 节长翅（4.5→6.75m）、
+    /// 爬行力 1.9px、升力更足但极速更低——大而沉的压迫感。</summary>
+    public static VultureBreedParams KingVulture() => new()
+    {
+        Name = "king",
+        BodySizeFac = 1.15f,
+        BodyMassFac = 1.4f,
+        HeadLeash = 1.75f,
+        WingSegments = 10,
+        WingFoldedLength = 4.5f,
+        WingFlyLength = 6.75f,
+        LiftForce = 0.16f,
+        CrawlPropulsion = 0.0475f,
+        ClimbPulse = 0.10f,
+        MaxFlySpeed = 0.11f,
+        MaxRiseSpeed = 0.11f,
+        FeathersPerWing = 22,
+    };
+
+    /// <summary>雨燕鹫（本项目原创小型种）：0.8 体格短翅快拍——周期 ≈28 tick（快 10 + 慢 18）、
+    /// 极速更高、翼展 2.8→4.2m，悬停更贴锚点的敏捷手感。</summary>
+    public static VultureBreedParams Swift() => new()
+    {
+        Name = "swift",
+        BodySizeFac = 0.8f,
+        BodyMassFac = 0.7f,
+        ShoulderWidth = 0.8f,
+        SpineFront = 0.32f,
+        SpineRear = 0.2f,
+        HeadRadius = 0.13f,
+        NeckLength = 0.8f,
+        HeadLeash = 1.2f,
+        WingSegments = 6,
+        WingFoldedLength = 2.8f,
+        WingFlyLength = 4.2f,
+        FlapFastRate = 1f / 20f,
+        FlapSlowRate = 1f / 35f,
+        LiftForce = 0.12f,
+        FlightPropulsion = 0.018f,
+        MaxFlySpeed = 0.16f,
+        MaxRiseSpeed = 0.14f,
+        HoverSpring = 0.02f,
+        FeathersPerWing = 12,
+    };
+
+    /// <summary>四翼鹫（≙ Miros 的四翼拓扑，3D 参数为本项目调教）：双肩各两翅、
+    /// 后对翼展后倾 0.35；升力份额 1.4/4（≙ Miros num4 = 1.4/翅数），总升力量级不变。</summary>
+    public static VultureBreedParams QuadWing() => new()
+    {
+        Name = "quad",
+        BodySizeFac = 1.1f,
+        BodyMassFac = 1.8f,
+        Wings = 4,
+        WingSegments = 6,
+        WingFoldedLength = 3.0f,
+        WingFlyLength = 4.5f,
+        LiftShare = 0.35f,
+        RearWingSpanTilt = 0.35f,
+        MaxFlySpeed = 0.13f,
+        FeathersPerWing = 8,
+    };
+
+    /// <summary>沙盒可切换的秃鹫品种表（与蜥蜴表并列，数字键续接蜥蜴序号）。</summary>
+    public static VultureBreedParams[] AllVultureBreeds() =>
+        new[] { Vulture(), KingVulture(), Swift(), QuadWing() };
+
+    /// <summary>按名取秃鹫预设；未知名回落基准秃鹫（与 ByName 同语义）。</summary>
+    public static VultureBreedParams VultureByName(string name)
+    {
+        foreach (VultureBreedParams p in AllVultureBreeds())
+        {
+            if (p.Name == name)
+            {
+                return p;
+            }
+        }
+        return Vulture();
+    }
+
+    /// <summary>名字是否落在秃鹫品种表里（沙盒 --breed=/数字键分派生物类别用）。</summary>
+    public static bool IsVultureBreed(string name)
+    {
+        foreach (VultureBreedParams p in AllVultureBreeds())
+        {
+            if (p.Name == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 按品种参数装配秃鹫（≙ Vulture 构造 L419-472）。origin = 肩线中心。
+    /// 身体 = 风筝形 K4 刚架：前脊柱（+0.4m 前）/后脊柱（−0.25m 后）/双肩（±半肩宽），
+    /// 六条 Rigid 连接全三角化（RestLength 直接取出生几何距离——与 RW 的 26/40/22.36/25.61px
+    /// 逐位同构且出生零违反）。共面静息态在 3D 是无穷小柔性（沿对角线的微折叠二阶恢复）
+    /// ——配合阻尼表现为有机的机体微弯，不是缺陷。头 = 拴绳 chunk：PullOnly、WeightA=0
+    /// （修正全落头端，≙ weightSymmetry 0——头的重量永远拖不动身体）。
+    /// 出生姿态：水平趴伏、翅膀收拢沿侧向排开（Grab 模式栖息，确定性相位种子）。
+    /// </summary>
+    public static VultureFlightController CreateVultureController(Vector3 origin, VultureBreedParams p)
+    {
+        var body = new Body
+        {
+            AirFriction = 0.99f,     // ≙ Vulture airFriction（重力常开，无坠落/抓稳双档）
+            SurfaceFriction = 0.35f, // ≙ Vulture surfaceFriction
+        };
+
+        float size = p.BodySizeFac;
+        float trunkRadius = 0.2375f * size;  // ≙ 9.5px
+        float trunkMass = 1.2f * p.BodyMassFac;
+        float half = p.ShoulderWidth * 0.5f * size;
+
+        var front = new BodyChunk(origin + new Vector3(p.SpineFront * size, 0f, 0f), trunkRadius, trunkMass);
+        var rear = new BodyChunk(origin - new Vector3(p.SpineRear * size, 0f, 0f), trunkRadius, trunkMass);
+        var shoulderL = new BodyChunk(origin + new Vector3(0f, 0f, -half), trunkRadius, trunkMass);
+        var shoulderR = new BodyChunk(origin + new Vector3(0f, 0f, half), trunkRadius, trunkMass);
+        var head = new BodyChunk(front.Pos + new Vector3(p.NeckLength * 0.6f * size, 0f, 0f),
+            p.HeadRadius * size, 0.3f * p.BodyMassFac);
+        body.Chunks.Add(front);
+        body.Chunks.Add(rear);
+        body.Chunks.Add(shoulderL);
+        body.Chunks.Add(shoulderR);
+        body.Chunks.Add(head);
+
+        // K4 全三角化（连接建立顺序固定；RestLength = 出生几何距离）。
+        foreach ((BodyChunk a, BodyChunk b) in new[]
+                 {
+                     (front, rear), (shoulderL, shoulderR),
+                     (shoulderL, rear), (rear, shoulderR),
+                     (shoulderL, front), (shoulderR, front),
+                 })
+        {
+            body.Connections.Add(new ChunkConnection(a, b, (b.Pos - a.Pos).Length(), weightA: 0.5f)
+            {
+                ConstraintMode = ChunkConnection.Mode.Rigid,
+            });
+        }
+        // 头拴绳（≙ 连接 6：Pull、elastic 0.6、weightSymmetry 0——修正全落头端）。
+        body.Connections.Add(new ChunkConnection(front, head, p.HeadLeash * size, weightA: 0f)
+        {
+            ConstraintMode = ChunkConnection.Mode.PullOnly,
+            Elasticity = 0.6f,
+        });
+
+        // 朝向钉定（互绑巧合会让 front 参照 head——头在软拴绳上摆动会污染前向轴）：
+        // 前脊柱 → 后脊柱（Rotation = 体前向）、后脊柱 → 前脊柱（指向后方，消费侧翻转）、
+        // 双肩互指（侧向轴）、头 → 前脊柱（脖方向）。
+        front.RotationChunk = rear;
+        rear.RotationChunk = front;
+        shoulderL.RotationChunk = shoulderR;
+        shoulderR.RotationChunk = shoulderL;
+        head.RotationChunk = front;
+
+        var controller = new VultureFlightController(body, front, rear, shoulderL, shoulderR, head)
+        {
+            LiftForce = p.LiftForce,
+            LiftShare = p.LiftShare,
+            LateralRecoil = p.LateralRecoil,
+            FlightPropulsion = p.FlightPropulsion,
+            CrawlPropulsion = p.CrawlPropulsion,
+            ClimbPulse = p.ClimbPulse,
+            MaxFlySpeed = p.MaxFlySpeed,
+            MaxRiseSpeed = p.MaxRiseSpeed,
+            HoverSpring = p.HoverSpring,
+            PitchTrim = p.PitchTrim,
+            FlapFastRate = p.FlapFastRate,
+            FlapSlowRate = p.FlapSlowRate,
+            FlapGlideRate = p.FlapGlideRate,
+            FlapSweepMin = p.FlapSweepMin,
+            FlapSweepMax = p.FlapSweepMax,
+            NeckLength = p.NeckLength * size,
+        };
+
+        // 翅膀：偶数索引左、奇数右（≙ tentacles[j] 挂 bodyChunks[2 + j%2]）；
+        // 第二对（四翼）展向后倾。出生收拢沿本侧水平排开 = 确定性相位种子。
+        for (int i = 0; i < p.Wings; i++)
+        {
+            int side = i % 2 == 0 ? -1 : 1;
+            BodyChunk anchor = side < 0 ? shoulderL : shoulderR;
+            BodyChunk opposite = side < 0 ? shoulderR : shoulderL;
+            var wing = new VultureWing(anchor, opposite, side, p.WingSegments,
+                new Vector3(0f, 0f, side), size)
+            {
+                FoldedLength = p.WingFoldedLength * size,
+                FlyLength = p.WingFlyLength * size,
+                ServoStrength = p.WingServoStrength,
+                SpanTilt = i >= 2 ? p.RearWingSpanTilt : 0f,
+            };
+            controller.Wings.Add(wing);
+        }
+        for (int i = 0; i + 1 < controller.Wings.Count; i += 2)
+        {
+            VultureWing left = controller.Wings[i];
+            VultureWing right = controller.Wings[i + 1];
+            left.Pair = right;
+            right.Pair = left;
+        }
+        return controller;
+    }
+
     public static LizardLocomotionController CreateLizardController(Vector3 origin) =>
         CreateLizardController(origin, Default());
 

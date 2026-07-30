@@ -40,6 +40,9 @@ public sealed class RayDebugDraw : ITerrainQuery
     private static readonly Color CarrotCrestColor = new(1f, 0.65f, 0.15f);
     private static readonly Color CarrotFallbackColor = new(1f, 0.18f, 0.18f);
     private static readonly Color CarrotExternalColor = new(0.7f, 0.35f, 1f);
+    private static readonly Color CentipedeTrailColor = new(0.15f, 0.9f, 1f, 0.9f);
+    private static readonly Color CentipedeNormalColor = new(1f, 0.9f, 0.2f, 0.9f);
+    private static readonly Color CentipedeGripColor = new(0.2f, 1f, 0.35f, 0.95f);
 
     public RayDebugDraw(ITerrainQuery inner)
     {
@@ -93,39 +96,23 @@ public sealed class RayDebugDraw : ITerrainQuery
         parent.AddChild(node);
     }
 
-    /// <summary>人形物种的绘制入口：只画射线与命中点（人形无蜥蜴式推进胡萝卜）。纯增量重载。</summary>
-    public void Draw(Camera3D camera)
-    {
-        if (_mesh is null)
-        {
-            return;
-        }
-        _mesh.ClearSurfaces();
-        if (!Enabled || _rays.Count == 0)
-        {
-            return;
-        }
-        Vector3 camPos = camera.GlobalPosition;
-        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
-        foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
-        {
-            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
-            if (didHit)
-            {
-                AddMarker(end, camPos, MarkerColor, MarkerSize);
-            }
-        }
-        _mesh.SurfaceEnd();
-    }
+    /// <summary>人形物种的绘制入口：只画射线与命中点（人形无蜥蜴式推进胡萝卜）——
+    /// 委托到通用入口的 None 分支，纯便捷重载。</summary>
+    public void Draw(Camera3D camera) => Draw(camera, Vector3.Zero, MoveTargetKind.None, Vector3.Zero);
 
-    public void Draw(Camera3D camera, LizardLocomotionController controller)
+    /// <summary>
+    /// 绘制最近一个 tick 的查询与可选推进胡萝卜。调用侧只传通用目标观测，
+    /// 因而蜥蜴、蜘蛛或后续并列控制器都无需让调试层知道其具体类型。
+    /// </summary>
+    public void Draw(Camera3D camera, Vector3 carrotOrigin,
+        MoveTargetKind targetKind, Vector3 target)
     {
         if (_mesh is null)
         {
             return;
         }
         _mesh.ClearSurfaces();
-        bool hasCarrot = controller.LastMoveTargetKind != MoveTargetKind.None;
+        bool hasCarrot = targetKind != MoveTargetKind.None;
         if (!Enabled || (_rays.Count == 0 && !hasCarrot))
         {
             return;
@@ -142,15 +129,114 @@ public sealed class RayDebugDraw : ITerrainQuery
         }
         if (hasCarrot)
         {
-            Color c = controller.LastMoveTargetKind switch
+            Color c = targetKind switch
             {
                 MoveTargetKind.Support => CarrotSupportColor,
                 MoveTargetKind.Crest => CarrotCrestColor,
                 MoveTargetKind.External => CarrotExternalColor,
                 _ => CarrotFallbackColor,
             };
-            AddRibbon(controller.Head.Pos, controller.LastMoveTarget, c, camPos);
-            AddMarker(controller.LastMoveTarget, camPos, c, CarrotMarkerSize);
+            AddRibbon(carrotOrigin, target, c, camPos);
+            AddMarker(target, camPos, c, CarrotMarkerSize);
+        }
+        _mesh.SurfaceEnd();
+    }
+
+    /// <summary>
+    /// 蜈蚣 F3 观察面：除本 tick 地形查询外，绘制双向表面轨迹（青）、逐节局部法线（黄）
+    /// 与真实抓足点（绿）。全部读取公开观察状态，不回写控制器。
+    /// </summary>
+    public void Draw(Camera3D camera, CentipedeLocomotionController controller)
+    {
+        if (_mesh is null)
+        {
+            return;
+        }
+        _mesh.ClearSurfaces();
+        if (!Enabled)
+        {
+            return;
+        }
+
+        Vector3 camPos = camera.GlobalPosition;
+        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+        foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
+        {
+            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
+            if (didHit)
+            {
+                AddMarker(end, camPos, MarkerColor, MarkerSize);
+            }
+        }
+
+        IReadOnlyList<CentipedeSurfaceSample> trail = controller.SurfaceTrail;
+        for (int i = 1; i < trail.Count; i++)
+        {
+            AddRibbon(trail[i - 1].Point, trail[i].Point, CentipedeTrailColor, camPos);
+        }
+        foreach (CentipedeSegment segment in controller.Segments)
+        {
+            Vector3 start = segment.Chunk.Pos;
+            AddRibbon(start, start + segment.SupportNormal * (segment.Chunk.Radius + 0.16f),
+                CentipedeNormalColor, camPos);
+        }
+        foreach (CentipedeLeg leg in controller.Legs)
+        {
+            if (!leg.HasGrip)
+            {
+                continue;
+            }
+            AddRibbon(leg.Anchor.Chunk.Pos, leg.GripPoint, CentipedeGripColor, camPos);
+            AddMarker(leg.GripPoint, camPos, CentipedeGripColor, MarkerSize);
+        }
+
+        if (controller.LastMoveTargetKind != CentipedeMoveTargetKind.None)
+        {
+            Color targetColor = controller.LastMoveTargetKind switch
+            {
+                CentipedeMoveTargetKind.Surface => CarrotSupportColor,
+                CentipedeMoveTargetKind.Corner => CarrotCrestColor,
+                CentipedeMoveTargetKind.External => CarrotExternalColor,
+                _ => CarrotFallbackColor,
+            };
+            AddRibbon(controller.LeadChunk.Pos, controller.LastMoveTarget, targetColor, camPos);
+            AddMarker(controller.LastMoveTarget, camPos, targetColor, CarrotMarkerSize);
+        }
+        _mesh.SurfaceEnd();
+    }
+
+    /// <summary>秃鹫版观测：直喂目标（紫）+ 悬停锚（绿）。射线记录与蜥蜴版共用。</summary>
+    public void Draw(Camera3D camera, VultureFlightController controller)
+    {
+        if (_mesh is null)
+        {
+            return;
+        }
+        _mesh.ClearSurfaces();
+        bool hasCarrot = controller.MoveTarget is not null;
+        bool hasHover = controller.HoverAnchor is not null;
+        if (!Enabled || (_rays.Count == 0 && !hasCarrot && !hasHover))
+        {
+            return;
+        }
+        Vector3 camPos = camera.GlobalPosition;
+        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+        foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
+        {
+            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
+            if (didHit)
+            {
+                AddMarker(end, camPos, MarkerColor, MarkerSize);
+            }
+        }
+        if (controller.MoveTarget is { } target)
+        {
+            AddRibbon(controller.FrontSpine.Pos, target, CarrotExternalColor, camPos);
+            AddMarker(target, camPos, CarrotExternalColor, CarrotMarkerSize);
+        }
+        if (controller.HoverAnchor is { } anchor)
+        {
+            AddMarker(anchor, camPos, CarrotSupportColor, CarrotMarkerSize);
         }
         _mesh.SurfaceEnd();
     }

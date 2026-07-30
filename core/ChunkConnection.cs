@@ -32,8 +32,9 @@ public sealed class ChunkConnection
     /// 它全部连接都是软推，本项目默认硬约束，防折叠支柱这类"姿态弹簧"才用此档）。</summary>
     public bool SoftOnly;
 
-    /// <summary>碰撞后只恢复「由碰撞新增」的结构违反。当前工厂仅给隔节 SoftOnly
-    /// 姿态支柱开启；Rigid 脊柱与尾链关闭，避免重复硬约束或让长尾反向拖死身体。</summary>
+    /// <summary>碰撞后只恢复「由碰撞新增」的结构违反。蜥蜴仅给隔节 SoftOnly 姿态支柱
+    /// 开启；蜈蚣也给相邻 Rigid 链开启，以免逐节跨面时 MTD 覆盖刚完成的距离松弛。
+    /// PullOnly 长尾保持关闭，避免尾链反向拖死身体。</summary>
     public bool TerrainCoupled;
 
     /// <summary>硬约束修正分配给 A 端的权重 ∈ [0,1]（0 = A 视作无限重，全部位移落在 B）。</summary>

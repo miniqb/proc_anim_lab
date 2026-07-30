@@ -43,8 +43,8 @@ public sealed class Body
     /// <summary>累计卡链释放次数（回归指标：健康路线应为个位数——每次翻墙尾链至多逐节各释放一次）。</summary>
     public long SnagReleases { get; private set; }
 
-    /// <summary>由 LizardLocomotionController 的局部卡角状态门控：只在确有墙角僵持时恢复碰撞新增的脊柱违反，
-    /// 普通落地/行走保持原求解轨迹，避免姿态支柱等效刚度变化污染 heavy 手感。</summary>
+    /// <summary>是否恢复碰撞相对松弛末新增的 TerrainCoupled 连接违反。蜥蜴仅在局部卡角
+    /// 状态开启；可能同时跨越多面的蜈蚣持续开启。未标记连接及碰撞前已有形变均不受影响。</summary>
     public bool EnablePostCollisionStructureRecovery;
 
     private float[] _preCollisionDistances = Array.Empty<float>();
