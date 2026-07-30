@@ -11,7 +11,7 @@
 - 内核：`BodyChunk` / `ChunkConnection` / `Body`（chunk 物理）、`SphereTerrain`
   （球-地形共用解算）、`MoveTargetKind`（并列控制器共用的只读目标来源）
 - 蜥蜴后端：`Limb`（单点 plant-and-trail 腿）+ `LizardLocomotionController`；
-  `BreedParams` + `BodyFactory` 提供四个预设
+  控制器负责重力开关、支撑系和推进，`BreedParams` + `BodyFactory` 提供四个预设
 - 蜘蛛后端：`SpiderLeg`（足端粒子 + 派生两段 IK 膝点）+
   `SpiderLocomotionController`；`SpiderBreedParams` + `SpiderFactory` 提供
   `spider-small` / `spider-large`，并允许线性身体链的任意节挂任意多对腿；
@@ -23,16 +23,23 @@
   工作区。仍在本侧但被转弯压窄的工作区，则在同一支撑面上的每次正常抬腿中向该
   槽位的名义宽度回收 60%；已植脚不滑动，不逐 tick 拖动已冻结目标，也不干扰窄墙
   多面抱持
+- 蝉后端：`CicadaLocomotionController`（双 chunk 差分飞行、停驻、起飞、Charge）+
+  `CicadaParams` / `CicadaFactory` + 四翼四触须的固定 tick 表现状态
 - 接缝：`ITerrainQuery`（射线 + 球体穿透 MTD 两原语；零法线 = HitFromInside）
   - `godot/RaycastTerrainQuery.cs`：Godot 适配器（**归宿主程序集编译**，core csproj 排除它；
     查询对象复用 + `CollisionMask`/`SetExclusions`）
   - `PlaneTerrainQuery`：纯解析平面（测试用）
 - 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（蜥蜴无引擎冒烟）、
-  `spider_smoke/`（蜘蛛拓扑、弯腿几何、生命周期、急转左右槽及站距平衡恢复与确定性）
+  `spider_smoke/`（蜘蛛拓扑、弯腿几何、生命周期、急转左右槽及站距平衡恢复与确定性）、
+  `cicada_smoke/`（蝉专项无引擎冒烟）
 
 `BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
-蜥蜴与蜘蛛是共享层之上的两个并列控制器，不互相继承。后续物种也应沿这个边界增加后端，
-不向任一现有控制器继续堆物种分支。
+`Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端，
+`SpiderLeg` + `SpiderLocomotionController` + `SpiderBreedParams` 是蜘蛛式运动后端，
+`CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端。三者是共享层之上的并列控制器，
+不互相继承；后续物种也应沿这个边界增加后端，不把 locomotion 模式堆进一个万能类。
+蝉的完整契约见
+[`docs/cicada_controller.md`](../docs/cicada_controller.md)。
 
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 
@@ -77,5 +84,13 @@ dotnet run --project core/spider_smoke
                                     # + 左右 90°/180° 的足端/AEP 槽位与左右站距平衡恢复
 ```
 
-改内核后先跑两个 smoke，再跑仓库根的 `./tools/run_spider_matrix.sh` 和
-`./tools/run_matrix.sh` 两套全矩阵回归（断言化，见 CLAUDE.md §5）。
+蝉后端另跑：
+
+```bash
+dotnet run --project core/cicada_smoke
+./tools/run_cicada_matrix.sh
+```
+
+改内核后先跑三个 smoke，再跑仓库根的 `./tools/run_spider_matrix.sh`、
+`./tools/run_cicada_matrix.sh` 和 `./tools/run_matrix.sh` 三套全矩阵回归
+（断言化，见 CLAUDE.md §5），保证已有 Lizard / Spider 基线保持不变。

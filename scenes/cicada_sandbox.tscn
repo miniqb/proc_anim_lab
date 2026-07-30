@@ -1,0 +1,113 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/cicada_sandbox/CicadaSandboxWorld.cs" id="1_world"]
+
+[sub_resource type="BoxShape3D" id="shape_floor"]
+size = Vector3(18, 0.4, 18)
+
+[sub_resource type="BoxMesh" id="mesh_floor"]
+size = Vector3(18, 0.4, 18)
+
+[sub_resource type="StandardMaterial3D" id="mat_floor"]
+albedo_color = Color(0.19, 0.22, 0.25, 1)
+roughness = 0.9
+
+[sub_resource type="BoxShape3D" id="shape_back_wall"]
+size = Vector3(18, 6, 0.4)
+
+[sub_resource type="BoxMesh" id="mesh_back_wall"]
+size = Vector3(18, 6, 0.4)
+
+[sub_resource type="BoxShape3D" id="shape_side_wall"]
+size = Vector3(0.4, 6, 13)
+
+[sub_resource type="BoxMesh" id="mesh_side_wall"]
+size = Vector3(0.4, 6, 13)
+
+[sub_resource type="StandardMaterial3D" id="mat_wall"]
+albedo_color = Color(0.29, 0.33, 0.36, 1)
+roughness = 0.8
+
+[sub_resource type="BoxShape3D" id="shape_ceiling"]
+size = Vector3(9, 0.4, 8)
+
+[sub_resource type="BoxMesh" id="mesh_ceiling"]
+size = Vector3(9, 0.4, 8)
+
+[sub_resource type="StandardMaterial3D" id="mat_ceiling"]
+albedo_color = Color(0.35, 0.38, 0.4, 1)
+roughness = 0.75
+
+[sub_resource type="Environment" id="env"]
+background_mode = 1
+background_color = Color(0.035, 0.045, 0.06, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.58, 0.67, 0.78, 1)
+ambient_light_energy = 0.55
+tonemap_mode = 2
+
+[node name="CicadaSandboxWorld" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, -0.2, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+shape = SubResource("shape_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+mesh = SubResource("mesh_floor")
+surface_material_override/0 = SubResource("mat_floor")
+
+[node name="BackWall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, 3, -8.8)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/BackWall"]
+shape = SubResource("shape_back_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/BackWall"]
+mesh = SubResource("mesh_back_wall")
+surface_material_override/0 = SubResource("mat_wall")
+
+[node name="SideWall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-8.8, 3, -2.3)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/SideWall"]
+shape = SubResource("shape_side_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/SideWall"]
+mesh = SubResource("mesh_side_wall")
+surface_material_override/0 = SubResource("mat_wall")
+
+[node name="Ceiling" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-3.7, 6, -4.6)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Ceiling"]
+shape = SubResource("shape_ceiling")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Ceiling"]
+mesh = SubResource("mesh_ceiling")
+surface_material_override/0 = SubResource("mat_ceiling")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(9.5, 6.2, 12.5)
+rotation = Vector3(-0.27, 0.61, 0)
+current = true
+fov = 62.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+rotation = Vector3(-0.78, -0.55, -0.3)
+light_color = Color(0.83, 0.9, 1, 1)
+light_energy = 1.15
+shadow_enabled = true
+
+[node name="WarmFill" type="OmniLight3D" parent="."]
+position = Vector3(3.5, 4.5, 3)
+light_color = Color(1, 0.68, 0.4, 1)
+light_energy = 2.0
+omni_range = 12.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")

@@ -2,7 +2,7 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M5 移植接口完成 + 外部评审修复轮（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`（TypeRef 边界扫描 + 无引擎冒烟双重解耦实证），回迁契约就位（[`docs/porting_contract.md`](docs/porting_contract.md)）。评审修复轮补齐：球体穿透碰撞语义（接缝第二原语）、卡链释放、输入死区/抓握/限速语义统一、宿主 Shift/Teleport/Launch 接线 API、断言化回归矩阵（`tools/run_matrix.sh`）。准确状态：**内核抽离完成 + 集成契约就位**；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
+> 当前状态：**M6 Cicada 独立后端完成（2026-07-30）**——`ProcAnim.Core` 现在包含 Lizard / Spider / Cicada 三个平行的物种控制器；蝉已覆盖 3D 自由飞行、悬停、显式三面停驻、起飞、Charge、四翼四触须和 light/dark 预设，并有独立无引擎 smoke 与 Godot 矩阵。M5 的内核抽离、回迁契约和 Lizard 外部评审修复仍保持完成；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
 
@@ -31,6 +31,7 @@
 - **[`docs/rainworld_procedural_animation_research.md`](docs/rainworld_procedural_animation_research.md)** —— **核心参考**。雨世界程序化动画系统深度研究 + **反编译实证（§11 代码级：BodyPart/Limb/LizardLimb/TailSegment/TerrainCurve 等）** + **Godot 移植策略（§12：为什么用射线而不是细网格）**。
 - **[`docs/porting_contract.md`](docs/porting_contract.md)** —— **M5 产物**。`ProcAnim.Core` → `random-room-runtime` 回迁契约：模块清单与依赖面、装配/驱动/输入/输出四契约、`ITerrainQuery` 接缝语义、确定性守则与三层回归、两条迁移路线与两种集成姿态（含主项目对接面调研快照）。
 - **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`+`BodyPart` 继承树、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱或多节腿前先查这里的先例。
+- **[`docs/cicada_controller.md`](docs/cicada_controller.md)** —— **M6 产物**。Cicada 双 chunk 飞行、稳定 3D 姿态、显式停驻、Charge、附肢表现、宿主接口与专项回归。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
 - 源文档（主项目，真相源）：`../random_room/random-room-runtime/docs/rainworld_procedural_animation_research.md`（本项目内为**工作副本**，两边如有更新需手动同步；副本中指向主项目其它文档的相对链接会失效，属正常）。
 - 主项目怪物美术/规格（回迁时对接）：`../random_room/random-room-runtime/docs/monster_visual_research.md`、`procedural_monster_visual_spec.md`、`tyrant_enemy_requirements.md`。
@@ -68,6 +69,7 @@
 | **M3** | 地形涌现：斜坡 / 墙 → 走、爬两态自然涌现（重力开关 + 射线方向切换） | ✅ 完成 |
 | **M4** | 多样化与调参：多足 / 尾巴 / 多种体型，参数化手感（对标 `LizardBreedParams`） | ✅ 完成 |
 | **M5** | 移植接口：抽出与引擎解耦的模块，定义回迁 `random-room-runtime` 的边界 | ✅ 完成 |
+| **M6** | 独立 Cicada 后端：3D 飞行/停驻/Charge、四翼四触须、双预设与专用沙盒 | ✅ 完成 |
 
 > **M1 产物**：`scripts/physics/`（纯 C# 内核：BodyChunk / ChunkConnection / Body / ITerrainQuery，零场景树依赖，M5 回迁边界；**M5 起移至 `core/`**）、`scripts/terrain/RaycastTerrainQuery.cs`（内核与 Godot 物理的唯一接缝；**M5 起移至 `core/godot/`**）、`scripts/sandbox/`（驱动/渲染/拖拽/确定性探针）、`scenes/sandbox.tscn`（白盒：地板+缓坡+台阶+墙）。
 >
@@ -156,6 +158,14 @@
 > --turn=left|right|around` 另以真实 RootPos 腿槽覆盖小/大六项；最坏 large-around 在
 > 55 tick 后不再跨身，92 tick 内恢复站距平衡，零 pole 翻面。既有直行步态、
 > 小/大窄墙、墙—墙 L 角和墙→天花板路线继续通过。
+> **M6 Cicada 产物（2026-07-30）**：新增 `CicadaParams` / `CicadaFactory` /
+> `CicadaLocomotionController`，与 Lizard 后端只共享 Body、连接和 `ITerrainQuery`。双 chunk
+> 身体按 RW 尺寸换算，固定序采用 `Body.Tick → Cicada Act`；支持完整 3D 输入、弱悬停锚、
+> 显式地板/墙/顶停驻与失效复飞、30 tick 意图起飞、锁方向 Charge 和 20 tick Stunned。
+> 四翼与四条触须只输出固定 tick 表现状态，不向身体回传力；`light` / `dark` 只靠出生参数分化。
+> 独立 `scenes/cicada_sandbox.tscn` 默认装配 light，交互支持 WASD+Q/E、停驻选择与
+> 起飞/Charge；`core/cicada_smoke` 和 `tools/run_cicada_matrix.sh` 覆盖固定哈希、40/400Hz、
+> 微扰、三面停驻、起飞、撞墙与双预设。详细契约见 `docs/cicada_controller.md`。
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
