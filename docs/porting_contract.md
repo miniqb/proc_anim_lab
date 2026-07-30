@@ -30,8 +30,11 @@
 | `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
 | `Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
 | `LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
-| `BreedParams.cs` | 品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
-| `BodyFactory.cs` | 通用装配器 + 四预设（default/heavy/sprinter/hexapod） | LizardBreeds |
+| `Arm.cs` | 手臂粒子：三模式追猎（Dangle/HuntAbsolute/HuntRelative）+ 臂长钳制（adaptVel/exaggerate 甩动感）+ 腋窝排斥；不回传力 | Limb 基类追猎核心 + ScavengerHand 机械部分 |
+| `HumanoidLocomotionController.cs` | 人形（双足）运动控制器：清醒近地失重 + 站立力偶伺服（摔倒/爬起零状态机）+ 髋高度伺服 + knuckle 撑点俯仰泵 + 手臂优先级链（昏迷→投掷→蓄力→指向→持物→撑地→闲置）+ Conscious/PointTarget/Carrying/Throw API | Scavenger.Act + ScavengerHand.Update 优先级链 |
+| `BreedParams.cs` | 蜥蜴品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
+| `HumanoidParams.cs` | 人形品种参数表（同为纯出生配置；数值 = Scavenger 反编译直接换算） | Scavenger 构造参数 |
+| `BodyFactory.cs` | 通用装配器 + 蜥蜴四预设（`AllBreeds()`）+ 人形三预设（`AllHumanoids()`：scavenger/brute/waif，独立路由表不混装） | LizardBreeds / Scavenger 构造 |
 | `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
 | `PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
@@ -231,6 +234,27 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   非嵌入），不要落在内核身体的几何附近乱推——嵌入虽会被 S4 MTD 解出，但可能与
   根方向形成来回拉锯。落点取「根位置 + 品种站高」最稳。
 
+### 4.2 人形（HumanoidLocomotionController）的输入面差异
+
+三旋钮语义与蜥蜴一致（`MoveDir`/`RunSpeed`/可选 `MoveTarget`，同一 `MoveIntentDeadzone`），
+差异与新增（≙ 反编译 Scavenger）：
+
+- **直喂到点判定是水平距离**（地面生物有站高，3D 距离会把「站在点正上方」误判成不到）；
+  `MoveDir` 的竖直分量被压平丢弃——人形不爬墙，撞墙只沿墙水平滑移，正对墙推 = 停下。
+- `Conscious`（bool，默认 true）：**眩晕/死亡的唯一开关**（≙ RW `!Consious ⇒ Act() 不跑`）。
+  false ⇒ 站立力偶/伺服/推进/手臂链全停 → 瘫倒涌现；true ⇒ 力偶回归自动爬起。
+  没有 knockdown/getup 状态机。注意：完全对称的直立姿态是确定性的不稳定平衡点——
+  宿主要「击晕倒地」需配一次轻推（`Launch` 小冲量），零随机内核没有噪声帮它倒。
+- `PointTarget`（`Vector3?`）：指向手势（主手伸向世界点，sin 伸缩）。世界坐标语义：
+  `Shift` 平移、`Teleport` 作废清 null。
+- `Carrying`（bool）：主手切躯干系携带位；被持物本体归宿主——读 `MainHandPos`/`MainHandDir`
+  硬钉即可（≙ RW GraphicsModuleUpdated 对 grasp 0 的钉定，宿主侧一行）。
+- `StartThrowCharge(dir)` / `ReleaseThrow()`：蓄力期强制停驶（≙ RW 瞄准时 moving=false）+
+  主手拉到身后蓄力位抖动；出手返回被投物初速（米/tick），投掷物本体归宿主（从
+  `MainHandPos` 起飞）。未蓄力/重复释放返回 null；昏迷自动弃蓄力（≙ RW Stun 掉武器）。
+- 重力开关的判据是「清醒且近地」而非「腿抓稳」（人形的腿不承重）；`Launch`/坠远
+  自动回归重力，落地站稳（`GroundedCounter ≥ GroundedTicks`）后恢复失重伺服态。
+
 ## 5. 输出契约（渲染与 AI 的观测面）
 
 ### 5.1 渲染读什么（沙盒 `BodyRenderer` 是参考实现）
@@ -264,6 +288,18 @@ normalized 语义），消费端自行回退。
 上一帧 up）构造正交 `Basis`/Quaternion；forward 与 up 近共线时必须显式选备用 up，避免 roll
 突跳。该补充是 3D 扩展约束——RW 的 2D 单方向向量本身即可唯一确定平面旋转。
 全部是**只读观测**；写它们后果自负。
+
+### 5.3 人形的观测面（沙盒 `HumanoidRenderer`/`HumanoidSandboxDriver` 是参考实现）
+
+渲染：chunk/腿沿用 §5.1 语义（人形身体色三档：青=清醒近地失重态 / 红=坠落 / 灰紫=昏迷）；
+`Arm.LerpPos(t)`/`.Radius`/`.Shoulder` 画手球与臂线，`Arm.Mode`+`GrabPos` 配色
+（黄=撑地锁点 / 紫=指向、蓄力、出手 / 绿=持物、休息位 / 灰蓝=垂摆）；`KnucklePos`
+（撑点参考的可视化）；`Carrying` 时被持物硬钉 `MainHandPos`。
+AI / 游戏逻辑：`Uprightness`（躯干轴·up ∈[-1,1]，摔倒检测/爬起进度）、`Grounded`/
+`GroundedCounter`/`ApplyGravity`、`Facing`（水平朝向——人形的 `BodyChunk.Rotation` 是躯干
+**上轴**不是前向，前向读这里）、`KnucklePos`/`KnucklePlants`、`LegsGripping`、
+`ThrowChargeTicks`/`ThrowAnimTicks`/`ThrowDir`、`MainHandPos`/`MainHandDir`（持物/武器
+钉定与朝向）、`Arm.ReachedSnapPosition`（≙ RW 握拳/张开贴图切换的判定位）。
 
 ## 6. ITerrainQuery 契约（唯一接缝的全部语义）
 
@@ -318,6 +354,9 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 - 对照主项目规格 §10.4（24 只并发 ≤3.0ms/tick）：接入后按其流程实测。
   可用的节流阀门（都不改行为语义，回迁时按需做）：尾链 chunk `CollideWithTerrain=false`
   （纯拖尾装饰时）、FindGrip 跨 tick 分摊、远端 LOD 降 tick 率。
+- 人形（3 chunk + 2 腿 + 2 手臂）实测 **17.4 射线/tick/只 + 7 形状查询/tick/只**：
+  比蜥蜴还省——手臂扇扫（10 根/次）每 tick 只允许一只手轮询（tick 奇偶交替，确定性 +
+  预算双保），撑点探地/髋伺服探地各 1 根/tick，plant-and-trail 限流对腿照旧生效。
 
 ## 7. 确定性守则与回归
 
@@ -347,7 +386,12 @@ dotnet run --project core/smoke
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
-当前 20 配置除原有时基/品种/嵌入/擦墙门外，固定包含多节脊柱的 `wall-heavy`、
+当前 28 配置 = 蜥蜴 20 + 人形 8（`humanoid` ×2 双跑 / `humanoid-40` 时基不变性 /
+`humanoid-yank` 击飞限时回正续走 / `humanoid-stun` 昏迷瘫倒+苏醒爬起 / `humanoid-act`
+指向→持物→蓄力停驶→出手动作脚本 / `humanoid-brute`·`humanoid-waif` 变体巡逻）。
+无引擎冒烟另含人形五断言（`[CORE-HUMANOID-DET/STAND/STUN/ACT/SHIFT]`）与重力开关
+边界门（`[CORE-HUMANOID-GRAVITY]`：陡壁不可爬、贴墙接触不计撑地）。
+蜥蜴 20 配置除原有时基/品种/嵌入/擦墙门外，固定包含多节脊柱的 `wall-heavy`、
 `wall-hexapod` 路点下限，以及四条事件相对回归：`turn-hexapod`（平地 180° 反转后 25 tick 内
 展开并对准）、`wall-turn-hexapod`（竖墙上沿面反转，钉死转轴必须是 `SupportNormal`，恢复期间
 离开目标墙不得连续超过 2 tick）、`wall-tail`（按逐连接计数只归因 PullOnly 尾链；连续逐节释放
@@ -361,7 +405,8 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 
 **基线哈希只存两处**（有意改内核后同步更新，别处一律引用）：
 `tools/run_matrix.sh` 顶部的哈希表（Godot 全矩阵）与 `core/smoke/Program.cs` 的
-`ExpectedHash`（无引擎冒烟）。回迁后把这两处一起带走即为目标仓库的基线。
+`ExpectedHash`（蜥蜴）+ `HumanoidExpectedHash`（人形）。回迁后把这两处一起带走即为
+目标仓库的基线。
 
 ### 7.3 回迁后的回归形态
 

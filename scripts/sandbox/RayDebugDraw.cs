@@ -93,6 +93,31 @@ public sealed class RayDebugDraw : ITerrainQuery
         parent.AddChild(node);
     }
 
+    /// <summary>人形物种的绘制入口：只画射线与命中点（人形无蜥蜴式推进胡萝卜）。纯增量重载。</summary>
+    public void Draw(Camera3D camera)
+    {
+        if (_mesh is null)
+        {
+            return;
+        }
+        _mesh.ClearSurfaces();
+        if (!Enabled || _rays.Count == 0)
+        {
+            return;
+        }
+        Vector3 camPos = camera.GlobalPosition;
+        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+        foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
+        {
+            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
+            if (didHit)
+            {
+                AddMarker(end, camPos, MarkerColor, MarkerSize);
+            }
+        }
+        _mesh.SurfaceEnd();
+    }
+
     public void Draw(Camera3D camera, LizardLocomotionController controller)
     {
         if (_mesh is null)

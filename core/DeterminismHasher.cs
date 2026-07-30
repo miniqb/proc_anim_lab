@@ -44,6 +44,17 @@ public sealed class DeterminismHasher
         }
     }
 
+    /// <summary>逐手臂折叠 Pos/Vel（人形折叠序固定：chunks → legs → arms）。纯增量方法——
+    /// 蜥蜴路径不调用它，既有基线逐位不变。</summary>
+    public void FoldArms(IReadOnlyList<Arm> arms)
+    {
+        foreach (Arm arm in arms)
+        {
+            Fold(arm.Pos);
+            Fold(arm.Vel);
+        }
+    }
+
     private void FoldBits(uint bits)
     {
         for (int i = 0; i < 4; i++)

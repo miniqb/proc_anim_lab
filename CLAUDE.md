@@ -5,6 +5,8 @@
 > 当前状态：**M5 移植接口完成 + 外部评审修复轮（2026-07）完成**——内核抽离为独立程序集 `core/ProcAnim.Core`（TypeRef 边界扫描 + 无引擎冒烟双重解耦实证），回迁契约就位（[`docs/porting_contract.md`](docs/porting_contract.md)）。评审修复轮补齐：球体穿透碰撞语义（接缝第二原语）、卡链释放、输入死区/抓握/限速语义统一、宿主 Shift/Teleport/Launch 接线 API、断言化回归矩阵（`tools/run_matrix.sh`）。准确状态：**内核抽离完成 + 集成契约就位**；「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
+>
+> 2026-07-29 新增**人形运动后端**（第一个与蜥蜴并列的控制器类别，≙ 反编译 Scavenger）：`Arm`/`HumanoidLocomotionController`/`HumanoidParams` + 三预设（scavenger/brute/waif），共享层零改动、蜥蜴基线逐位不变；矩阵 20→28 配置、smoke 增五断言。详见 §5「人形运动后端」段。
 
 ---
 
@@ -104,6 +106,17 @@
 >
 > **上墙前段转向修复（FrontMount，2026-07）**：RearBrace 解决了链尾弓起，却也暴露新的假绿——三节脊柱内角接近 180°，但头—第二节仍沿墙法向水平伸出，RearBrace 只会把髋排到这根错误轴后面，整条成为水平旗杆。`LizardLocomotionController.FrontMountGain=0.35` 只服务「多节脊柱、无中段腿」的 Heavy 类拓扑：Head 腿拿到本 tick 射线背书的陡墙落点即可用原始 `GripNormal` 预构造局部爬升方向，腿同步换步时仅以当前 `Head.TerrainContact+ContactNormal` 补位；SpineFollower 绕 Head 纯切向回摆，Head 同步沿面走，不沿法线吸墙、不驱动 Hips、不造抓地。预摆内部角到 120° 即停，真实接触后允许形成用户期望的 ≥90° L/斜线；前段进入沿墙 30°、`SupportNormal·localNormal≥0.8`、后段踩同面或 Crest 均熄火，成熟壁面换步不会重燃。强度按 `RunSpeed` 缩放，速度注入只补到目标值的 0.75，不逐 tick 累积冲量。44 组出生距离×接近角扫描：44/44 在真实墙接触后 15 tick 内稳定进入沿墙 30°，后腿重抓最坏 45 tick，最小内部角 97.7°、零深折叠；正撞最坏相位 mount 法向占比从 0.986 降到 0.809，交接最低角 129°。Godot `wall-heavy` 8→10 路点；Hexapod 因有中段腿而结构排除，wall/tail/turn 轨迹与旧基线逐位一致。smoke 同时覆盖 10°、0°、RunSpeed=0.25、停驶仍挂墙/不吸墙和后续展开，不能再只拿全身内角判美观。
 >
+> **人形运动后端（Humanoid，M5 后新增，2026-07；≙ 反编译 Scavenger 拾荒者，第一个与蜥蜴并列的全新控制器类别）**：`core/Arm.cs` + `core/HumanoidLocomotionController.cs` + `core/HumanoidParams.cs`，共享层（Body/BodyChunk/ChunkConnection/Limb/LizardLocomotionController）**零改动**——20 条蜥蜴矩阵基线与 smoke ExpectedHash 逐位不变（改动前后矩阵输出除日志横幅逐字节 diff 为空，金标准③实证）。核心机制全部出自 Scavenger 反编译逐行核实：① **清醒近地 = 失重伺服木偶**（Scavenger.Act L2207 对三 chunk `vel.y += gravity` 是**抵消** chunk 级重力，不是施加——探索期曾读反方向，实测站立力偶在带重力语义下平衡倾角只有 79°、瘫平不起，改为「Conscious && Grounded → GravityScale 0」后全部行为涌现归位）；② 站立 = 姿态误差非线性力偶 `WeightedPush(胸,髋,up, LerpMap(dot,-1,1,5.5px,0.3px))` + 头部双伺服 + 髋高度伺服（拉向地面上方 RideHeight，≙ 拉向格中心）——摔倒/爬起/眩晕瘫倒全由 `Conscious` 开关与力偶存在性涌现，**零 knockdown 状态机**（击飞后 ~31 tick 自动爬起；注意确定性内核里完全对称的直立杆是不稳定平衡点，「击晕倒地」需配一次轻推）；③ **手臂两条独立通道**（RW 分层原样移植）：物理层 `KnucklePos` 撑点（胸前探地射线，plant-and-trail 的手版）驱动腾空俯仰泵 = 指关节行走的真物理推进辅助；肢体层 `Arm` 粒子（三模式 Dangle/HuntAbsolute/HuntRelative + ConnectToShoulder(adaptVel 0.4/exaggerate 0.1 甩动感) + 腋窝排斥 + 帧末速度参数复位原语）纯可视化不回传力；④ **手臂优先级链**（≙ ScavengerHand.Update 扁平 if-else）：昏迷→投掷→蓄力→指向→持物→撑地锁点→闲置垂手，链尾统一臂长约束；扇扫（10 根 0..±25°）每 tick 只允许一只手（奇偶交替，预算+确定性双保，人形合计 17.4 射线/tick 比蜥蜴还省）；⑤ 非移动 API：`PointTarget`（指向 sin 伸缩）、`Carrying`（主手携带位，被持物由宿主硬钉 `MainHandPos` ≙ grasp 0）、`StartThrowCharge/ReleaseThrow`（蓄力强制停驶+身后蓄力位抖动→出手返回初速+头甩，物体归宿主）——RW 的随机抖动全换 `sin(TickIndex)` 相位。三预设 `AllHumanoids()`（独立路由表不进 AllBreeds()）：**scavenger**（忠实换算基线，2000 tick 巡逻 26 路点）、**brute**（魁梧重型，深弓背猛冲，23 路点）、**waif**（瘦小敏捷近直立小快步，33 路点）。沙盒：`--species=humanoid`（+`--route=hwalk|hact`/`--stun=T,D`）、数字键 5~7 换人形品种、交互键 P=指向/C=持物/T=按住蓄力松开投掷；`HumanoidSandboxDriver`/`HumanoidRenderer` 独立于蜥蜴路径。矩阵 +8 配置（含 humanoid-40 时基不变性；哈希基线在 run_matrix.sh 顶部 HASH_HUMANOID_*），smoke +6 断言（[CORE-HUMANOID-DET/STAND/STUN/ACT/SHIFT/GRAVITY]，基线 `HumanoidExpectedHash`）。
+> **人形评审修复轮（同月，多 agent 对抗评审 12 条核实命中）**：两条 HIGH 均在重力开关——① 撑地探针法线门槛曾取 0.3，与滑墙 0.5 判据间留 60°~72.5° 争议带：陡面被当地面 → 失重+髋伺服钉面+前置探地节节抬高 = **65° 陡壁全速爬升 49m 永久悬挂**（与「不爬墙」声明直接矛盾）；② `contact` 项曾不看接触法线：贴 3m 竖墙的胸接触攒 GroundedCounter，击飞撞墙半空反复失重成粘滞滑降。修复 = 「可站立地面」统一判据 `IsGroundNormal`（≥0.5，与墙分类同一条线不留争议带）套住探针与 chunk 接触两处。其余：前置探针 miss/被拒补原位回退射线 + 蓄力停驶时不前置（崖边瞄准曾 200 tick 翻转 30 次、顶墙探针陷墙永不收敛）；`Arm.ConnectToShoulder` 的 Dangle 分支断开 Exaggerate/AdaptVel 肩速两项（≙ RW Dangle 传零——垂摆不是僵直随行，此项为唯一有意行为变更，humanoid 基线随之换新）；`ReleaseThrow` 补 `!Conscious` 守卫（同帧置昏不能再拿出手向量）；`Shift` 补平移 `MainHandPos`（宿主钉持物的观测量）；指向 sin 相位 `TickIndex % 62832` 防长驻宿主两天后 float 量化抽搐；沙盒 CLI 品种名硬校验（打错静默回落=假绿）+ `--stun/--yank` 越界硬拒（事件没发生断言静默蒸发=假绿）。全部修复由 smoke [CORE-HUMANOID-GRAVITY]（65° 坡不可爬 + 贴墙击飞零半空失重，HalfSpaceTerrain 解析地形）与 STUN/SHIFT 扩展断言钉死。
+> 遗留：斜坡/台阶通过靠悬浮伺服前置探地（0.3m lead），更陡地形未覆盖（60° 以上现在正确地不可站立）；手臂在爬杆/荡杆（RW Climb/Swing）不在范围（本仓无杆地形）；崖边探针回退在 smoke 无有限地板地形，靠评审复现验证未固化。
+> **行走弓背与后仰摆修复（WalkLean 轮，用户白盒实测驱动，2026-07）**：起点是用户两条观感反馈——「行走像坐着」与「躯干向移动**反**方向倾斜 + 周期性抖动」。带符号探针（此前只看无符号 `meanUpright`，看不出前后倾方向——教训）证实后者：平地直行胸恒在髋后 0.18~0.37m（≈40° 后仰）、21 tick 周期摆。根因 = **knuckle 俯仰泵的腾空门槛移植错了**：RW 原门「胸髋双双无地面接触」= 真弹道腾空（走路不点火），曾错用「双脚都没抓稳」当等价物——双足步态每步都有双摆相，泵在正常行走 60% 时间点火，且撑点一落到胸后（无符号距离 ≈ 近端 → t≈1）恒输出「髋前甩/胸后压」的后仰力矩。修复 = 门改 `!Grounded`（近地探针即本内核「有地面支撑」的语义载体）。修后弓背方向/深浅的**消融实证**（scratchpad humanoid_probe，ablate/tune 场景）：巡航前倾的真实来源是 **Chest/Hips 阻尼差**（0.9/0.8 → 胸恒比髋留速多，刚性杆把速度差转成前倾；拉平即直立）；同轮补的 `LeanPush`（≙ L1956）满油门时被推进余量钳制**完全吸收**（净效果零，保留为 RW 保真 + 低油门段有效，注释已如实标注）；`HeadLean`（≙ L1957 行进中头探在胸前方）真实有效（头前探 +0.43m，其中 +0.24 是它的贡献）。预设按真杠杆（阻尼差）调深浅：brute 0.88/0.72（最深 up≈0.82）、scavenger 0.9/0.8（≈0.85）、waif 0.92/0.9（近直立 ≈0.95；HeadDamping 0.82→0.88 同轮修——头伺服最大牵引必须 ≥ (1-HeadDamping)×巡航速度，否则头追不上巡航退化成被脖子拖行垂在胸后）。修后平地直行 lean 稳定 +0.24m 前倾、零抖动（min/max 差 0.001）。行为面：路点 27/27(yank)/23/34 全面持平或 +1，smoke 六断言与 GRAVITY 门原样绿；`humanoid-stun`/`humanoid-act` 哈希逐位不变（站桩类零介入对照组）。基线换新：`HumanoidExpectedHash` + 矩阵 4 条人形哈希；蜥蜴 20 条逐位不变。停驶收脚（坐姿的另一半根源：脚恒在髋前 ≥0.2m 的 plant-and-trail 换步阈值 + 平地永不触发 IdlePose）与 FeetDown 调参未做，见上方遗留。
+>
+> **双手撑地重合修复（HandSpread 轮，用户白盒实测驱动，2026-07）**：症状 = 行走中两只手撑地时锁到同一个世界点完全重合。根因 = 扇扫分离的 3D 化几何错误：RW 原版两手分离靠**扫描角 ±4° 偏置**（`CheckForGrabPos` 的 `limbNumber==0?-4°:+4°`——2D 侧视唯一的分离维度）；移植时换成「起点沿侧轴错开」，但射线仍瞄同一个 `KnucklePos`——kp 本身落在地面上，朝单点**汇聚**的射线让起点侧向错开在命中处被精确抵消，两手 `GrabPos` 逐位相同；`Arm` 只有手-胸腋窝排斥、没有手-手分离项，锁点吸附把重合稳定维持（双手**同时**撑地本身是 RW 保真的，错的只是同点）。修复 = 分离做在**目标点与扫描角**上：扇扫中轴改瞄 `kp + right·Side·KnucklePlantSpread`（0.2m——落点左右分开 ~0.4m，斜面最坏收缩仍 >0.24m）+ 补回 RW 原版每手 ±4° 俯仰偏置（`KnuckleScanBiasDeg`，落点前后交错）。改动只落 `TryFindGrabPos` 一处（人形独享路径）。smoke `[CORE-HUMANOID-HANDS]` 真断言钉死：平地直行双手同锁相位 ≥100 tick + 锁点最小间距 ≥0.15m（两常量归零精确复现 minPlantSep=0.000 红灯，门有效性已验证；修后实测 0.458m）。行为面：路点 27/27/23/34 与修前持平，`humanoid-stun`/`humanoid-act` 哈希逐位不变（站桩对照组），蜥蜴 20 条逐位不变；基线换新：`HumanoidExpectedHash` + 矩阵 4 条人形哈希。
+>
+> **头部掉头响应修复（HeadTurn 轮，用户白盒实测驱动，2026-07）**：症状 = 行进中掉头，胸部很快转向而头要「好一会儿才慢慢靠过来」。无引擎 reverse 场景（scratchpad humanoid_probe，巡航 300 tick → 瞬间 180° 反转，量化胸翻转 vs 头横越/就位时差）证实：胸 2 tick 完成翻转，头 80 tick 才横越、**110 tick（2.75s）才就位**。力学根因 = **头伺服在巡航中恒饱和**：满速巡航仅维持头前探所需的每 tick 修正 ≈0.125m 恰好等于 `HeadServoRange` 钳制（RW 5px 直译），掉头时零牵引余量——头只能靠 PullOnly 脖子拖行横越。修复两旋钮（8 组合参数扫描选定，全组合零振铃、零站姿抖动）：① `HeadServoRange` 0.125→0.25（**主杠杆**，有意偏离 RW 原值：只翻倍远场牵引，近场刚度「力 ∝ 距离×增益」与站姿稳定性不变，单它就 110→22 tick）；② `HeadDamping` 三预设统一 0.88（scavenger/brute 从 RW 原值 0.8 提高，waif 已是——削掉巡航拖拽预算，叠加后就位 **14 tick（~0.35s）**）；`HeadServoGain` 保持 RW 原值 0.16 不动。三预设就位 14/14/16 tick；巡航头前探 scav 0.433→0.487、brute 0.428→0.473 略深，waif 不变。行为面：路点 27/27/23/34 持平，smoke 全断言绿（击飞爬起 31→30 tick 同量级）；本轮阻尼在站桩姿态也生效，`humanoid-stun`/`humanoid-act` 哈希一并换新（对照组豁免不适用），六条人形基线 + `HumanoidExpectedHash` 全部更新；蜥蜴 20 条逐位不变。
+>
+> **双足高频蹭步修复（LegGait 轮，用户白盒实测驱动，2026-07）**：症状 = 行走（brute 最显眼）双腿高频低距离往前蹭而非正常迈步。gait 探针量化：步频锁死 5~7 tick/步（brute 每秒 8 步）、步幅仅腿长 0.4~0.7 倍、**释放时脚还在髋前**（brute +0.33）、brute 触地 3 tick 永远达不到 `LegGripDelay=4` 的 Gripping 判定（抓地占比恒 0）。根因 = 蜥蜴 `Limb` 的 oldestGrip 步态错开（「其余腿全抓稳→本腿松开」）在两腿拓扑下退化成「对脚一落地本脚即松」：触地被锁死在对腿落地延迟、与身体速度无关；释放时超前量立即高于重新迈步阈值 → 下 tick 直接再找落点——高频小碎步正反馈。RW `ScavengerLeg` 反编译核实**根本不用成对协调**：独立前瞻点循环（`IdealPos = 髋 + clamp(髋速×10, 腿长)`，锁点离 IdealPos 超腿长才松、松开即重找无摆动期门槛、FindGrip 搜索半径以 IdealPos 为心——锁点允许暂超腿长靠 ConnectToPoint 拖住）。修复 = `Limb.LookaheadTicks` opt-in（默认 0 = 蜥蜴路径逐位不变；人形工厂设 10 ≙ RW 字面量）：flag 路径换前瞻点释放 + 可及判定改以 IdealPos 为心全腿长半径（以锚点为心会拒掉全部前伸落点，waif 曾被压成 4 tick 碎步），跳过 trail/oldestGrip/extraLongStep 三段。**支撑保序 guard**（确定性内核对 RW 环境噪声的显式等价物，先例 = 随机抖动→sin 相位）：对脚踩稳才允许本脚松开 + 腿表 tick 顺序打破同 tick 双到期（先 tick 腿松开清零计数、后 tick 腿持稳半拍）——两脚 FindGrip 目标前后对称，站定时落到同一 x、之后同起同落成跳步（逐 tick 日志证实），guard 反相自锁、无周期漂移；1.75×腿长失效阀防对脚长期找不到点时本脚被拖行钉死。修后：brute **14 tick/0.82m（1.16×腿长）**触地 10 tick 抓地 50%、scavenger 9t/0.62m、waif 7t/0.64m（回到它本来正常的值）；双悬空 0%、单脚支撑期 44~58%、释放点回髋附近（−0.00~+0.06）。行为面：路点 27/27/23/34 持平，smoke 全断言绿。smoke `[CORE-HUMANOID-GAIT]` 真断言钉死步幅/周期/触地/释放位置/抓地占比/零双悬空 + brute Gripping 专项（LookaheadTicks 归零精确复现全套修前数字红灯，门有效性已验证）。六条人形基线 + `HumanoidExpectedHash` 换新；蜥蜴 20 条 + smoke ExpectedHash 逐位不变（flag 默认 0 数学保证 + 矩阵实证）。
+>
 > **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
 >
 > **单位约定**：1 RW tile (20px) = 0.5 m；`Vel` 语义 =「米/tick 位移」（积分 `Pos += Vel` 不乘 dt，内核零 delta 依赖）；重力默认 36 m/s²（= RW 0.9 px/tick² 直接换算），`GravityPerTick = 36×0.025² = 0.0225`。
@@ -111,31 +124,40 @@
 > **确定性回归**（改物理内核后必跑；全部真断言——探针只打印不判定的旧形态是假绿，评审修复轮的教训）：
 > ```bash
 > # ① 无引擎冒烟（秒级，最快反馈）。退出码即判定：双跑 bit-exact + 哈希对基线（钉死在
-> #    Program.cs ExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 +
-> #    MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
-> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 + TypeRef 边界扫描。
+> #    Program.cs ExpectedHash 与 HumanoidExpectedHash）+ 里程/约束收敛/无 NaN + 嵌入恢复 +
+> #    Shift 连续性 + MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性 +
+> #    heavy 上墙回摆收敛（推墙+停驶双场景）+ 深卡角/非正交接触边界 + TypeRef 边界扫描 +
+> #    人形八断言（DET 双跑/STAND 失重悬停与击飞爬起/STUN 瘫倒苏醒+昏迷弃掷/
+> #    ACT 指向持物蓄力出手/SHIFT 三 API 完备性/GRAVITY 陡壁不可爬+贴墙不计撑地/
+> #    HANDS 双手撑点分离不重合/GAIT 双足步幅周期触地与零双悬空+brute 抓地专项）。
 > dotnet run --project core/smoke
 >
-> # ② Godot 全矩阵（分钟级）。20 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
+> # ② Godot 全矩阵（分钟级）。28 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
 > #    防折叠支柱持续违反与事件相对恢复门），pipefail + 退出码聚合，任何一项红 → 非零退出；
 > #    结尾打 MATRIX GREEN/RED：
 > ./tools/run_matrix.sh [输出目录]
-> # 配置：default ×2（双跑 diff）、default 40Hz（时基不变性）、perturb（灵敏度：哈希必须变）、
+> # 蜥蜴配置：default ×2（双跑 diff）、default 40Hz（时基不变性）、perturb（灵敏度：哈希必须变）、
 > #   wall（正面推墙翻越 ≥9）、wall-heavy/wall-hexapod（多节脊柱贴墙且分别 ≥7/≥9 路点）、
 > #   turn-hexapod（平地 180° 掉头）、wall-turn-hexapod（竖墙沿面掉头）、wall-tail（尾链释放后身体恢复）、
 > #   carrot-turn-heavy/carrot-turn-hexapod（行进中 External 胡萝卜侧转约 90°，量化中段领先）、
 > #   wall-corner（目标墙首次接触换面）、stand（站桩+闲置姿态）、
 > #   carrot（MoveTarget 路径点直喂通路）、heavy/sprinter/hexapod（品种默认巡逻路线）、
 > #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）。
+> # 人形配置（--species=humanoid）：humanoid ×2（hwalk 坡→平地→跨台阶巡逻 + 双跑 diff）、
+> #   humanoid-40（40Hz 时基不变性）、humanoid-yank（行进中击飞限时回正续走）、
+> #   humanoid-stun（昏迷瘫倒+苏醒爬起）、humanoid-act（指向→持物→蓄力停驶→出手动作脚本）、
+> #   humanoid-brute/humanoid-waif（变体巡逻）。
 > # [RESULT] 在进程 teardown 之前打印；已知 Godot 4.7 macOS 偶发退场 mutex 崩溃（exit 134），
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
 > # 2000 tick 参考值（FrontMount 轮后）：default 11 路点、wall 14 翻越、heavy 7 路点、
-> #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13。
+> #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13；
+> #   人形（hwalk）：humanoid 27 路点、humanoid-brute 23、humanoid-waif 34。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
-> # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs ExpectedHash。
+> # 基线哈希只存两处：tools/run_matrix.sh 顶部哈希表 + core/smoke/Program.cs
+> # （ExpectedHash 蜥蜴 + HumanoidExpectedHash 人形）。
 > # 有意改内核 = 同一提交里更新这两处；别处（含本文件）一律引用不复制。
 > ```
 

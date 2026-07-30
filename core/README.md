@@ -10,16 +10,24 @@
 
 - 内核：`BodyChunk` / `ChunkConnection` / `Body`（chunk 物理）、`Limb`（plant-and-trail 腿）、
   `LizardLocomotionController`（重力开关 + 支撑系 + 推进）、`SphereTerrain`（球-地形共用解算）
-- 配置：`BreedParams`（品种参数表，纯出生配置）+ `BodyFactory`（装配器 + 四预设）
+- 人形后端（≙ 反编译 Scavenger）：`Arm`（三模式追猎手臂粒子：Dangle/HuntAbsolute/HuntRelative +
+  臂长钳制 adaptVel/exaggerate + 腋窝排斥）、`HumanoidLocomotionController`（清醒近地失重 +
+  站立力偶伺服 + 髋高度伺服 + knuckle 撑点俯仰泵 + 手臂优先级链：昏迷→投掷→蓄力→指向→持物→
+  撑地→闲置；`Conscious` 开关 = 瘫倒/爬起零状态机）
+- 配置：`BreedParams`（蜥蜴品种表）+ `HumanoidParams`（人形品种表）+ `BodyFactory`
+  （装配器 + 蜥蜴四预设 `AllBreeds()` + 人形三预设 `AllHumanoids()`，两张路由表互不混装）
 - 接缝：`ITerrainQuery`（射线 + 球体穿透 MTD 两原语；零法线 = HitFromInside）
   - `godot/RaycastTerrainQuery.cs`：Godot 适配器（**归宿主程序集编译**，core csproj 排除它；
     查询对象复用 + `CollisionMask`/`SetExclusions`）
   - `PlaneTerrainQuery`：纯解析平面（测试用）
-- 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（无引擎冒烟）
+- 回归：`DeterminismHasher`（FNV-1a 64 状态哈希；人形折叠序 chunks → legs → arms）、
+  `smoke/`（无引擎冒烟）
 
 `BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
-`Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端。未来蜈蚣、人形等
-应在共享层之上增加并列控制器，不向这个类继续堆物种分支。
+`Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端；
+`Arm` + `HumanoidLocomotionController` + `HumanoidParams` 是人形运动后端（第一个并列控制器，
+共享层零改动落地的实证）。未来蜈蚣等继续在共享层之上增加并列控制器，不向任何一个
+控制器堆物种分支。
 
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 

@@ -28,6 +28,10 @@ internal static class Program
     /// 的哈希表同步改）——只比双跑一致会漏掉「确定但错误」的行为漂移。</summary>
     private const ulong ExpectedHash = 0xAAA0E4963668E5DCUL;
 
+    /// <summary>人形（scavenger 品种）平地巡走基线哈希（折叠序 chunks → legs → arms）。
+    /// 与 ExpectedHash 同规则：有意改人形内核 = 同一提交更新此值与 run_matrix.sh 的人形行。</summary>
+    private const ulong HumanoidExpectedHash = 0x900982675F381F26UL;
+
     private static int Main()
     {
         // 输出统一不变文化：逗号小数 locale 会破坏下游脚本对数值行的解析（与沙盒同一约定）。
@@ -44,6 +48,15 @@ internal static class Program
         bool recoveryOk = CheckRecoveryInvariants(out string recoveryMsg);
         bool wallPoseOk = CheckWallPoseStability(out string wallPoseMsg);
         bool heavyMountOk = CheckHeavyWallMount(out string heavyMountMsg);
+        (ulong Hash, float Walk, float Upright, long Plants, float RaysPerTick, bool Nan, float EndDev) ha = RunHumanoid();
+        (ulong Hash, float Walk, float Upright, long Plants, float RaysPerTick, bool Nan, float EndDev) hb = RunHumanoid();
+        bool humanoidStandOk = CheckHumanoidStand(out string humanoidStandMsg);
+        bool humanoidStunOk = CheckHumanoidStun(out string humanoidStunMsg);
+        bool humanoidActOk = CheckHumanoidAct(out string humanoidActMsg);
+        bool humanoidShiftOk = CheckHumanoidShift(out string humanoidShiftMsg);
+        bool humanoidGravityOk = CheckHumanoidGravityGate(out string humanoidGravityMsg);
+        bool humanoidHandsOk = CheckHumanoidHandSpread(out string humanoidHandsMsg);
+        bool humanoidGaitOk = CheckHumanoidGait(out string humanoidGaitMsg);
 
         Console.WriteLine($"[CORE-DET] ticks={Ticks} run1={a.Hash:X16} run2={b.Hash:X16} expected={ExpectedHash:X16}");
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
@@ -57,6 +70,16 @@ internal static class Program
         Console.WriteLine($"[CORE-RECOVERY] {recoveryMsg}");
         Console.WriteLine($"[CORE-WALL-POSE] {wallPoseMsg}");
         Console.WriteLine($"[CORE-HEAVY-MOUNT] {heavyMountMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-DET] ticks={Ticks} run1={ha.Hash:X16} run2={hb.Hash:X16} " +
+                          $"expected={HumanoidExpectedHash:X16} walk={ha.Walk:F2}m meanUpright={ha.Upright:F2} " +
+                          $"plants={ha.Plants} raysPerTick={ha.RaysPerTick:F1} endDev={ha.EndDev:F4}m nan={ha.Nan}");
+        Console.WriteLine($"[CORE-HUMANOID-STAND] {humanoidStandMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-STUN] {humanoidStunMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-ACT] {humanoidActMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-SHIFT] {humanoidShiftMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-GRAVITY] {humanoidGravityMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-HANDS] {humanoidHandsMsg}");
+        Console.WriteLine($"[CORE-HUMANOID-GAIT] {humanoidGaitMsg}");
 
         var reasons = new List<string>();
         if (a.Hash != b.Hash)
@@ -114,6 +137,62 @@ internal static class Program
         if (!heavyMountOk)
         {
             reasons.Add("heavy 上墙前段未及时沿墙、链尾未按期收敛，或停驶时被吸向墙");
+        }
+        if (ha.Hash != hb.Hash)
+        {
+            reasons.Add("人形双跑哈希不一致");
+        }
+        if (ha.Hash != HumanoidExpectedHash)
+        {
+            reasons.Add("人形哈希偏离基线（有意改人形内核请同步更新 HumanoidExpectedHash 与矩阵人形行）");
+        }
+        if (ha.Walk <= 30f)
+        {
+            reasons.Add($"人形行走里程不足（{ha.Walk:F2}m）");
+        }
+        if (ha.Upright <= 0.6f)
+        {
+            reasons.Add($"人形行走平均直立度不足（{ha.Upright:F2}）");
+        }
+        if (ha.Plants <= 40)
+        {
+            reasons.Add($"人形撑地锁点过少（{ha.Plants}——knuckle-walk 没在跑）");
+        }
+        if (ha.Nan)
+        {
+            reasons.Add("人形状态出现 NaN/Inf");
+        }
+        if (ha.EndDev >= 0.05f)
+        {
+            reasons.Add($"人形终态约束偏差过大（{ha.EndDev:F4}m）");
+        }
+        if (!humanoidStandOk)
+        {
+            reasons.Add("人形站立/摔倒爬起失效（失重悬停或站立力偶回正被破坏）");
+        }
+        if (!humanoidStunOk)
+        {
+            reasons.Add("人形昏迷瘫倒/苏醒爬起失效（Conscious 开关语义被破坏）");
+        }
+        if (!humanoidActOk)
+        {
+            reasons.Add("人形手臂动作契约失效（指向/持物/蓄力停驶/出手语义不一致）");
+        }
+        if (!humanoidShiftOk)
+        {
+            reasons.Add("人形 Shift/Teleport/Launch 完备性被破坏");
+        }
+        if (!humanoidGravityOk)
+        {
+            reasons.Add("人形重力开关边界失守（陡壁可爬/贴墙接触被计成撑地）");
+        }
+        if (!humanoidHandsOk)
+        {
+            reasons.Add("人形双手撑地重合（扇扫两手分离失效——目标点侧向错开/俯仰偏置被破坏）");
+        }
+        if (!humanoidGaitOk)
+        {
+            reasons.Add("人形步态退化（高频碎步/双悬空/触地不足——前瞻点释放或支撑保序被破坏）");
         }
 
         bool pass = reasons.Count == 0;
@@ -1089,5 +1168,653 @@ internal static class Program
             ? $"ProcAnim.Core 引擎类型引用 = 允许清单 [{string.Join(", ", allowed)}]，边界干净"
             : $"越界引用: {string.Join(", ", offenders)}";
         return offenders.Count == 0;
+    }
+
+    // ================= 人形（HumanoidLocomotionController）断言 =================
+
+    private static HumanoidLocomotionController MakeHumanoid(Vector3 origin) =>
+        BodyFactory.CreateHumanoidController(origin, BodyFactory.Scavenger());
+
+    private static Vector3 HumanoidGravity() => new(0f, -GravityMps2 * TickDt * TickDt, 0f);
+
+    private static void SettleHumanoid(HumanoidLocomotionController c, PlaneTerrainQuery terrain,
+        ref long tick, int ticks)
+    {
+        Vector3 g = HumanoidGravity();
+        for (int i = 0; i < ticks; i++)
+        {
+            tick++;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+    }
+
+    /// <summary>人形基线路线（与蜥蜴 Run 同构）：scavenger 平地巡走，前半直行后半 45° 转向。
+    /// 直行把 knuckle-walk 的撑点节奏、转向把 Facing/扇扫换向都纳入哈希。</summary>
+    private static (ulong, float, float, long, float, bool, float) RunHumanoid()
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        var hasher = new DeterminismHasher();
+        Vector3 g = HumanoidGravity();
+
+        float walk = 0f;
+        float uprightSum = 0f;
+        Vector3 lastChest = c.Chest.Pos;
+        for (long tick = 1; tick <= Ticks; tick++)
+        {
+            c.MoveDir = tick <= Ticks / 2
+                ? new Vector3(1f, 0f, 0f)
+                : new Vector3(1f, 0f, 1f).Normalized();
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+
+            hasher.FoldBody(c.Body);
+            hasher.FoldLimbs(c.Legs);
+            hasher.FoldArms(c.Arms);
+
+            Vector3 step = c.Chest.Pos - lastChest;
+            step.Y = 0f;
+            walk += step.Length();
+            lastChest = c.Chest.Pos;
+            uprightSum += c.Uprightness;
+        }
+
+        bool nan = false;
+        foreach (BodyChunk chunk in c.Body.Chunks)
+        {
+            nan |= !chunk.Pos.IsFinite();
+        }
+        foreach (Limb leg in c.Legs)
+        {
+            nan |= !leg.Pos.IsFinite();
+        }
+        foreach (Arm arm in c.Arms)
+        {
+            nan |= !arm.Pos.IsFinite();
+        }
+        return (hasher.Value, walk, uprightSum / Ticks, c.KnucklePlants,
+            (float)terrain.RayCount / Ticks, nan, c.Body.CurrentMaxDeviation());
+    }
+
+    /// <summary>
+    /// 站立与摔倒爬起：① 落地站定后必须是「失重悬停」姿态（重力关、髋悬在 RideHeight 附近、
+    /// 头被伺服顶在胸上方）；② 大冲量击飞必须真摔（直立度跌穿 0.5、重力回归）再**自然爬起**
+    /// （限时回正 ≥0.85）——零 knockdown 状态机的机器可查证明。
+    /// </summary>
+    private static bool CheckHumanoidStand(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        long tick = 0;
+        SettleHumanoid(c, terrain, ref tick, 300);
+
+        bool hoverOk = !c.ApplyGravity && c.Grounded
+            && Mathf.Abs(c.Hips.Pos.Y - c.HipRideHeight) < 0.1f;
+        bool standOk = c.Uprightness >= 0.95f;
+        bool headOk = c.Head.Pos.Y - c.Chest.Pos.Y >= 0.3f;
+
+        c.Launch(new Vector3(0.4f, 0.3f, 0f));
+        float minUpright = 1f;
+        bool sawGravity = false;
+        int recoverAfter = -1;
+        for (int i = 1; i <= 300; i++)
+        {
+            tick++;
+            c.Tick(new TickContext(HumanoidGravity(), terrain, tick));
+            minUpright = Mathf.Min(minUpright, c.Uprightness);
+            sawGravity |= c.ApplyGravity;
+            if (recoverAfter < 0 && i > 20 && c.Uprightness >= 0.85f && c.Grounded)
+            {
+                recoverAfter = i;
+            }
+        }
+
+        bool tumbled = minUpright < 0.5f;
+        bool recovered = recoverAfter > 0;
+        message = $"悬停={hoverOk}（hipsY={c.HipRideHeight:F2}±0.1，重力关），站直={standOk}，" +
+                  $"头伺服={headOk}；击飞后 minUpright={minUpright:F2}（须 <0.5），坠落态={sawGravity}，" +
+                  $"爬起={recoverAfter}tick（须 ≤300）";
+        return hoverOk && standOk && headOk && tumbled && sawGravity && recovered;
+    }
+
+    /// <summary>昏迷瘫倒/苏醒爬起（≙ RW !Consious ⇒ Act 不跑）：昏迷 + 轻推 → 重力回归、
+    /// 直立度跌穿 0.5、髋落地；苏醒 → 限时回正、恢复悬停。轻推是必要的——完全对称的
+    /// 直立杆是确定性的不稳定平衡点，没有扰动永远不倒（内核零随机，没有噪声帮它倒）。</summary>
+    private static bool CheckHumanoidStun(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        long tick = 0;
+        SettleHumanoid(c, terrain, ref tick, 300);
+
+        // 昏迷即弃掷（契约 §4.2）：置昏后同一帧（未过 Tick）释放也必须拿不到出手向量。
+        c.StartThrowCharge(new Vector3(1f, 0f, 0f));
+        SettleHumanoid(c, terrain, ref tick, 5);
+        c.Conscious = false;
+        bool unconsciousReleaseNull = c.ReleaseThrow() is null && c.ThrowChargeTicks == 0;
+
+        c.Launch(new Vector3(0.1f, 0f, 0.03f));
+        float minUpright = 1f;
+        float minHipsY = float.MaxValue;
+        for (int i = 0; i < 200; i++)
+        {
+            tick++;
+            c.Tick(new TickContext(HumanoidGravity(), terrain, tick));
+            minUpright = Mathf.Min(minUpright, c.Uprightness);
+            minHipsY = Mathf.Min(minHipsY, c.Hips.Pos.Y);
+        }
+        bool collapsed = minUpright < 0.5f && c.ApplyGravity;
+        bool hipsDown = minHipsY < c.HipRideHeight;
+
+        c.Conscious = true;
+        int recoverAfter = -1;
+        for (int i = 1; i <= 300; i++)
+        {
+            tick++;
+            c.Tick(new TickContext(HumanoidGravity(), terrain, tick));
+            if (recoverAfter < 0 && c.Uprightness >= 0.85f && !c.ApplyGravity)
+            {
+                recoverAfter = i;
+            }
+        }
+        message = $"昏迷即弃掷（同帧释放=null）={unconsciousReleaseNull}；" +
+                  $"昏迷+轻推 minUpright={minUpright:F2}（须 <0.5），重力回归={collapsed}，" +
+                  $"髋落地={hipsDown}；苏醒回正={recoverAfter}tick（须 ≤300），终态 upright={c.Uprightness:F2}";
+        return unconsciousReleaseNull && collapsed && hipsDown && recoverAfter > 0;
+    }
+
+    /// <summary>手臂非移动三件的契约：指向收敛（主手落到指向射线上）、持物到位（携带位 +
+    /// HuntRelative 模式）、蓄力强制停驶（水平速度归零、主手拉到身后上方）、出手返回值
+    /// （速度大小=ThrowSpeed、方向=蓄力方向；未蓄力/二次释放返回 null）。</summary>
+    private static bool CheckHumanoidAct(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        long tick = 0;
+
+        Vector3? idleRelease = c.ReleaseThrow();
+        bool nullWhenUncharged = idleRelease is null;
+
+        SettleHumanoid(c, terrain, ref tick, 300);
+
+        // —— 指向 ——
+        var pt = new Vector3(3f, 1.5f, 0f);
+        c.PointTarget = pt;
+        float bestAngleDeg = 999f;
+        float bestReach = 0f;
+        for (int i = 0; i < 100; i++)
+        {
+            tick++;
+            c.Tick(new TickContext(HumanoidGravity(), terrain, tick));
+            Vector3 want = (pt - c.Chest.Pos).Normalized();
+            Vector3 arm = c.Arms[0].Pos - c.Chest.Pos;
+            if (arm.LengthSquared() > 1e-8f)
+            {
+                float angle = Mathf.RadToDeg(want.AngleTo(arm.Normalized()));
+                if (angle < bestAngleDeg)
+                {
+                    bestAngleDeg = angle;
+                    bestReach = arm.Length();
+                }
+            }
+        }
+        bool pointOk = bestAngleDeg < 10f && bestReach >= c.Arms[0].ArmLength * 0.6f;
+        c.PointTarget = null;
+
+        // —— 持物 ——
+        c.Carrying = true;
+        SettleHumanoid(c, terrain, ref tick, 80);
+        bool carryMode = c.Arms[0].Mode == Arm.ArmMode.HuntRelativePosition;
+        float carryDist = (c.Arms[0].Pos - c.Arms[0].HuntPos).Length();
+        bool carryOk = carryMode && carryDist < 0.2f
+            && (c.MainHandPos - c.Chest.Pos).Length() < c.Arms[0].ArmLength;
+        c.Carrying = false;
+
+        // —— 蓄力（行进中触发，验证强制停驶）——
+        Vector3 g = HumanoidGravity();
+        for (int i = 0; i < 100; i++)
+        {
+            tick++;
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+        Vector3 chargeDir = new Vector3(1f, 0.2f, 0f).Normalized();
+        bool started = c.StartThrowCharge(chargeDir);
+        for (int i = 0; i < 60; i++)
+        {
+            tick++;
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+        Vector3 chestVel = c.Chest.Vel;
+        chestVel.Y = 0f;
+        bool stoppedWhileCharging = chestVel.Length() < 0.005f;
+        Vector3 handRel = c.Arms[0].Pos - c.Chest.Pos;
+        bool handCharged = handRel.Dot(c.Facing) < 0f && handRel.Y > 0.2f;
+
+        // —— 出手 ——
+        Vector3? thrown = c.ReleaseThrow();
+        Vector3? doubleRelease = c.ReleaseThrow();
+        bool throwOk = thrown is { } v
+            && Mathf.Abs(v.Length() - c.ThrowSpeed) < 1e-4f
+            && v.Normalized().Dot(chargeDir) >= 0.999f
+            && doubleRelease is null;
+
+        message = $"未蓄力释放=null:{nullWhenUncharged}；指向最小夹角={bestAngleDeg:F1}°/伸展={bestReach:F2}m（{pointOk}）；" +
+                  $"持物 mode={carryMode}/到位差={carryDist:F2}m（{carryOk}）；蓄力停驶 |v|={chestVel.Length():F4}（{stoppedWhileCharging}）、" +
+                  $"手在身后上方={handCharged}；出手向量契约={throwOk}";
+        return nullWhenUncharged && pointOk && carryOk && started && stoppedWhileCharging && handCharged && throwOk;
+    }
+
+    /// <summary>
+    /// 重力开关边界（评审修复轮固化，两条 HIGH 的机器可查复现）：
+    /// ① 65° 陡壁不可爬——撑地探针法线门槛曾是 0.3（72.5° 以内都算地面），与滑墙的 0.5
+    /// 墙判据之间留了 60°~72.5° 争议带：陡面被重力开关当地面 → 失重 + 髋伺服钉面 +
+    /// 前置探地节节抬高 = 全速爬升 49m 永久悬挂。修后陡面探针被拒 → 重力回归，
+    /// 人形在坡脚停驶，永不出现「悬在高处还失重」。
+    /// ② 贴竖墙的 chunk 接触不是撑地——contact 项曾不看接触法线，击飞撞墙 + 持续推墙时
+    /// 胸-墙接触 5 tick 攒满 GroundedCounter，半空反复失重成粘滞滑降。修后接触按
+    /// 「可站立地面」法线过滤，贴墙下落全程重力在拽。
+    /// </summary>
+    private static bool CheckHumanoidGravityGate(out string message)
+    {
+        // —— 场景 ①：地板 + 65° 陡坡（坡脚 x=3，面法线朝 -X 上方）——
+        float slopeRad = Mathf.DegToRad(65f);
+        var slopeNormal = new Vector3(-Mathf.Sin(slopeRad), Mathf.Cos(slopeRad), 0f);
+        var slopeTerrain = new HalfSpaceTerrain(
+            (Vector3.Up, 0f),
+            (slopeNormal, slopeNormal.X * 3f));
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        Vector3 g = HumanoidGravity();
+        float maxHipsY = 0f;
+        bool weightlessWhileHigh = false;
+        for (long tick = 1; tick <= 800; tick++)
+        {
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, slopeTerrain, tick));
+            maxHipsY = Mathf.Max(maxHipsY, c.Hips.Pos.Y);
+            weightlessWhileHigh |= !c.ApplyGravity && c.Hips.Pos.Y > 1f;
+        }
+        bool slopeOk = !weightlessWhileHigh && maxHipsY < 1f;
+
+        // —— 场景 ②：地板 + x=4 竖墙，击飞撞墙 + 持续推墙 ——
+        var wallTerrain = new HalfSpaceTerrain(
+            (Vector3.Up, 0f),
+            (Vector3.Left, -4f));
+        HumanoidLocomotionController w = MakeHumanoid(new Vector3(2.5f, 0.5f, 0f));
+        long t2 = 0;
+        for (int i = 0; i < 200; i++)
+        {
+            t2++;
+            w.Tick(new TickContext(g, wallTerrain, t2));
+        }
+        w.Launch(new Vector3(0.3f, 0.75f, 0f));
+        bool weightlessMidair = false;
+        float maxAirHips = 0f;
+        for (int i = 0; i < 250; i++)
+        {
+            t2++;
+            w.MoveDir = new Vector3(1f, 0f, 0f);
+            w.RunSpeed = 1f;
+            w.Tick(new TickContext(g, wallTerrain, t2));
+            if (!w.ApplyGravity && w.Hips.Pos.Y > w.HipRideHeight + 0.5f)
+            {
+                weightlessMidair = true;
+                maxAirHips = Mathf.Max(maxAirHips, w.Hips.Pos.Y);
+            }
+        }
+        bool wallOk = !weightlessMidair && w.Hips.Pos.Y < 0.6f && w.Grounded;
+
+        message = $"65°坡：maxHipsY={maxHipsY:F2}m（须 <1，不可爬）、高处失重={weightlessWhileHigh}（须 False）；" +
+                  $"贴墙击飞：半空失重={weightlessMidair}（须 False，max={maxAirHips:F2}m）、" +
+                  $"落地站稳={w.Grounded}（hipsY={w.Hips.Pos.Y:F2}）";
+        return slopeOk && wallOk;
+    }
+
+    /// <summary>双足步态特征（回归钉，用户白盒实测暴露的高频蹭步）：蜥蜴 oldestGrip 错开在两腿
+    /// 拓扑下退化成「对脚一落地本脚即松」——步频锁死在对腿落地延迟（5 tick/步）、步幅仅腿长
+    /// 0.4 倍、释放时脚还在髋前 +0.21、brute 触地 3 tick 永远达不到 GripDelay=4 的 Gripping 判定。
+    /// 修复 = Limb.LookaheadTicks 前瞻点释放（≙ ScavengerLeg）+ 支撑保序 guard。断言钉住：
+    /// 步幅/周期/触地/释放位置/抓地占比/零双悬空 + brute 的 Gripping 占比。</summary>
+    private static bool CheckHumanoidGait(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        long tick = 0;
+        SettleHumanoid(c, terrain, ref tick, 200);
+        var gDir = new Vector3(1f, 0f, 0f);
+        var lastPlant = new Vector3[2];
+        var lastPlantT = new long[2] { -1, -1 };
+        var gripStart = new long[2] { -1, -1 };
+        var prevGc = new int[2];
+        int steps = 0, contacts = 0, releases = 0, bothAir = 0, gripTicks = 0;
+        float strideSum = 0f, releaseAdvSum = 0f;
+        long periodSum = 0, contactSum = 0;
+        for (int i = 0; i < 800; i++)
+        {
+            tick++;
+            c.MoveDir = gDir;
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(HumanoidGravity(), terrain, tick));
+            for (int l = 0; l < 2; l++)
+            {
+                Limb leg = c.Legs[l];
+                if (prevGc[l] == 0 && leg.GripCounter > 0)
+                {
+                    if (lastPlantT[l] >= 0)
+                    {
+                        steps++;
+                        strideSum += (leg.Pos - lastPlant[l]).Dot(gDir);
+                        periodSum += tick - lastPlantT[l];
+                    }
+                    lastPlant[l] = leg.Pos;
+                    lastPlantT[l] = tick;
+                    gripStart[l] = tick;
+                }
+                if (prevGc[l] > 0 && leg.GripCounter == 0 && gripStart[l] >= 0)
+                {
+                    contactSum += tick - gripStart[l];
+                    contacts++;
+                    releaseAdvSum += (leg.Pos - c.Hips.Pos).Dot(gDir);
+                    releases++;
+                }
+                if (leg.Gripping)
+                {
+                    gripTicks++;
+                }
+                prevGc[l] = leg.GripCounter;
+            }
+            if (c.Legs[0].GripCounter == 0 && c.Legs[1].GripCounter == 0)
+            {
+                bothAir++;
+            }
+        }
+        float stride = steps > 0 ? strideSum / steps : 0f;
+        float period = steps > 0 ? (float)periodSum / steps : 0f;
+        float contact = contacts > 0 ? (float)contactSum / contacts : 0f;
+        float relAdv = releases > 0 ? releaseAdvSum / releases : 9f;
+        float duty = gripTicks / 1600f;
+        float airFrac = bothAir / 800f;
+
+        // brute 专项：触地必须撑过它的 GripDelay=4（修前恒 3 tick，Gripping 占比恒 0）。
+        var bTerrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController b =
+            BodyFactory.CreateHumanoidController(new Vector3(0f, 0.5f, 0f), BodyFactory.Brute());
+        long bTick = 0;
+        SettleHumanoid(b, bTerrain, ref bTick, 200);
+        int bGripTicks = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            bTick++;
+            b.MoveDir = gDir;
+            b.RunSpeed = 1f;
+            b.Tick(new TickContext(HumanoidGravity(), bTerrain, bTick));
+            foreach (Limb leg in b.Legs)
+            {
+                if (leg.Gripping)
+                {
+                    bGripTicks++;
+                }
+            }
+        }
+        float bruteDuty = bGripTicks / 800f;
+
+        bool ok = stride >= 0.45f && period >= 7f && contact >= 5f && relAdv <= 0.15f
+            && duty >= 0.3f && airFrac <= 0.02f && bruteDuty >= 0.2f;
+        message = $"stride={stride:F2}m（≥0.45） period={period:F1}t（≥7） contact={contact:F1}t（≥5） " +
+                  $"releaseAdv={relAdv:F2}m（≤0.15） duty={duty:F2}（≥0.3） bothAir={airFrac:F2}（≤0.02） " +
+                  $"bruteDuty={bruteDuty:F2}（≥0.2）";
+        return ok;
+    }
+
+    /// <summary>指关节行走的两手分离（回归钉）：扇扫中轴若朝单一 KnucklePos 汇聚，起点的侧向
+    /// 错开会在命中处被精确抵消、两手锁到同一世界点（用户白盒实测暴露的重合 bug）。平地直行中
+    /// 双手同时锁点的相位必须出现，且两锁点最小间距不得塌向重合——目标点侧向错开给出 ~0.4m
+    /// 底线（斜面最坏收缩仍 >0.24m），门槛取 0.15m 留余量。</summary>
+    private static bool CheckHumanoidHandSpread(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        long tick = 0;
+        SettleHumanoid(c, terrain, ref tick, 200);
+
+        int bothPlanted = 0;
+        float minSep = float.MaxValue;
+        Vector3 g = HumanoidGravity();
+        for (int i = 0; i < 800; i++)
+        {
+            tick++;
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+            if (c.Arms[0].GrabPos is { } g0 && c.Arms[1].GrabPos is { } g1)
+            {
+                bothPlanted++;
+                minSep = Mathf.Min(minSep, (g0 - g1).Length());
+            }
+        }
+
+        bool phaseOk = bothPlanted >= 100;
+        bool sepOk = bothPlanted > 0 && minSep >= 0.15f;
+        message = $"bothPlantedTicks={bothPlanted}/800（须 ≥100）" +
+                  $" minPlantSep={(bothPlanted > 0 ? minSep : 0f):F3}m（须 ≥0.15）";
+        return phaseOk && sepOk;
+    }
+
+    /// <summary>解析半空间并集地形（重力开关边界回归用）：solid = 任一半空间
+    /// { p·Normal ≤ Offset } 之内。射线取最近入面点、起点在体内给零法线（HitFromInside 语义）；
+    /// 球体 MTD 取最深重叠面的法向推出（测试身体不进多面夹角，近似足够）。</summary>
+    private sealed class HalfSpaceTerrain : ITerrainQuery
+    {
+        private readonly (Vector3 Normal, float Offset)[] _faces;
+
+        public HalfSpaceTerrain(params (Vector3 Normal, float Offset)[] faces)
+        {
+            _faces = faces;
+        }
+
+        private bool Inside(Vector3 p)
+        {
+            foreach ((Vector3 n, float d) in _faces)
+            {
+                if (p.Dot(n) <= d)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public bool Raycast(Vector3 from, Vector3 to, out TerrainHit hit)
+        {
+            hit = default;
+            if (Inside(from))
+            {
+                hit = new TerrainHit(from, Vector3.Zero, 1UL);
+                return true;
+            }
+            float best = float.MaxValue;
+            for (int i = 0; i < _faces.Length; i++)
+            {
+                (Vector3 n, float d) = _faces[i];
+                float a = from.Dot(n) - d;
+                float b = to.Dot(n) - d;
+                if (a >= 0f && b < 0f)
+                {
+                    float t = a / (a - b);
+                    if (t < best)
+                    {
+                        best = t;
+                        hit = new TerrainHit(from.Lerp(to, t), n, (ulong)(i + 1));
+                    }
+                }
+            }
+            return best != float.MaxValue;
+        }
+
+        public bool SpherePenetration(Vector3 center, float radius, out Vector3 pushDir, out float depth)
+        {
+            pushDir = Vector3.Up;
+            depth = 0f;
+            foreach ((Vector3 n, float d) in _faces)
+            {
+                float pen = radius - (center.Dot(n) - d);
+                if (pen > depth)
+                {
+                    pushDir = n;
+                    depth = pen;
+                }
+            }
+            return depth > 0f;
+        }
+    }
+
+    /// <summary>Shift/Teleport/Launch 完备性：① 行走中 Shift(+512,0,+512) 对每个带世界坐标的量
+    /// （chunk Pos/LastPos、腿 Pos/LastPos/HuntPos、手 Pos/LastPos/HuntPos/GrabPos、KnucklePos/
+    /// PointTarget/MoveTarget）逐字段精确 + 续走；② Teleport 作废撑点/指向/直喂/蓄力；
+    /// ③ Launch 后坠落再落地续走。</summary>
+    private static bool CheckHumanoidShift(out string message)
+    {
+        var terrain = new PlaneTerrainQuery(0f);
+        HumanoidLocomotionController c = MakeHumanoid(new Vector3(0f, 0.5f, 0f));
+        Vector3 g = HumanoidGravity();
+        long tick = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            tick++;
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+        c.PointTarget = c.Chest.Pos + new Vector3(2f, 0.5f, 0f);
+        c.MoveTarget = c.Chest.Pos + new Vector3(6f, 0f, 0f);
+
+        var delta = new Vector3(512f, 0f, 512f);
+        var expected = new List<(string Name, Vector3 Want)>();
+        foreach (BodyChunk chunk in c.Body.Chunks)
+        {
+            expected.Add(("chunk.Pos", chunk.Pos + delta));
+            expected.Add(("chunk.LastPos", chunk.LastPos + delta));
+        }
+        foreach (Limb leg in c.Legs)
+        {
+            expected.Add(("leg.Pos", leg.Pos + delta));
+            expected.Add(("leg.LastPos", leg.LastPos + delta));
+            expected.Add(("leg.HuntPos", leg.HuntPos + delta));
+        }
+        foreach (Arm arm in c.Arms)
+        {
+            expected.Add(("arm.Pos", arm.Pos + delta));
+            expected.Add(("arm.LastPos", arm.LastPos + delta));
+            expected.Add(("arm.HuntPos", arm.HuntPos + delta));
+            if (arm.GrabPos is { } grab)
+            {
+                expected.Add(("arm.GrabPos", grab + delta));
+            }
+        }
+        bool hadKnuckle = c.KnucklePos is not null;
+        Vector3 knuckleWant = (c.KnucklePos ?? Vector3.Zero) + delta;
+        Vector3 pointWant = c.PointTarget!.Value + delta;
+        Vector3 fedWant = c.MoveTarget!.Value + delta;
+        Vector3 mainHandWant = c.MainHandPos + delta;
+
+        c.Shift(delta);
+
+        var actual = new List<Vector3>();
+        foreach (BodyChunk chunk in c.Body.Chunks)
+        {
+            actual.Add(chunk.Pos);
+            actual.Add(chunk.LastPos);
+        }
+        foreach (Limb leg in c.Legs)
+        {
+            actual.Add(leg.Pos);
+            actual.Add(leg.LastPos);
+            actual.Add(leg.HuntPos);
+        }
+        foreach (Arm arm in c.Arms)
+        {
+            actual.Add(arm.Pos);
+            actual.Add(arm.LastPos);
+            actual.Add(arm.HuntPos);
+            if (arm.GrabPos is { } grab)
+            {
+                actual.Add(grab);
+            }
+        }
+        bool exact = actual.Count == expected.Count;
+        for (int i = 0; exact && i < actual.Count; i++)
+        {
+            exact &= actual[i] == expected[i].Want;
+        }
+        exact &= !hadKnuckle || (c.KnucklePos is { } kp && kp == knuckleWant);
+        exact &= c.PointTarget == pointWant;
+        exact &= c.MoveTarget == fedWant;
+        // MainHandPos 是世界坐标观测（宿主用它钉被持物）：Shift 到下个 Tick 之间读到
+        // 旧位置会把持物钉回原点——完备性契约必须覆盖它。
+        exact &= c.MainHandPos == mainHandWant;
+
+        // 续走（清掉指向/直喂，回到纯方向驱动）
+        c.PointTarget = null;
+        c.MoveTarget = null;
+        Vector3 before = c.Chest.Pos;
+        for (int i = 0; i < 300; i++)
+        {
+            tick++;
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+        Vector3 walked = c.Chest.Pos - before;
+        walked.Y = 0f;
+        float resumeDist = walked.Length();
+        bool resumed = resumeDist > 10f && c.Chest.Pos.IsFinite();
+
+        // Teleport 作废语义
+        c.PointTarget = c.Chest.Pos + new Vector3(1f, 0f, 0f);
+        c.MoveTarget = c.Chest.Pos + new Vector3(2f, 0f, 0f);
+        c.StartThrowCharge(new Vector3(1f, 0f, 0f));
+        c.Teleport(new Vector3(-1000f, 0f, -1000f));
+        bool teleportVoids = c.PointTarget is null && c.MoveTarget is null && c.KnucklePos is null
+            && c.ThrowChargeTicks == 0 && c.ThrowAnimTicks == 0 && c.GroundedCounter == 0;
+        foreach (Arm arm in c.Arms)
+        {
+            teleportVoids &= arm.GrabPos is null && arm.Mode == Arm.ArmMode.Dangle;
+        }
+        foreach (Limb leg in c.Legs)
+        {
+            teleportVoids &= !leg.ReachingForTerrain && !leg.HasGrip;
+        }
+
+        // Launch：坠落 → 落地 → 续走
+        SettleHumanoid(c, terrain, ref tick, 200);
+        c.Launch(new Vector3(0.3f, 0.25f, 0f));
+        tick++;
+        c.Tick(new TickContext(g, terrain, tick));
+        bool launchedAirborne = c.ApplyGravity;
+        for (int i = 0; i < 250; i++)
+        {
+            tick++;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+        before = c.Chest.Pos;
+        for (int i = 0; i < 200; i++)
+        {
+            tick++;
+            c.MoveDir = new Vector3(1f, 0f, 0f);
+            c.RunSpeed = 1f;
+            c.Tick(new TickContext(g, terrain, tick));
+        }
+        walked = c.Chest.Pos - before;
+        walked.Y = 0f;
+        bool launchRecovered = launchedAirborne && walked.Length() > 8f && c.Uprightness > 0.6f;
+
+        message = $"Shift 逐字段精确={exact}（{actual.Count} 项 + knuckle/point/fed），续走 {resumeDist:F2}m，" +
+                  $"resumed={resumed}；Teleport 作废撑点/指向/直喂/蓄力={teleportVoids}；" +
+                  $"Launch 坠落={launchedAirborne} 落地续走 {walked.Length():F2}m+回正={launchRecovered}";
+        return exact && resumed && teleportVoids && launchRecovered;
     }
 }

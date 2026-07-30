@@ -116,6 +116,17 @@ public partial class SandboxWorld : Node3D
     private readonly List<Body> _bodies = new();
     private LizardLocomotionController _lizardController = null!;
     private BreedParams _breed = BodyFactory.Default();
+
+    // —— 人形物种（--species=humanoid / 数字键 5~7）：驱动/指标/渲染全部收在 driver 里，
+    // 本类只做物种分流的早退分支——蜥蜴代码路径一字不动（20 条哈希基线不受牵连）。 ——
+    private HumanoidSandboxDriver? _humanoid;
+    private bool _speciesHumanoid;
+    private string? _breedName; // --breed= 原始名（物种确定后再各自解析）
+    private Vector3[] _humanoidWaypoints = System.Array.Empty<Vector3>();
+    private bool _humanoidAct;
+    private long _stunTick = -1;
+    private int _stunDuration;
+    private bool _lizardRouteSet; // 蜥蜴专属路线开关被使用（与 --species=humanoid 互斥校验）
     private readonly RaycastTerrainQuery _terrain = new();
     private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
@@ -154,27 +165,62 @@ public partial class SandboxWorld : Node3D
         }
         _rayDebug = new RayDebugDraw(_terrain);
         _rayDebug.Build(this);
-        SpawnLizard(_breed, _spawn);
+        if (_speciesHumanoid)
+        {
+            SpawnHumanoid(BodyFactory.HumanoidByName(_breedName ?? "scavenger"), _spawn);
+        }
+        else
+        {
+            SpawnLizard(_breed, _spawn);
+        }
         if (_perturb != 0f)
         {
-            _lizardController.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
-            _lizardController.Body.Chunks[0].LastPos = _lizardController.Body.Chunks[0].Pos;
+            // 微扰打在活动身体的 chunk 0 上（蜥蜴=头 / 人形=胸），物种各自等价。
+            BodyChunk c0 = _bodies[0].Chunks[0];
+            c0.Pos += new Vector3(_perturb, 0f, 0f);
+            c0.LastPos = c0.Pos;
         }
         if (_probe is null)
         {
             // 确定性回归模式禁交互输入（含品种切换），UI 面板只在交互模式下建——与数字键的既有限制对齐。
+            // 名单 = 蜥蜴品种 + 人形品种拼接（数字键 1~4 蜥蜴、5~7 人形，UI 层拼接不动路由表）。
             BreedParams[] breeds = BodyFactory.AllBreeds();
-            var names = new string[breeds.Length];
+            HumanoidParams[] humanoids = BodyFactory.AllHumanoids();
+            var names = new string[breeds.Length + humanoids.Length];
             for (int i = 0; i < breeds.Length; i++)
             {
                 names[i] = breeds[i].Name;
             }
+            for (int i = 0; i < humanoids.Length; i++)
+            {
+                names[breeds.Length + i] = humanoids[i].Name;
+            }
             _breedUI = new BreedSelectorUI();
             _breedUI.Build(this, names, SelectBreed);
-            _breedUI.SyncSelection(Array.FindIndex(breeds, b => b.Name == _breed.Name));
+            int selected = _speciesHumanoid
+                ? breeds.Length + Array.FindIndex(humanoids, h => h.Name == _humanoid!.Breed.Name)
+                : Array.FindIndex(breeds, b => b.Name == _breed.Name);
+            _breedUI.SyncSelection(selected);
         }
-        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, breed={_breed.Name}, " +
+        GD.Print($"[SANDBOX] ready, tps={Engine.PhysicsTicksPerSecond}, " +
+                 $"breed={(_humanoid is not null ? _humanoid.Breed.Name : _breed.Name)}, " +
+                 $"species={(_speciesHumanoid ? "humanoid" : "lizard")}, " +
                  $"determinism={(_probe is not null ? "on" : "off")}");
+    }
+
+    /// <summary>（重）生成人形：驱动器负责物理/渲染重建（数字键 5~7 换品种共用此路径）。</summary>
+    private void SpawnHumanoid(HumanoidParams breed, Vector3 origin)
+    {
+        _humanoid ??= new HumanoidSandboxDriver
+        {
+            Waypoints = _humanoidWaypoints,
+            ActScript = _humanoidAct,
+            StunTick = _stunTick,
+            StunDuration = _stunDuration,
+        };
+        _renderer.Clear(); // 清掉蜥蜴渲染残留（若刚从蜥蜴切换过来）
+        _drag.Release();
+        _humanoid.Spawn(this, breed, origin, ConstraintIterations, _bodies);
     }
 
     /// <summary>（重）生成行走体：替换物理对象并重建渲染节点（数字键换品种共用此路径）。</summary>
@@ -199,6 +245,12 @@ public partial class SandboxWorld : Node3D
         _tick++;
         _terrain.Bind(GetWorld3D().DirectSpaceState);
         _rayDebug.BeginTick();
+
+        if (_humanoid is not null)
+        {
+            HumanoidPhysicsTick();
+            return;
+        }
 
         if (_probe is null)
         {
@@ -228,6 +280,41 @@ public partial class SandboxWorld : Node3D
             if (_probe.Finished)
             {
                 GetTree().Quit(DumpFinalState());
+            }
+        }
+    }
+
+    /// <summary>人形物种的固定步长分支（蜥蜴路径的物种并列版；驱动细节全在 driver 里）。</summary>
+    private void HumanoidPhysicsTick()
+    {
+        HumanoidSandboxDriver driver = _humanoid!;
+        if (_probe is null)
+        {
+            _drag.SampleInput(_camera, _bodies);
+            _drag.ApplyDragForce();
+            driver.SampleWalkInput(_camera, _rayDebug, WantCameraFly);
+        }
+        else
+        {
+            driver.SteerScripted(_tick);
+        }
+
+        if (_yankTick >= 0 && _tick == _yankTick)
+        {
+            driver.Controller.Launch(new Vector3(0.1f, 0.4f, 0.15f));
+            driver.NotifyLaunch(_tick);
+        }
+
+        var ctx = new TickContext(_gravityPerTick, _rayDebug, _tick);
+        driver.Controller.Tick(ctx);
+        driver.PostTick(_tick, _gravityPerTick);
+
+        if (_probe is not null)
+        {
+            _probe.Record(_tick, _bodies, driver.Controller.Legs, driver.Controller.Arms);
+            if (_probe.Finished)
+            {
+                GetTree().Quit(driver.DumpFinalState(_probe, _expectHash, _tick));
             }
         }
     }
@@ -1261,6 +1348,13 @@ public partial class SandboxWorld : Node3D
             return;
         }
         UpdateCameraFly((float)delta);
+        if (_humanoid is not null)
+        {
+            _humanoid.Renderer.Draw((float)Engine.GetPhysicsInterpolationFraction(), _humanoid.ThrownProp,
+                _rayDebug.Enabled);
+            _rayDebug.Draw(_camera);
+            return;
+        }
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
         _rayDebug.Draw(_camera, _lizardController);
     }
@@ -1321,6 +1415,36 @@ public partial class SandboxWorld : Node3D
             }
             return;
         }
+        // 人形演示键位（交互模式限定）：P=指向鼠标点、C=持物开关、T=按住蓄力/松开投掷。
+        // T 要响应松开事件，必须在下面的 Pressed 过滤之前处理。
+        if (_humanoid is not null && _probe is null && @event is InputEventKey hk)
+        {
+            if (hk.PhysicalKeycode == Key.T)
+            {
+                if (hk is { Pressed: true, Echo: false })
+                {
+                    _humanoid.BeginThrowCharge();
+                }
+                else if (!hk.Pressed)
+                {
+                    _humanoid.ReleaseThrowInteractive();
+                }
+                return;
+            }
+            if (hk is { Pressed: true, Echo: false })
+            {
+                if (hk.PhysicalKeycode == Key.P)
+                {
+                    _humanoid.TogglePoint(_camera, _rayDebug);
+                    return;
+                }
+                if (hk.PhysicalKeycode == Key.C)
+                {
+                    _humanoid.ToggleCarry();
+                    return;
+                }
+            }
+        }
         if (@event is not InputEventKey { Pressed: true, Echo: false } key)
         {
             return;
@@ -1338,18 +1462,35 @@ public partial class SandboxWorld : Node3D
         SelectBreed((int)(key.PhysicalKeycode - Key.Key1));
     }
 
-    /// <summary>数字键与下拉面板共用的换品种入口，保证两个输入源互相同步。</summary>
+    /// <summary>数字键与下拉面板共用的换品种入口，保证两个输入源互相同步。
+    /// 名单序 = 蜥蜴 4 预设 + 人形 3 预设：跨物种切换时旧物种的渲染/驱动整体拆除。</summary>
     private void SelectBreed(int index)
     {
         BreedParams[] breeds = BodyFactory.AllBreeds();
-        if (index < 0 || index >= breeds.Length)
+        HumanoidParams[] humanoids = BodyFactory.AllHumanoids();
+        if (index < 0 || index >= breeds.Length + humanoids.Length)
         {
             return;
         }
         // 在原地上方重生：旧身体整体替换（物理与渲染都换新），品种对比不用重启场景。
-        SpawnLizard(breeds[index], _lizardController.Hips.Pos + Vector3.Up * 0.5f);
+        Vector3 origin = (_humanoid is not null ? _humanoid.Controller.Hips.Pos : _lizardController.Hips.Pos)
+            + Vector3.Up * 0.5f;
+        if (index < breeds.Length)
+        {
+            if (_humanoid is not null)
+            {
+                _humanoid.Renderer.Clear();
+                _humanoid = null;
+            }
+            SpawnLizard(breeds[index], origin);
+            GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
+        }
+        else
+        {
+            SpawnHumanoid(humanoids[index - breeds.Length], origin);
+            GD.Print($"[SANDBOX] breed -> {humanoids[index - breeds.Length].Name} (humanoid)");
+        }
         _breedUI?.SyncSelection(index);
-        GD.Print($"[SANDBOX] breed -> {breeds[index].Name}");
     }
 
     /// <summary>解析 `-- --determinism=N [--tps=400]`：无头回归模式，禁输入、可加速跑。
@@ -1389,27 +1530,32 @@ public partial class SandboxWorld : Node3D
                 else if (arg == "--route=wall")
                 {
                     _waypoints = WallRoute;
+                    _lizardRouteSet = true;
                 }
                 else if (arg == "--route=turn")
                 {
                     _waypoints = TurnRoute;
                     _regressionScenario = RegressionScenario.Turn;
+                    _lizardRouteSet = true;
                 }
                 else if (arg == "--route=wall-turn")
                 {
                     _waypoints = StandRoute;
                     _regressionScenario = RegressionScenario.Turn;
                     _wallTurnDrive = true;
+                    _lizardRouteSet = true;
                 }
                 else if (arg == "--route=wall-tail")
                 {
                     _waypoints = WallRoute;
                     _regressionScenario = RegressionScenario.Tail;
+                    _lizardRouteSet = true;
                 }
                 else if (arg == "--route=wall-corner")
                 {
                     _waypoints = WallRoute;
                     _regressionScenario = RegressionScenario.Corner;
+                    _lizardRouteSet = true;
                 }
                 else if (arg == "--route=stand")
                 {
@@ -1419,16 +1565,46 @@ public partial class SandboxWorld : Node3D
                 {
                     _waypoints = CarrotRoute;
                     _carrotDrive = true;
+                    _lizardRouteSet = true;
                 }
                 else if (arg == "--route=carrot-turn")
                 {
                     _waypoints = StandRoute;
                     _regressionScenario = RegressionScenario.CarrotTurn;
                     _carrotTurnDrive = true;
+                    _lizardRouteSet = true;
+                }
+                else if (arg == "--species=humanoid")
+                {
+                    _speciesHumanoid = true;
+                }
+                else if (arg == "--route=hwalk")
+                {
+                    _humanoidWaypoints = HumanoidSandboxDriver.WalkRoute;
+                }
+                else if (arg == "--route=hact")
+                {
+                    _humanoidAct = true;
+                }
+                else if (arg.StartsWith("--stun="))
+                {
+                    string[] parts = arg["--stun=".Length..].Split(',');
+                    if (parts.Length != 2)
+                    {
+                        throw new System.FormatException("stun 需要 T,D 两个分量（起始 tick, 持续 tick）");
+                    }
+                    _stunTick = long.Parse(parts[0], inv);
+                    _stunDuration = int.Parse(parts[1], inv);
+                    if (_stunTick < 1 || _stunDuration < 1)
+                    {
+                        throw new System.FormatException("stun 的起始与持续都必须为正");
+                    }
                 }
                 else if (arg.StartsWith("--breed="))
                 {
-                    _breed = BodyFactory.ByName(arg["--breed=".Length..]);
+                    // 原始名两个物种各自解析（蜥蜴立即解析保持既有行为；人形在 _Ready 里按名取）。
+                    _breedName = arg["--breed=".Length..];
+                    _breed = BodyFactory.ByName(_breedName);
                 }
                 else if (arg.StartsWith("--perturb="))
                 {
@@ -1474,6 +1650,48 @@ public partial class SandboxWorld : Node3D
             // 断言只在探针结束时执行——没有探针它静默蒸发且进程永不退出（终审 C6）。
             GD.PrintErr("[SANDBOX] --expect-hash 需要配合 --determinism");
             return false;
+        }
+        if (_speciesHumanoid && _lizardRouteSet)
+        {
+            // 物种/路线错配必须硬拒——人形静默跑蜥蜴路线（或反之）会对着错误基线绿灯。
+            GD.PrintErr("[SANDBOX] --species=humanoid 只能配 --route=hwalk|hact|stand（蜥蜴路线是蜥蜴专属）");
+            return false;
+        }
+        if (!_speciesHumanoid
+            && (_humanoidWaypoints.Length > 0 || _humanoidAct || _stunTick >= 0))
+        {
+            GD.PrintErr("[SANDBOX] --route=hwalk|hact / --stun= 需要配合 --species=humanoid");
+            return false;
+        }
+        if (_breedName is { } rawBreed)
+        {
+            // 内核 ByName/HumanoidByName 契约是静默回落（内核零日志）；CLI 层必须硬拒——
+            // 品种名打错安静跑成默认品种，会对着错误基线绿灯（与未知参数硬拒同一条纪律）。
+            string resolved = _speciesHumanoid
+                ? BodyFactory.HumanoidByName(rawBreed).Name
+                : BodyFactory.ByName(rawBreed).Name;
+            if (resolved != rawBreed)
+            {
+                GD.PrintErr($"[SANDBOX] 未知品种: {rawBreed}" +
+                            $"（{(_speciesHumanoid ? "humanoid" : "lizard")} 物种下无此名）");
+                return false;
+            }
+        }
+        if (_probe is not null)
+        {
+            // 事件时刻越出探针预算 = 事件从未发生、场景断言静默蒸发（假绿）。给恢复窗留余量。
+            const int recoveryBudget = 250;
+            if (_yankTick >= 0 && _yankTick + recoveryBudget > _determinismTicks)
+            {
+                GD.PrintErr($"[SANDBOX] --yank={_yankTick} 越界：须 ≤ determinism-{recoveryBudget}");
+                return false;
+            }
+            if (_stunTick >= 0 && _stunTick + _stunDuration + recoveryBudget > _determinismTicks)
+            {
+                GD.PrintErr($"[SANDBOX] --stun={_stunTick},{_stunDuration} 越界：" +
+                            $"苏醒+恢复窗须落在 determinism 预算内（余量 {recoveryBudget}）");
+                return false;
+            }
         }
         return true;
     }

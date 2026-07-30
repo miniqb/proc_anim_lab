@@ -1,7 +1,9 @@
 #!/bin/bash
-# 确定性全矩阵回归：20 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
+# 确定性全矩阵回归：28 配置 × 硬断言（哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
 # 位置检查 / 退出码聚合）。任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、
 # 探针只打印不断言, NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
+# 蜥蜴 20 配置 + 人形（--species=humanoid）8 配置：巡逻/双跑/40Hz 时基/击飞爬起/昏迷苏醒/
+# 动作脚本/两变体。
 #
 # 有意改内核后重定基线：先人工核对各配置 [METRIC]/[FINAL] 合理，再同步更新下方哈希表与
 # core/smoke/Program.cs 的 ExpectedHash（基线哈希只存这两处，别处一律引用不复制），
@@ -30,6 +32,13 @@ HASH_CARROT_TURN_HEAVY=3771A59BBEA8BFC2
 HASH_CARROT_TURN_HEXAPOD=5242DACF5544403E
 HASH_WALL_TAIL=4E84FC3E4EBA1BE3
 HASH_WALL_CORNER=CCCFDC1A3D452797
+# —— 人形（HumanoidLocomotionController；smoke 侧对应 HumanoidExpectedHash）——
+HASH_HUMANOID=5CF8E13698D5B063
+HASH_HUMANOID_YANK=EF36380038C24A6C
+HASH_HUMANOID_STUN=6628D23755468053
+HASH_HUMANOID_ACT=798C7D211B0DC39B
+HASH_HUMANOID_BRUTE=22EAD0333D21F7AA
+HASH_HUMANOID_WAIF=DB623B44578EF033
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -105,6 +114,18 @@ run hexapod    "$HASH_HEXAPOD"  8  2000 --tps=400 --breed=hexapod
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0
 
+# —— 人形物种（[RESULT] 判定在 HumanoidSandboxDriver.DumpFinalState）——
+# hwalk = 坡→平地→跨台阶三点巡逻；yank = 行进中击飞后限时回正续走；stun = 昏迷瘫倒+苏醒爬起；
+# act = 指向→持物→蓄力停驶→出手 动作脚本；brute/waif = 品种变体各自巡逻。
+run humanoid       "$HASH_HUMANOID"       20 2000 --tps=400 --species=humanoid --route=hwalk
+run humanoid-b     "$HASH_HUMANOID"       20 2000 --tps=400 --species=humanoid --route=hwalk
+run humanoid-40    "$HASH_HUMANOID"       20 2000 --species=humanoid --route=hwalk
+run humanoid-yank  "$HASH_HUMANOID_YANK"  19 2000 --tps=400 --species=humanoid --route=hwalk --yank=600
+run humanoid-stun  "$HASH_HUMANOID_STUN"  -  1200 --tps=400 --species=humanoid --stun=500,120
+run humanoid-act   "$HASH_HUMANOID_ACT"   -  900  --tps=400 --species=humanoid --route=hact
+run humanoid-brute "$HASH_HUMANOID_BRUTE" 17 2000 --tps=400 --species=humanoid --route=hwalk --breed=brute
+run humanoid-waif  "$HASH_HUMANOID_WAIF"  25 2000 --tps=400 --species=humanoid --route=hwalk --breed=waif
+
 # 嵌入脱困:60 tick 后所有 chunk 必须已被 MTD 推出地板（旧版 HitFromInside 永久冻结）
 if grep '^\[FINAL\] body' "$OUT/embed.txt" | awk -F'pos=\\(' '{split($2,a,","); if (a[2]+0 < -0.01) bad=1} END {exit bad}'; then
     echo "[embed-escape] PASS"
@@ -128,6 +149,13 @@ if diff <(grep '^\[DET\]' "$OUT/default.txt") <(grep '^\[DET\]' "$OUT/default-b.
     echo "[double-run] PASS"
 else
     echo "[double-run] FAIL：两次 default 的 [DET] 序列不一致"; fail=1
+fi
+
+# 人形双跑逐字节（哈希折叠含手臂：chunks → legs → arms）
+if diff <(grep '^\[DET\]' "$OUT/humanoid.txt") <(grep '^\[DET\]' "$OUT/humanoid-b.txt") > /dev/null; then
+    echo "[humanoid-double-run] PASS"
+else
+    echo "[humanoid-double-run] FAIL：两次 humanoid 的 [DET] 序列不一致"; fail=1
 fi
 
 # 灵敏度：微扰后终值哈希必须偏离基线（哈希对状态不敏感 = 回归全盲）

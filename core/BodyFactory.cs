@@ -239,4 +239,224 @@ public static class BodyFactory
         }
         return controller;
     }
+
+    // ================= 人形（Humanoid，≙ Scavenger 拾荒者）=================
+    // 与蜥蜴并列的第二类装配线：3 chunk 直立躯干 + 双 Limb 腿 + 双 Arm 手臂。
+    // 预设走独立的 AllHumanoids() 路由表——不混入 AllBreeds()（那张表被
+    // CreateLizardController 与蜥蜴脊柱拓扑断言绑定）。
+
+    /// <summary>双足出生站距（米，脚沿 Z 轴外撇的半距——双足比蜥蜴四腿窄）。</summary>
+    private const float HumanoidFootSpread = 0.15f;
+
+    /// <summary>基线人形（≙ Scavenger 直接换算）：长臂指关节行走、长颈、胸重根。</summary>
+    public static HumanoidParams Scavenger() => new();
+
+    /// <summary>魁梧重型：大体格短脖、力偶更猛、腿慢步大、臂长但迟钝——搬山的憨货。</summary>
+    public static HumanoidParams Brute() => new()
+    {
+        Name = "brute",
+        ChestRadius = 0.30f,
+        HipsRadius = 0.22f,
+        HeadRadius = 0.14f,
+        ChestMass = 0.9f,
+        HipsMass = 0.55f,
+        HeadMass = 0.1f,
+        ChestHipsDist = 0.55f,
+        NeckLength = 0.5f,
+        StandCoupleMax = 0.16f,
+        StandCoupleMin = 0.009f,
+        HeadPush = 0.009f,
+        LeanPush = 0.003f,
+        HeadLean = 0.85f,
+        HipRideHeight = 0.3f,
+        ChestDamping = 0.88f,
+        HipsDamping = 0.72f,
+        BaseSpeed = 0.05f,
+        MaxMoveSpeed = 0.07f,
+        LegLength = 0.7f,
+        FootRadius = 0.07f,
+        LegSpeed = 0.24f,
+        LegQuickness = 0.55f,
+        LegGripDelay = 4,
+        StepLength = 0.7f,
+        LiftFeet = 0.25f,
+        LegLateral = 0.38f,
+        ArmLength = 1.35f,
+        HandRadius = 0.075f,
+        ArmSpeed = 0.45f,
+        ArmQuickness = 0.8f,
+        ArmExaggerate = 0.05f,
+        KnucklePumpMin = 0.02f,
+        KnucklePumpMax = 0.1f,
+    };
+
+    /// <summary>瘦小敏捷型：细长脖小体格、快腿小步、手快而甩——上蹿下跳的小贼。</summary>
+    public static HumanoidParams Waif() => new()
+    {
+        Name = "waif",
+        ChestRadius = 0.19f,
+        HipsRadius = 0.14f,
+        HeadRadius = 0.10f,
+        ChestMass = 0.35f,
+        HipsMass = 0.2f,
+        HeadMass = 0.04f,
+        ChestHipsDist = 0.4f,
+        NeckLength = 0.6f,
+        StandCoupleMax = 0.11f,
+        StandCoupleMin = 0.006f,
+        HeadPush = 0.006f,
+        LeanPush = 0.0008f,
+        HeadLean = 0.4f,
+        HipRideHeight = 0.2f,
+        ChestDamping = 0.92f,
+        HipsDamping = 0.9f,
+        HeadDamping = 0.88f,
+        BaseSpeed = 0.075f,
+        MaxMoveSpeed = 0.1f,
+        LegLength = 0.5f,
+        FootRadius = 0.05f,
+        LegSpeed = 0.35f,
+        LegQuickness = 0.8f,
+        StepLength = 0.55f,
+        LiftFeet = 0.15f,
+        LegLateral = 0.25f,
+        ArmLength = 1.05f,
+        HandRadius = 0.05f,
+        ArmSpeed = 0.7f,
+        ArmExaggerate = 0.15f,
+        KnuckleBehindWindow = 0.4f,
+        KnuckleAheadWindow = 3.0f,
+        KnucklePumpFar = 0.8f,
+        KnucklePumpNear = 0.2f,
+        KnucklePumpMin = 0.008f,
+        KnucklePumpMax = 0.06f,
+    };
+
+    /// <summary>沙盒可切换的人形品种表（品种键位与 --breed= 在人形物种下共用此序）。</summary>
+    public static HumanoidParams[] AllHumanoids() => new[] { Scavenger(), Brute(), Waif() };
+
+    /// <summary>按名取人形预设；未知名回落 scavenger（内核零日志——调用侧自行比对返回值的 Name）。</summary>
+    public static HumanoidParams HumanoidByName(string name)
+    {
+        foreach (HumanoidParams p in AllHumanoids())
+        {
+            if (p.Name == name)
+            {
+                return p;
+            }
+        }
+        return Scavenger();
+    }
+
+    /// <summary>
+    /// 按人形参数表装配（≙ Scavenger 构造）。出生姿态：髋在 origin、胸在髋上、头在胸上
+    /// （直立），脚垂髋下左右错开（对角相位种子——双腿严格比较 gripCounter 打破平局），
+    /// 手垂胸侧。chunk 折叠序固定 [胸, 髋, 头]（≙ RW bodyChunks 0/1/2，确定性哈希按此序）。
+    /// </summary>
+    public static HumanoidLocomotionController CreateHumanoidController(Vector3 origin, HumanoidParams p)
+    {
+        var body = new Body();
+        var chest = new BodyChunk(origin + new Vector3(0f, p.ChestHipsDist, 0f), p.ChestRadius, p.ChestMass);
+        var hips = new BodyChunk(origin, p.HipsRadius, p.HipsMass);
+        var head = new BodyChunk(chest.Pos + new Vector3(0f, p.NeckLength * 0.9f, 0f), p.HeadRadius, p.HeadMass);
+        body.Chunks.Add(chest);
+        body.Chunks.Add(hips);
+        body.Chunks.Add(head);
+
+        // 胸↔髋双向刚性（≙ bodyChunkConnections[0] Type.Normal）：躯干杆——站立时承重的构件。
+        // WeightA 按质量反比（≙ RW 传 -1 用质量分配）：胸重少动。
+        body.Connections.Add(new ChunkConnection(chest, hips, p.ChestHipsDist,
+            weightA: p.HipsMass / (p.ChestMass + p.HipsMass))
+        {
+            ConstraintMode = ChunkConnection.Mode.Rigid,
+            Elasticity = 0.25f,
+        });
+        // 胸↔头只防拉长（≙ bodyChunkConnections[1] Type.Pull）：脖可压缩不可拉断，长颈剪影。
+        body.Connections.Add(new ChunkConnection(chest, head, p.NeckLength,
+            weightA: p.HeadMass / (p.ChestMass + p.HeadMass))
+        {
+            ConstraintMode = ChunkConnection.Mode.PullOnly,
+            Elasticity = 0.25f,
+        });
+
+        // 朝向钉定（同蜥蜴工厂的显式重申，不吃建链顺序巧合）：胸→髋 = 躯干上轴（人形的
+        // Rotation 是「上」不是「前」——前向是控制器的 Facing，消费端注意语义差）；
+        // 髋→胸 = 指向下方（消费侧翻转）；头→胸 = 头的朝上轴。
+        chest.RotationChunk = hips;
+        hips.RotationChunk = chest;
+        head.RotationChunk = chest;
+
+        // RW Scavenger 物性：airFriction 0.999（近零风阻——清醒时的真实阻尼是控制器的
+        // 逐 chunk 各向异性档）；SurfaceFriction 与 GravityScale 由控制器每 tick 按撑地状态切档。
+        body.AirFriction = 0.999f;
+
+        var controller = new HumanoidLocomotionController(body, chest, hips, head)
+        {
+            BaseSpeed = p.BaseSpeed,
+            MaxMoveSpeed = p.MaxMoveSpeed,
+            StandCoupleMax = p.StandCoupleMax,
+            StandCoupleMin = p.StandCoupleMin,
+            HeadPush = p.HeadPush,
+            LeanPush = p.LeanPush,
+            HeadLean = p.HeadLean,
+            NeckLength = p.NeckLength,
+            HipRideHeight = p.HipRideHeight,
+            HipLiftGain = p.HipLiftGain,
+            HipVelYDamp = p.HipVelYDamp,
+            ChestDamping = p.ChestDamping,
+            HipsDamping = p.HipsDamping,
+            HeadDamping = p.HeadDamping,
+            ArmLength = p.ArmLength,
+            KnuckleBehindWindow = p.KnuckleBehindWindow,
+            KnuckleAheadWindow = p.KnuckleAheadWindow,
+            KnucklePumpFar = p.KnucklePumpFar,
+            KnucklePumpNear = p.KnucklePumpNear,
+            KnucklePumpMin = p.KnucklePumpMin,
+            KnucklePumpMax = p.KnucklePumpMax,
+            SmoothGait = p.SmoothenLegMovement,
+        };
+
+        // 双腿：anchor=髋（≙ ScavengerLeg connection=髋），出生错位相反 = 对角相位种子。
+        foreach (int side in new[] { -1, +1 })
+        {
+            float stagger = LegStagger * side * -1f;
+            Vector3 foot = hips.Pos + new Vector3(-0.1f + stagger, -p.HipsRadius, side * HumanoidFootSpread);
+            var leg = new Limb(hips, foot, p.FootRadius, side)
+            {
+                JointDist = p.LegLength,
+                HuntSpeed = p.LegSpeed,
+                Quickness = p.LegQuickness,
+                GripDelay = p.LegGripDelay,
+                StepLength = p.StepLength,
+                LiftFeet = p.LiftFeet,
+                FeetDown = p.FeetDown,
+                PairLateral = p.LegLateral,
+                LookaheadTicks = 10, // ≙ ScavengerLeg.IdealPos 的 connection.vel*10——双足必须走前瞻点循环
+            };
+            controller.Legs.Add(leg);
+        }
+        controller.Legs[0].Pair = controller.Legs[1];
+        controller.Legs[1].Pair = controller.Legs[0];
+
+        // 双臂：anchor=胸（≙ ScavengerHand connection=mainBodyChunk），[0]=左=主手。
+        foreach (int side in new[] { -1, +1 })
+        {
+            Vector3 hand = chest.Pos + new Vector3(0.1f, -p.ArmLength * 0.5f,
+                side * (p.ChestRadius + p.HandRadius));
+            var arm = new Arm(chest, hand, p.HandRadius, side)
+            {
+                ArmLength = p.ArmLength,
+                HuntSpeed = p.ArmSpeed,
+                Quickness = p.ArmQuickness,
+                DefaultHuntSpeed = p.ArmSpeed,
+                DefaultQuickness = p.ArmQuickness,
+                AdaptVel = p.ArmAdaptVel,
+                Exaggerate = p.ArmExaggerate,
+                ArmpitGap = p.ChestRadius + p.HandRadius,
+            };
+            controller.Arms.Add(arm);
+        }
+
+        return controller;
+    }
 }

@@ -104,6 +104,13 @@ public sealed class Limb
 	/// <summary>判定「已抓稳」所需连续 tick 数（≙ limbGripDelay）。</summary>
 	public int GripDelay = 4;
 
+	/// <summary>&gt;0 = 前瞻点释放循环（≙ ScavengerLeg：IdealPos = 锚点 + clamp(锚点速度×此值, JointDist)，
+	/// 锁点离 IdealPos 超过腿长才松开，松开后立即重找——步频步幅随速度自适应）。0 = 蜥蜴原循环
+	/// （trail 拉伸释放 + oldestGrip 错开）。双足人形必须用前者：oldestGrip 的「其余腿全抓稳」
+	/// 在两腿拓扑下退化成「对脚一落地本脚即松」，触地被锁死在对腿落地延迟（3 tick）、释放时
+	/// 脚还在髋前——高频小碎步正反馈（用户白盒实测暴露）。RW 字面量 10（连接速度×10）。</summary>
+	public int LookaheadTicks;
+
 	/// <summary>触发闲置休息位所需的连续找不到落点 tick 数（只在无移动意图时累计）。</summary>
 	public int IdleAfterTicks = 20;
 
@@ -194,6 +201,25 @@ public sealed class Limb
 				else if (++_gripFailTicks > IdleAfterTicks)
 				{
 					IdlePose = true; // 站着没事干还够不着地：收脚休息，别橙色悬在最大前伸位
+				}
+			}
+			else if (LookaheadTicks > 0)
+			{
+				// 前瞻点释放（≙ ScavengerLeg.Update：!DistLess(IdealPos, absoluteHuntPos, legLength)
+				// → 松开）：锁点落到「锚点 + 速度前瞻」的可及圈外才释放，且保持 ReachingForTerrain
+				// ——下 tick 立即重找（RW 无摆动期门槛）。快跑前瞻远 → 脚在髋前小患即换步；
+				// 慢走前瞻缩回锚点 → 踩到腿长极限才松。不走 trail/oldestGrip/extraLongStep 三段。
+				// 支撑保序 guard：对脚踩稳（GripCounter>0）才允许本脚松开——两脚的 FindGrip 目标
+				// 前后对称，站定时会落到同一 x、之后同起同落成跳步；RW 靠环境噪声天然错相，
+				// 这里用 guard + 腿表 tick 顺序做确定性等价物（同 tick 双到期：先 tick 的腿松开并
+				// 清零计数，后 tick 的腿看到对脚已腾空而持稳半拍——反相自锁、无周期漂移）。
+				// 1.75 失效阀：对脚长期找不到落点时本脚不被拖行钉死。
+				Vector3 ideal = Anchor.Pos + (Anchor.Vel * LookaheadTicks).LimitLength(JointDist);
+				float overdue = (HuntPos - ideal).Length();
+				if (overdue > JointDist
+					&& (Pair is null || Pair.GripCounter > 0 || overdue > JointDist * 1.75f))
+				{
+					HasGrip = false;
 				}
 			}
 			else
@@ -321,6 +347,15 @@ public sealed class Limb
 		float maxRadius = JointDist - OverlapPad;
 		Vector3 goal = Anchor.Pos + dir * maxRadius;
 
+		// 可及判定：前瞻循环以 IdealPos 为心、半径取全腿长（≙ RW FindGrip(room, IdealPos,
+		// IdealPos, legLength, …) 的搜索半径语义——锁点允许暂超腿长，ConnectToAnchor 钳制
+		// 拖住脚等髋赶上）；蜥蜴路径维持锚点为心、maxRadius 半径，逐位不变。以锚点为心会
+		// 拒掉全部前伸落点，高髋短腿预设（waif）被压成 4 tick 碎步。
+		Vector3 reachCenter = LookaheadTicks > 0
+			? Anchor.Pos + (Anchor.Vel * LookaheadTicks).LimitLength(JointDist)
+			: Anchor.Pos;
+		float reachRadius = LookaheadTicks > 0 ? JointDist : maxRadius;
+
 		// 采样带沿步进方向的面内投影铺开（goal 上下扫的是支撑向射线，面内才需要错开）。
 		Vector3 alongSurface = stepDir - up * stepDir.Dot(up);
 		alongSurface = alongSurface.LengthSquared() < 1e-8f ? Vector3.Zero : alongSurface.Normalized();
@@ -337,7 +372,7 @@ public sealed class Limb
 			{
 				return;
 			}
-			if ((hit.Point - Anchor.Pos).Length() > maxRadius)
+			if ((hit.Point - reachCenter).Length() > reachRadius)
 			{
 				return;
 			}
