@@ -8,18 +8,23 @@
 
 ## 文件
 
-- 内核：`BodyChunk` / `ChunkConnection` / `Body`（chunk 物理）、`Limb`（plant-and-trail 腿）、
-  `LizardLocomotionController`（重力开关 + 支撑系 + 推进）、`SphereTerrain`（球-地形共用解算）
-- 配置：`BreedParams`（品种参数表，纯出生配置）+ `BodyFactory`（装配器 + 四预设）
+- 内核：`BodyChunk` / `ChunkConnection` / `Body`（chunk 物理）、`SphereTerrain`（球-地形共用解算）
+- 蜥蜴后端：`Limb`（plant-and-trail 腿）+ `LizardLocomotionController`
+  （重力开关 + 支撑系 + 推进）+ `BreedParams` / `BodyFactory`
+- 蝉后端：`CicadaLocomotionController`（双 chunk 差分飞行、停驻、起飞、Charge）+
+  `CicadaParams` / `CicadaFactory` + 四翼四触须的固定 tick 表现状态
 - 接缝：`ITerrainQuery`（射线 + 球体穿透 MTD 两原语；零法线 = HitFromInside）
   - `godot/RaycastTerrainQuery.cs`：Godot 适配器（**归宿主程序集编译**，core csproj 排除它；
     查询对象复用 + `CollisionMask`/`SetExclusions`）
   - `PlaneTerrainQuery`：纯解析平面（测试用）
-- 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（无引擎冒烟）
+- 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（蜥蜴无引擎冒烟）、
+  `cicada_smoke/`（蝉专项无引擎冒烟）
 
 `BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
-`Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端。未来蜈蚣、人形等
-应在共享层之上增加并列控制器，不向这个类继续堆物种分支。
+`Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端，
+`CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端。后续物种继续增加并列控制器，
+不把 locomotion 模式堆进一个万能类。蝉的完整契约见
+[`docs/cicada_controller.md`](../docs/cicada_controller.md)。
 
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 
@@ -47,4 +52,11 @@ dotnet run --project core/smoke     # 退出码 0=PASS：双跑 bit-exact + 哈�
                                     # + 边界扫描
 ```
 
-改内核后先跑它，再跑仓库根的 `./tools/run_matrix.sh` 全矩阵回归（断言化，见 CLAUDE.md §5）。
+蝉后端另跑：
+
+```bash
+dotnet run --project core/cicada_smoke
+./tools/run_cicada_matrix.sh
+```
+
+改内核后仍须跑原 `core/smoke` 和仓库根的 `./tools/run_matrix.sh`，保证已有 Lizard 基线逐位不变。

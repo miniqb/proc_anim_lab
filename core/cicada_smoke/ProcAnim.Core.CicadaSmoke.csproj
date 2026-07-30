@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Cicada 专项无引擎回归。只驱动 ProcAnim.Core，不加载 Godot 场景树。
+       运行时把本工程路径传给 dotnet run 的 project 参数（0=PASS / 1=FAIL）。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ProcAnim.Core.CicadaSmoke</RootNamespace>
+    <AssemblyName>ProcAnim.Core.CicadaSmoke</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ProcAnim.Core.csproj" />
+  </ItemGroup>
+</Project>

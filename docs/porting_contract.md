@@ -12,7 +12,7 @@
 1. **拷 `core/` 一个文件夹**进主项目（两条路线见 §8.2；命名空间归化 = 一次 sed）。
 2. **按主项目射线规范实现 `ITerrainQuery`**（§6 有对照模板；`core/godot/RaycastTerrainQuery.cs`
    是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
-3. **宿主 tick 里装 0.025s 累加器**驱动 `LizardLocomotionController.Tick`，渲染读 `LerpPos(插值分数)`（§3）；
+3. **宿主 tick 里装 0.025s 累加器**驱动物种控制器的 `Tick`，渲染读 `LerpPos(插值分数)`（§3）；
    回归先跑 `core/smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
@@ -32,10 +32,15 @@
 | `LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
 | `BreedParams.cs` | 品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
 | `BodyFactory.cs` | 通用装配器 + 四预设（default/heavy/sprinter/hexapod） | LizardBreeds |
+| `CicadaLocomotionController.cs` | 蝉专属控制器：双 chunk 差分升力、悬停、显式停驻、起飞与 Charge | Cicada.Update / Act |
+| `CicadaParams.cs` | 蝉出生参数（尺寸、飞行动力、翼/触须表现尺度） | Cicada 个体差异的确定性子集 |
+| `CicadaFactory.cs` | 双 chunk 身体装配 + light/dark 两个预设 | Cicada 构造 |
+| `CicadaWingState.cs` / `CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
 | `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
 | `PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
 | `smoke/` | 无引擎冒烟回归 console 工程（§7.2） | — |
+| `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -123,6 +128,31 @@ LizardLocomotionController controller = BodyFactory.CreateLizardController(origi
 **「笨重感」不要用腿参数表达**（它们碰抓地循环）——用 `SpineSegments`、`BodySizeFac`、
 `TailSegments/TailStiffness`、`BodyStiffness`、`SmoothenLegMovement=false`（绿蜥式拖沓）表达。
 
+### 2.2 Cicada 装配契约
+
+```csharp
+CicadaParams p = CicadaFactory.Light(); // 或 Dark / ByName
+CicadaLocomotionController controller =
+    CicadaFactory.CreateController(origin, Vector3.Forward, p);
+```
+
+- Cicada 是与 Lizard **并列**的 locomotion backend，不复用 `BreedParams`、`BodyFactory` 或
+  plant-and-trail `Limb`。两者只共享 `Body` / chunk / connection / terrain 原语。
+- `CreateController` 会冻结一份参数快照，运行时不再回读调用侧的可变 `CicadaParams`；
+  `BodyMass` 由 Cicada 后端换算为力响应，不要求共享 `Body` 改写 Lizard 的积分语义。
+- 身体固定为前体、后体两个 chunk + 一条 Rigid 连接；默认 RW 单位换算为半径约
+  `0.1875m / 0.175m`、连接长 `0.35m`。前体 `RotationChunk=Rear`，后体反向引用。
+- 四翼和四条触须是确定性表现状态。它们可在停驻时贴面，但不产生升力、不计支撑、不向身体回传力。
+- `MoveDir` 是完整 3D 单位向量，`RunSpeed` 是 `[0,1]` 强度；可选 `MoveTarget` 同样是完整 3D
+  路径点。宿主 AI/导航负责给点，内核不内置寻路。
+- `RequestPerch(TerrainHit)` 只接受有效法线，缓存点、法线、切向前向和 collider ID；地板、墙、
+  天花板走同一公式。稳定停驻时 `Up=Normal`、另外两轴位于切平面，翼/触须不得穿面；
+  普通碰撞不会自动落地，表面验证失败时自动复飞。
+- `TakeOff` / `TryStartCharge` 是显式动作。Charge 方向开始时锁定，动态对象伤害/抓取不属于
+  `ITerrainQuery`，首版只处理静态地形反弹或中断。
+- `Shift` 平移全部世界坐标记忆并保留状态；`Teleport` / `Launch` 清飞行目标、停驻和 Charge。
+- RW 的 `stamina` 主要服务负载、黏附和被抓交互；这些宿主接缝未引入前，不得把它误作普通飞行燃料。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -141,6 +171,10 @@ LizardLocomotionController controller = BodyFactory.CreateLizardController(origi
   站稳判定/重力开关 → 输入反转检测 → 推进力/持久拉直 → terrainSqueeze 门控 →
   `Body.Tick`（受力→积分→约束→碰撞→卡角结构恢复→卡链释放）→ 头速顶死计数 + 局部卡角计数
   → 腿 → 支撑法线更新 → 持久拉直需求衰减。
+- `CicadaLocomotionController.Tick` 内部序（锚定 RW `base.Update → Act`）：
+  先按上一轮模式配置身体并执行 `Body.Tick` → 读取本 tick 接触、停驻表面和 Charge 撞击
+  → 更新 `Mode` / `FlightPower` / 输入目标 → 向前后 chunk 注入下一 tick 使用的差分飞行动力
+  → 更新稳定 3D 姿态框架、四翼与触须。渲染不反向影响物理。
 
 ### 3.2 渲染插值
 
