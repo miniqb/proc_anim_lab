@@ -1262,7 +1262,8 @@ public partial class SandboxWorld : Node3D
         }
         UpdateCameraFly((float)delta);
         _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
-        _rayDebug.Draw(_camera, _lizardController);
+        _rayDebug.Draw(_camera, _lizardController.Head.Pos,
+            _lizardController.LastMoveTargetKind, _lizardController.LastMoveTarget);
     }
 
     /// <summary>右键held且不按Shift = 想要飞行摄像机（与 Shift+右键放胡萝卜互斥）。
