@@ -40,6 +40,9 @@ public sealed class RayDebugDraw : ITerrainQuery
     private static readonly Color CarrotCrestColor = new(1f, 0.65f, 0.15f);
     private static readonly Color CarrotFallbackColor = new(1f, 0.18f, 0.18f);
     private static readonly Color CarrotExternalColor = new(0.7f, 0.35f, 1f);
+    private static readonly Color CentipedeTrailColor = new(0.15f, 0.9f, 1f, 0.9f);
+    private static readonly Color CentipedeNormalColor = new(1f, 0.9f, 0.2f, 0.9f);
+    private static readonly Color CentipedeGripColor = new(0.2f, 1f, 0.35f, 0.95f);
 
     public RayDebugDraw(ITerrainQuery inner)
     {
@@ -131,6 +134,69 @@ public sealed class RayDebugDraw : ITerrainQuery
             };
             AddRibbon(carrotOrigin, target, c, camPos);
             AddMarker(target, camPos, c, CarrotMarkerSize);
+        }
+        _mesh.SurfaceEnd();
+    }
+
+    /// <summary>
+    /// 蜈蚣 F3 观察面：除本 tick 地形查询外，绘制双向表面轨迹（青）、逐节局部法线（黄）
+    /// 与真实抓足点（绿）。全部读取公开观察状态，不回写控制器。
+    /// </summary>
+    public void Draw(Camera3D camera, CentipedeLocomotionController controller)
+    {
+        if (_mesh is null)
+        {
+            return;
+        }
+        _mesh.ClearSurfaces();
+        if (!Enabled)
+        {
+            return;
+        }
+
+        Vector3 camPos = camera.GlobalPosition;
+        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+        foreach ((Vector3 from, Vector3 end, bool didHit) in _rays)
+        {
+            AddRibbon(from, end, didHit ? HitColor : MissColor, camPos);
+            if (didHit)
+            {
+                AddMarker(end, camPos, MarkerColor, MarkerSize);
+            }
+        }
+
+        IReadOnlyList<CentipedeSurfaceSample> trail = controller.SurfaceTrail;
+        for (int i = 1; i < trail.Count; i++)
+        {
+            AddRibbon(trail[i - 1].Point, trail[i].Point, CentipedeTrailColor, camPos);
+        }
+        foreach (CentipedeSegment segment in controller.Segments)
+        {
+            Vector3 start = segment.Chunk.Pos;
+            AddRibbon(start, start + segment.SupportNormal * (segment.Chunk.Radius + 0.16f),
+                CentipedeNormalColor, camPos);
+        }
+        foreach (CentipedeLeg leg in controller.Legs)
+        {
+            if (!leg.HasGrip)
+            {
+                continue;
+            }
+            AddRibbon(leg.Anchor.Chunk.Pos, leg.GripPoint, CentipedeGripColor, camPos);
+            AddMarker(leg.GripPoint, camPos, CentipedeGripColor, MarkerSize);
+        }
+
+        if (controller.LastMoveTargetKind != CentipedeMoveTargetKind.None)
+        {
+            Color targetColor = controller.LastMoveTargetKind switch
+            {
+                CentipedeMoveTargetKind.Surface => CarrotSupportColor,
+                CentipedeMoveTargetKind.Corner => CarrotCrestColor,
+                CentipedeMoveTargetKind.External => CarrotExternalColor,
+                _ => CarrotFallbackColor,
+            };
+            AddRibbon(controller.LeadChunk.Pos, controller.LastMoveTarget, targetColor, camPos);
+            AddMarker(controller.LastMoveTarget, camPos, targetColor, CarrotMarkerSize);
         }
         _mesh.SurfaceEnd();
     }
