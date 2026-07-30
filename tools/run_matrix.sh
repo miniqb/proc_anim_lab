@@ -1,5 +1,5 @@
 #!/bin/bash
-# 确定性全矩阵回归：32 配置（20 Lizard + 12 Centipede）× 硬断言
+# 确定性全矩阵回归：33 配置（20 Lizard + 13 Centipede）× 硬断言
 # （哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
 # 位置检查 / 退出码聚合）。任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、
 # 探针只打印不断言, NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
@@ -34,15 +34,16 @@ HASH_WALL_TAIL=4E84FC3E4EBA1BE3
 HASH_WALL_CORNER=CCCFDC1A3D452797
 
 # —— 并列蜈蚣基线（独立于上方 Lizard 真相源；各场景 tick 数见调用处）——
-HASH_CENTIPEDE_SHORT=BE58C639D59E1EA2
-HASH_CENTIPEDE_LONG=0D1D0D51D5E9C26B
-HASH_CENTIPEDE_ARMORED=D595C149C1C6B8EC
-HASH_CENTIPEDE_RIBBON=D834CFF4122082C3
-HASH_CENTIPEDE_COURSE_SHORT=D6F99637C6D76EE1
-HASH_CENTIPEDE_COURSE_LONG=30793ACEDD88F34C
-HASH_CENTIPEDE_STEP_DOWN_ARMORED=3D2594F93BC2F009
-HASH_CENTIPEDE_EMBED_LONG=FE8E2E356129F7A2
-HASH_CENTIPEDE_WALLSIDE_LONG=E2837F5747FDFBFF
+HASH_CENTIPEDE_SHORT=0F040547BFD02043
+HASH_CENTIPEDE_LONG=B66DAAB5D006190E
+HASH_CENTIPEDE_ARMORED=A6EDF4704829C261
+HASH_CENTIPEDE_RIBBON=EB6011908D0FAA19
+HASH_CENTIPEDE_COURSE_SHORT=BB6696619749832D
+HASH_CENTIPEDE_COURSE_LONG=A2BE4857DB102C19
+HASH_CENTIPEDE_STEP_DOWN_ARMORED=ECC5207E14979A28
+HASH_CENTIPEDE_NARROW_WALL_LONG_END=413E289A97ABD487
+HASH_CENTIPEDE_EMBED_LONG=2C8B2D67731F2B7E
+HASH_CENTIPEDE_WALLSIDE_LONG=501B7C44E06FA68B
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -271,8 +272,8 @@ run hexapod    "$HASH_HEXAPOD"  8  2000 --tps=400 --breed=hexapod
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0
 
-# 并列蜈蚣矩阵（12 配置）：四预设巡逻 + short 双跑/40Hz/微扰 +
-# short/long 全向课程 + armored 固定头下阶梯 + long 嵌入恢复/擦墙。long 课程必须实际抵达 ceiling 阶段，
+# 并列蜈蚣矩阵（13 配置）：四预设巡逻 + short 双跑/40Hz/微扰 +
+# short/long 全向课程 + armored 固定头下阶梯 + long 窄墙/嵌入恢复/擦墙。long 课程必须实际抵达 ceiling 阶段，
 # 因而同时承担长型天花板路线；不另跑一条内容相同的重复命令制造假覆盖。
 run_centipede centipede-short    "$HASH_CENTIPEDE_SHORT"    2 2000 centipede/short   5  --tps=400
 run_centipede centipede-long     "$HASH_CENTIPEDE_LONG"     1 2000 centipede/long    18 --tps=400
@@ -288,6 +289,9 @@ run_centipede centipede-course-long "$HASH_CENTIPEDE_COURSE_LONG" - 1200 \
 # 全身先在 z=-8 专用平台顶面展开；宿主固定 Start 且始终只给 +X，不在外角替控制器补 Down。
 run_centipede centipede-step-down-armored "$HASH_CENTIPEDE_STEP_DOWN_ARMORED" - 500 \
     centipede/armored 10 --tps=400 --route=centipede-step-down --spawn=1.4,1.1,-8 --lead=start
+# 固定 End 向前翻越旧 0.4m 墙一次，随后至少停驶 80 tick，避免终态依赖运动相位。
+run_centipede centipede-narrow-wall-long-end "$HASH_CENTIPEDE_NARROW_WALL_LONG_END" 1 800 \
+    centipede/long 18 --tps=400 --route=centipede-narrow-wall --spawn=0,0.5,0 --lead=end
 # z=5 避开旧 Step：这里故意把整条身体出生在地板内，而不是把长体横穿另一块障碍物。
 run_centipede centipede-embed-long "$HASH_CENTIPEDE_EMBED_LONG" - 80 \
     centipede/long 18 --tps=400 --route=stand --spawn=0,-0.1,5

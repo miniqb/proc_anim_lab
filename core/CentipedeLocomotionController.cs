@@ -115,6 +115,8 @@ public sealed class CentipedeLocomotionController
                 || !_endLeadSurfaceTangent.IsFinite()
                 || !_startLeadSurfaceNormal.IsFinite()
                 || !_endLeadSurfaceNormal.IsFinite()
+                || !_preparedTransitionTangent.IsFinite()
+                || !_preparedTransitionNormal.IsFinite()
                 || !float.IsFinite(RunSpeed) || !float.IsFinite(_trailAdvanceRemainder)
                 || !float.IsFinite(_gaitClock)
                 || MoveTarget is { } moveTarget && !moveTarget.IsFinite())
@@ -140,6 +142,14 @@ public sealed class CentipedeLocomotionController
                 }
             }
             foreach (CentipedeSurfaceSample sample in _surfaceTrail)
+            {
+                if (!sample.Point.IsFinite() || !sample.Normal.IsFinite()
+                    || !float.IsFinite(sample.ArcLength))
+                {
+                    return false;
+                }
+            }
+            foreach (CentipedeSurfaceSample sample in _preparedSurfaceTransition)
             {
                 if (!sample.Point.IsFinite() || !sample.Normal.IsFinite()
                     || !float.IsFinite(sample.ArcLength))
@@ -182,9 +192,14 @@ public sealed class CentipedeLocomotionController
     private readonly float[] _segmentArcFromStart;
     private readonly float _maxSegmentRadius;
     private readonly List<CentipedeSurfaceSample> _preparedSurfaceTransition = new();
+    private bool _preparedTransitionCorner;
+    private Vector3 _preparedTransitionTangent;
+    private Vector3 _preparedTransitionNormal = Vector3.Up;
+    private bool _hasPreparedTransitionDirection;
     private bool _surfaceInitialized;
     private bool _leadSurfaceBlocked;
     private int _leadSurfaceBlockedTicks;
+    private int _leadTrailMismatchTicks;
     private float _trailAdvanceRemainder;
     private float _gaitClock;
     private Vector3 _derivedMoveDir;
@@ -239,16 +254,22 @@ public sealed class CentipedeLocomotionController
             ? -ctx.GravityPerTick.Normalized() : Vector3.Up;
         ApplyRequestedLeadEnd();
         DeriveMoveIntent();
-        if (_leadSurfaceBlocked && ++_leadSurfaceBlockedTicks >= 8)
+        Vector3 desiredMove = EffectiveMoveDirection();
+        if (_leadSurfaceBlocked && HasMoveIntent
+            && desiredMove.LengthSquared() > 1e-10f
+            && ++_leadSurfaceBlockedTicks >= 8)
         {
-            // 连续探不到下一面时丢弃旧路径，让已经交还重力的身体从真实新位置重捕获；
-            // 否则它落到下层地面后仍会被旧墙角 TargetCenter 拉回空气。
             _surfaceInitialized = false;
+            _leadSurfaceBlockedTicks = 0;
+        }
+        else if (_leadSurfaceBlocked && !HasMoveIntent)
+        {
+            // 停驶不应把残留 MoveDir 当成新命令重新选择支撑面；保持 blocked 观察态，
+            // 恢复移动后再从零累计局部重捕获滞回。
             _leadSurfaceBlockedTicks = 0;
         }
         EnsureSurfaceTrail(ctx, worldUp);
 
-        Vector3 desiredMove = EffectiveMoveDirection();
         if (_surfaceInitialized && HasMoveIntent && desiredMove.LengthSquared() > 1e-10f)
         {
             AdvanceLeadSurface(ctx, desiredMove.Normalized(), worldUp);
@@ -256,6 +277,8 @@ public sealed class CentipedeLocomotionController
         else
         {
             LastMoveTargetKind = CentipedeMoveTargetKind.None;
+            _leadTrailMismatchTicks = 0;
+            ClearPreparedSurfaceTransition();
         }
 
         UpdateSegmentTargets(worldUp);
@@ -289,6 +312,12 @@ public sealed class CentipedeLocomotionController
         {
             CentipedeSurfaceSample s = _surfaceTrail[i];
             _surfaceTrail[i] = new CentipedeSurfaceSample(
+                s.Point + delta, s.Normal, s.ColliderId, s.ArcLength);
+        }
+        for (int i = 0; i < _preparedSurfaceTransition.Count; i++)
+        {
+            CentipedeSurfaceSample s = _preparedSurfaceTransition[i];
+            _preparedSurfaceTransition[i] = new CentipedeSurfaceSample(
                 s.Point + delta, s.Normal, s.ColliderId, s.ArcLength);
         }
         if (MoveTarget is { } target)
@@ -340,7 +369,12 @@ public sealed class CentipedeLocomotionController
         hasher.Fold(_surfaceInitialized);
         hasher.Fold(_leadSurfaceBlocked);
         hasher.Fold(_leadSurfaceBlockedTicks);
+        hasher.Fold(_leadTrailMismatchTicks);
         hasher.Fold(_trailAdvanceRemainder);
+        hasher.Fold(_preparedTransitionCorner);
+        hasher.Fold(_hasPreparedTransitionDirection);
+        hasher.Fold(_preparedTransitionTangent);
+        hasher.Fold(_preparedTransitionNormal);
         hasher.Fold(_gaitClock);
         hasher.Fold(_derivedMoveDir);
         hasher.Fold(_hasStartLeadSurfaceTangent);
@@ -368,6 +402,14 @@ public sealed class CentipedeLocomotionController
         }
         hasher.Fold(_surfaceTrail.Count);
         foreach (CentipedeSurfaceSample sample in _surfaceTrail)
+        {
+            hasher.Fold(sample.Point);
+            hasher.Fold(sample.Normal);
+            hasher.FoldOpaqueId(sample.ColliderId);
+            hasher.Fold(sample.ArcLength);
+        }
+        hasher.Fold(_preparedSurfaceTransition.Count);
+        foreach (CentipedeSurfaceSample sample in _preparedSurfaceTransition)
         {
             hasher.Fold(sample.Point);
             hasher.Fold(sample.Normal);
@@ -423,6 +465,8 @@ public sealed class CentipedeLocomotionController
         LeadEnd = RequestedLeadEnd;
         _leadSurfaceBlocked = false;
         _leadSurfaceBlockedTicks = 0;
+        _leadTrailMismatchTicks = 0;
+        ClearPreparedSurfaceTransition();
         // 非活动端会随着裁剪而改变其路径端点，旧切线不能直接套到新端点。切换时从
         // 当前路径几何重新播种；之后该端再独立跨 tick 持久化。
         ClearLeadSurfaceTangent(LeadEnd);
@@ -439,7 +483,7 @@ public sealed class CentipedeLocomotionController
             return;
         }
         _surfaceTrail.Clear();
-        _preparedSurfaceTransition.Clear();
+        ClearPreparedSurfaceTransition();
         ClearAllLeadSurfaceTangents();
         for (int i = 0; i < Segments.Count; i++)
         {
@@ -498,43 +542,121 @@ public sealed class CentipedeLocomotionController
             return;
         }
 
+        float step = Mathf.Max(0.01f, TrailSampleSpacing);
+        // 留出足够的曲面前视产生牵引力，但仍小于薄墙两侧球心间距；逐样点提交保证
+        // 这段信用沿圆滑过角增长，不会一次把局部坐标系翻到障碍物背面。
+        float leadAllowance = Mathf.Max(step * 3f, LeadChunk.Radius * 3.5f);
+        float leadError = LeadEndpointError();
+        int closestSample = -1;
+        if (leadError > leadAllowance
+            && LeadChunk.TerrainContact
+            && LeadChunk.ContactNormal.LengthSquared() > 1e-10f
+            && LeadChunk.ContactNormal.Normalized().Dot(
+                SafeNormal(lead.Normal, worldUp)) < -0.5f)
+        {
+            closestSample = ClosestTrailSampleToLead();
+            _leadTrailMismatchTicks++;
+            if (_leadTrailMismatchTicks >= 3)
+            {
+                RollBackLeadTrailTo(closestSample);
+                return;
+            }
+        }
+        else
+        {
+            _leadTrailMismatchTicks = 0;
+        }
+
+        // 路径只允许领先实体领航节一个很短的导航窗口。追赶期间不累计“欠下的路程”，
+        // 否则身体刚跟上就会在一个 tick 内把旧信用全部释放，再次越过窄墙翻到错面。
+        if (leadError >= leadAllowance)
+        {
+            _trailAdvanceRemainder = Mathf.Min(_trailAdvanceRemainder, step);
+            LastMoveTarget = lead.Point
+                + SafeNormal(lead.Normal, worldUp) * (LeadChunk.Radius + SurfaceClearance);
+            return;
+        }
+
         float advance = BaseSpeed * Mathf.Clamp(RunSpeed, 0f, 1f);
         _trailAdvanceRemainder += advance;
-        float step = Mathf.Max(0.01f, TrailSampleSpacing);
         bool extended = false;
-        while (_trailAdvanceRemainder >= step)
+        int transitionOperations = 0;
+        int maxTransitionOperations = Mathf.Clamp(CornerProbeSteps * 2, 4, 32);
+        while ((_preparedSurfaceTransition.Count > 0 || _trailAdvanceRemainder >= step)
+            && transitionOperations++ < maxTransitionOperations)
         {
             leadIndex = LeadEnd == CentipedeLeadEnd.Start ? 0 : _surfaceTrail.Count - 1;
             lead = _surfaceTrail[leadIndex];
-            if (!TryFindNextSurface(ctx, lead, tangent, step, worldUp,
-                    out CentipedeSurfaceSample next, out bool corner))
+            if (_preparedSurfaceTransition.Count > 0
+                && PreparedTransitionConflicts(tangent, lead.Normal))
             {
-                _trailAdvanceRemainder = 0f;
-                _leadSurfaceBlocked = true;
+                // 转角样点可能跨 tick 排队。宿主若在此期间反转输入，同一领航端必须
+                // 立即按新命令重新探路，不能继续消费旧方向生成的“惯性指令”。
+                ClearPreparedSurfaceTransition();
+                continue;
+            }
+            if (_preparedSurfaceTransition.Count == 0)
+            {
+                if (!TryFindNextSurface(ctx, lead, tangent, step, worldUp,
+                        out _, out bool corner))
+                {
+                    _trailAdvanceRemainder = 0f;
+                    _leadSurfaceBlocked = true;
+                    break;
+                }
+                _preparedTransitionCorner = corner;
+                _preparedTransitionTangent = tangent;
+                _preparedTransitionNormal = SafeNormal(lead.Normal, worldUp);
+                _hasPreparedTransitionDirection = true;
+            }
+
+            CentipedeSurfaceSample next = _preparedSurfaceTransition[0];
+            float committedArc = SurfaceArcStep(lead, next);
+            float nextError = LeadChunk.Pos.DistanceTo(LeadSampleCenter(next));
+            // 外角处实体需要“下一个”样点的牵引才能绕过棱边。只允许当前窗口再加
+            // 这一枚样点自身的弧长；提交后立即重新受 leadAllowance 限制，不能批量翻面。
+            if (nextError > leadAllowance + committedArc + 1e-5f
+                || committedArc > 1e-6f && _trailAdvanceRemainder < committedArc)
+            {
                 break;
             }
+            _preparedSurfaceTransition.RemoveAt(0);
             if (LeadEnd == CentipedeLeadEnd.Start)
             {
-                foreach (CentipedeSurfaceSample sample in _preparedSurfaceTransition)
-                {
-                    _surfaceTrail.Insert(0, sample);
-                }
+                _surfaceTrail.Insert(0, next);
             }
             else
             {
-                _surfaceTrail.AddRange(_preparedSurfaceTransition);
+                _surfaceTrail.Add(next);
             }
-            _preparedSurfaceTransition.Clear();
             LastMoveTargetKind = MoveTarget is not null
                 ? CentipedeMoveTargetKind.External
-                : corner ? CentipedeMoveTargetKind.Corner : CentipedeMoveTargetKind.Surface;
+                : _preparedTransitionCorner
+                    ? CentipedeMoveTargetKind.Corner
+                    : CentipedeMoveTargetKind.Surface;
             LastMoveTarget = next.Point + next.Normal * (LeadChunk.Radius + SurfaceClearance);
             tangent = TransportTangent(tangent, lead.Normal, next.Normal);
             SetLeadSurfaceTangent(LeadEnd, tangent, next.Normal);
-            _trailAdvanceRemainder -= step;
+            // 圆滑过角逐样点提交并按真实球心弧长计费；每枚样点都先通过实体前视门，
+            // 因而长身体不会在单 tick 内从墙正面直接取得墙背面的局部坐标系。
+            _trailAdvanceRemainder -= committedArc;
             extended = true;
             _leadSurfaceBlocked = false;
             _leadSurfaceBlockedTicks = 0;
+            RebuildArcLengths();
+            if (_preparedSurfaceTransition.Count == 0)
+            {
+                ClearPreparedSurfaceTransition();
+            }
+            if (LeadEndpointError() >= leadAllowance)
+            {
+                break;
+            }
+            if (committedArc <= 1e-6f)
+            {
+                // 同球心换法线不虚构身体弧长，但也不能在一个 tick 内无限消费/重探。
+                break;
+            }
         }
         if (!extended && LastMoveTargetKind == CentipedeMoveTargetKind.None)
         {
@@ -542,6 +664,122 @@ public sealed class CentipedeLocomotionController
         }
         TrimTrail();
         RebuildArcLengths();
+    }
+
+    /// <summary>
+    /// 活动路径端的目标球心与真实领航节之间的距离。直接约束端点误差，不用全路径
+    /// 最近点作推进门：显式固定头端后允许生物原地掉头，旧身体路径可能暂时经过 leader。
+    /// </summary>
+    private float LeadEndpointError()
+    {
+        int endpoint = LeadEnd == CentipedeLeadEnd.Start ? 0 : _surfaceTrail.Count - 1;
+        return LeadChunk.Pos.DistanceTo(LeadSampleCenter(_surfaceTrail[endpoint]));
+    }
+
+    private bool PreparedTransitionConflicts(Vector3 tangent, Vector3 normal)
+    {
+        if (!_hasPreparedTransitionDirection)
+        {
+            return false;
+        }
+        Vector3 transported = TransportTangent(
+            _preparedTransitionTangent, _preparedTransitionNormal, normal);
+        Vector3 current = tangent - normal * tangent.Dot(normal);
+        if (transported.LengthSquared() < 1e-8f || current.LengthSquared() < 1e-8f)
+        {
+            return false;
+        }
+        return transported.Normalized().Dot(current.Normalized()) < 0.5f;
+    }
+
+    private void ClearPreparedSurfaceTransition()
+    {
+        _preparedSurfaceTransition.Clear();
+        _preparedTransitionCorner = false;
+        _preparedTransitionTangent = Vector3.Zero;
+        _preparedTransitionNormal = Vector3.Up;
+        _hasPreparedTransitionDirection = false;
+    }
+
+    /// <summary>错误面恢复时才查询真实领航节最接近的旧路径样点。</summary>
+    private int ClosestTrailSampleToLead()
+    {
+        int endpoint = LeadEnd == CentipedeLeadEnd.Start ? 0 : _surfaceTrail.Count - 1;
+        int closestIndex = endpoint;
+        float bestDistance = LeadChunk.Pos.DistanceSquaredTo(
+            LeadSampleCenter(_surfaceTrail[endpoint]));
+
+        if (LeadEnd == CentipedeLeadEnd.Start)
+        {
+            for (int i = 1; i < _surfaceTrail.Count; i++)
+            {
+                float distance = LeadChunk.Pos.DistanceSquaredTo(
+                    LeadSampleCenter(_surfaceTrail[i]));
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    closestIndex = i;
+                }
+            }
+        }
+        else
+        {
+            for (int i = _surfaceTrail.Count - 2; i >= 0; i--)
+            {
+                float distance = LeadChunk.Pos.DistanceSquaredTo(
+                    LeadSampleCenter(_surfaceTrail[i]));
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    closestIndex = i;
+                }
+            }
+        }
+        return closestIndex;
+    }
+
+    private Vector3 LeadSampleCenter(in CentipedeSurfaceSample sample) =>
+        sample.Point + SafeNormal(sample.Normal, Vector3.Up)
+            * (LeadChunk.Radius + SurfaceClearance);
+
+    /// <summary>
+    /// 实体已经明确落回与路径端相反的真实表面时，只撤销活动端超前的错误样点；
+    /// 尾部仍正确的路径与抓足保持不动，下一 tick 从真实最近样点继续探测。
+    /// </summary>
+    private void RollBackLeadTrailTo(int closestIndex)
+    {
+        if (LeadEnd == CentipedeLeadEnd.Start)
+        {
+            if (closestIndex <= 0)
+            {
+                InvalidateSurfaceState();
+                return;
+            }
+            _surfaceTrail.RemoveRange(0, closestIndex);
+        }
+        else
+        {
+            if (closestIndex >= _surfaceTrail.Count - 1)
+            {
+                InvalidateSurfaceState();
+                return;
+            }
+            _surfaceTrail.RemoveRange(closestIndex + 1,
+                _surfaceTrail.Count - closestIndex - 1);
+        }
+
+        ClearPreparedSurfaceTransition();
+        _trailAdvanceRemainder = 0f;
+        _leadTrailMismatchTicks = 0;
+        _leadSurfaceBlocked = false;
+        _leadSurfaceBlockedTicks = 0;
+        RebuildArcLengths();
+        ClearLeadSurfaceTangent(LeadEnd);
+        TrySeedLeadSurfaceTangentFromTrail(LeadEnd);
+        int endpoint = LeadEnd == CentipedeLeadEnd.Start ? 0 : _surfaceTrail.Count - 1;
+        CentipedeSurfaceSample lead = _surfaceTrail[endpoint];
+        LastMoveTarget = LeadSampleCenter(lead);
+        LastMoveTargetKind = CentipedeMoveTargetKind.Surface;
     }
 
     private bool TryFindNextSurface(in TickContext ctx, CentipedeSurfaceSample current,
@@ -617,7 +855,7 @@ public sealed class CentipedeLocomotionController
         Vector3 travelTangent, float step, out CentipedeSurfaceSample first)
     {
         first = default;
-        _preparedSurfaceTransition.Clear();
+        ClearPreparedSurfaceTransition();
         float radius = LeadChunk.Radius;
         float chord = current.Point.DistanceTo(candidate.Point);
         float maxChord = Mathf.Max(step * 3f, SurfaceProbeDistance);
@@ -1162,11 +1400,12 @@ public sealed class CentipedeLocomotionController
     private void InvalidateSurfaceState()
     {
         _surfaceTrail.Clear();
-        _preparedSurfaceTransition.Clear();
+        ClearPreparedSurfaceTransition();
         ClearAllLeadSurfaceTangents();
         _surfaceInitialized = false;
         _leadSurfaceBlocked = false;
         _leadSurfaceBlockedTicks = 0;
+        _leadTrailMismatchTicks = 0;
         _trailAdvanceRemainder = 0f;
         SupportedSegmentCount = 0;
         foreach (CentipedeSegment segment in Segments)

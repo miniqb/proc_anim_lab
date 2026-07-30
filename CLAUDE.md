@@ -114,21 +114,26 @@
 > 的无头 default 巡逻脚本演示宿主层方向评分 + 3 tick 去抖，再通过 `RequestedLeadEnd`
 > 发命令，核心对此策略不知情。路径两端各保存有向表面切线；输入投影在外角退化时沿既有
 > 切线平行运输，不用世界 Up/Right 猜方向。候选另受正向进度、近期路径回访和球体可行性
-> 约束，转角样点的弧长取实际中心距离；相邻刚性连接只恢复碰撞相对新增的违反。四个稳定 ID 为
+> 约束，转角样点的弧长取实际中心距离；路径端只允许领先实体领航节一个短窗口，转角样点
+> 跨 tick 缓存并逐枚按真实弧长提交，明显改向会丢弃旧缓存，零弧换法线也受固定操作上限；
+> 实体与轨迹落到墙体相反面连续 3 tick 时只回卷超前样点，不直接跨段重钉路径。相邻刚性连接
+> 只恢复碰撞相对新增的违反。四个稳定 ID 为
 > `centipede/short`（5）、
 > `centipede/long`（18）、`centipede/armored`（10）、`centipede/ribbon`（12）；
 > 沙盒由宿主适配器统一输入/渲染/调试，核心层不增加万能生物接口。无引擎 smoke 覆盖
 > 2/5/18/32 节、显式头尾切换、生命周期、自避、查询增长和地面→18°斜坡→内角墙→外角墙顶→
 > 天花板课程、固定 Start+恒 +X 下阶梯，以及脚跨薄墙恢复（中心扫掠、低速球壳 MTD、
-> 停驶 stance 抓点遮挡与同侧碰墙对照）；short/long 当前哈希为 `4DAD09DE3CB81C31` /
-> `4E3DFC052BA4E74D`，Lizard `AAA0E4963668E5DC` 不变。Godot 12 项蜈蚣矩阵已纳入完整矩阵并通过：
-> 四预设巡逻 short/long/armored/ribbon 哈希为 `BE58C639D59E1EA2` / `0D1D0D51D5E9C26B` /
-> `D595C149C1C6B8EC` / `D834CFF4122082C3`；course-short/course-long/step-down-armored 为
-> `D6F99637C6D76EE1` / `30793ACEDD88F34C` / `3D2594F93BC2F009`；embed-long/wallside-long 为
-> `FE8E2E356129F7A2` / `E2837F5747FDFBFF`。两条课程的 `maxNoneRun=1/9`、
-> `maxBlockedRun=0/0`、`maxConnectionRun=4/7`，尾端通过为 15/80、89/184 tick（实际/预算），
-> 穿透 `0m`。固定头下阶梯领/尾端在 tick 46/116 落地，终态非相邻间距 1.917× 半径和，
-> 严重成团连续 0 tick。
+> 停驶 stance 抓点遮挡与同侧碰墙对照），以及 long 固定 Start/End 的 0.4m 窄墙前向翻越；
+> short/long 当前哈希为 `655A21496C00E86A` / `59CBCF993DF8ACD8`，Lizard
+> `AAA0E4963668E5DC` 不变。Godot 13 项蜈蚣矩阵已纳入完整矩阵并通过：
+> 四预设巡逻 short/long/armored/ribbon 哈希为 `0F040547BFD02043` / `B66DAAB5D006190E` /
+> `A6EDF4704829C261` / `EB6011908D0FAA19`；course-short/course-long/step-down-armored 为
+> `BB6696619749832D` / `A2BE4857DB102C19` / `ECC5207E14979A28`；narrow-wall-long-end 为
+> `413E289A97ABD487`；embed-long/wallside-long 为 `2C8B2D67731F2B7E` /
+> `501B7C44E06FA68B`。两条课程的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、
+> `maxConnectionRun=3/8`，尾端通过为 15/80、89/184 tick（实际/预算），穿透 `0m`。
+> 固定头下阶梯领/尾端在 tick 51/121 落地，终态非相邻间距 1.917× 半径和，严重成团连续
+> 0 tick；固定 End 窄墙前向翻越后停驶 381 tick，终态连接偏差 7%，穿透 `0m`。
 > 详见 [`docs/centipede_controller.md`](docs/centipede_controller.md)。
 >
 > **蜘蛛并列后端（2026-07）**：`SpiderLocomotionController` 不继承或扩充蜥蜴控制器，只共享
@@ -229,10 +234,10 @@
 > #    TypeRef 边界扫描。
 > dotnet run --project core/smoke
 >
-> # 蜈蚣无引擎基线：short=4DAD09DE3CB81C31，long=4E3DFC052BA4E74D；
+> # 蜈蚣无引擎基线：short=655A21496C00E86A，long=59CBCF993DF8ACD8；
 > # 既有 Lizard=AAA0E4963668E5DC 不变。
 >
-> # ② Godot 全矩阵（分钟级）。32 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
+> # ② Godot 全矩阵（分钟级）。33 配置 × 硬断言（哈希基线/路点下限/[RESULT] 判定/位置检查/
 > #    防折叠支柱持续违反与事件相对恢复门），pipefail + 退出码聚合，任何一项红 → 非零退出；
 > #    结尾打 MATRIX GREEN/RED：
 > ./tools/run_matrix.sh [输出目录]
@@ -243,16 +248,17 @@
 > #   wall-corner（目标墙首次接触换面）、stand（站桩+闲置姿态）、
 > #   carrot（MoveTarget 路径点直喂通路）、heavy/sprinter/hexapod（品种默认巡逻路线）、
 > #   embed（出生嵌入 60 tick 必须脱困）、wallside（贴墙擦边不得穿墙）。
-> # 蜈蚣 12 项：四预设巡逻 + short 双跑/40Hz/微扰 + short/long 全向课程 +
-> #   armored 固定头下阶梯 + long 嵌入恢复/擦墙；课程须完整通过地面、斜坡、内角墙、
-> #   墙顶、外墙与天花板，下阶梯须固定 Start 且始终只给 +X。
+> # 蜈蚣 13 项：四预设巡逻 + short 双跑/40Hz/微扰 + short/long 全向课程 +
+> #   armored 固定头下阶梯 + long 固定 End 窄墙前向翻越 + long 嵌入恢复/擦墙；
+> #   课程须完整通过地面、斜坡、内角墙、墙顶、外墙与天花板，下阶梯须固定 Start 且
+> #   始终只给 +X；窄墙完成后停驶至少 80 tick 再检查终态。
 > # [RESULT] 在进程 teardown 之前打印；已知 Godot 4.7 macOS 偶发退场 mutex 崩溃（exit 134），
 > #   判定以 [RESULT] 为准（脚本已处理）。单配置手跑仍是
 > #   $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 -- \
 > #     --determinism=2000 --tps=400 [--route=…|--breed=…|--spawn=…|--yank=…|--expect-hash=X16]
 > # 2000 tick 参考值（FrontMount 轮后）：default 11 路点、wall 14 翻越、heavy 7 路点、
 > #   sprinter 15 路点、hexapod 11 路点、carrot 25 路点；wall-heavy 10、wall-hexapod 13。
-> # 当前 32 项 = 既有 20 项 Lizard + 新增 12 项 Centipede，完整矩阵已 GREEN。
+> # 当前 33 项 = 既有 20 项 Lizard + 新增 13 项 Centipede，完整矩阵已 GREEN。
 >
 > # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 可执行基线真相源：tools/run_matrix.sh + core/smoke/Program.cs +

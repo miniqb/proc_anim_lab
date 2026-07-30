@@ -46,6 +46,13 @@
 经过球体 MTD 可行化的圆滑过渡采样；`ArcLength` 使用实际相邻中心距离。各节再按自身连接
 长度沿弧长取目标，所以异构节距仍会依次走过同一个角。
 
+轨迹端只能领先真实领航节一个由采样间距和领航节半径限定的短窗口。转角过渡会跨 tick
+缓存，但每次只提交一个经过实体距离门的样点，并按真实球心弧长扣除推进量；零弧长换法线
+也有固定单 tick 操作上限。这样长体不会在身体仍贴着墙正面时一次取得墙背面的法线并把
+推进方向翻转。真实接触若连续证明轨迹端落在相反面，控制器只回卷活动端已经超前的样点；
+找不到下一面持续 8 tick 才按原契约重建表面状态。宿主在缓存期间明显改向时，旧转角样点
+会被丢弃并按新输入重新探测；停驶不会把残留 `MoveDir` 当成重捕获命令。
+
 每节通过平行运输维护 `Forward`、`Side`、`SupportNormal` 局部坐标系，并独立执行重力抵消、
 法向贴面伺服和路径切向推进。因此同一时刻可以前半在墙上、后半仍在地面。非相邻节只在
 确定性空间桶内做有上限的对称排斥，且跳过索引距离不超过 2 的相邻结构，避免穿身同时保持
@@ -108,7 +115,7 @@ controller.Tick(new TickContext(gravityPerTick, terrain, tick));
 
 - 2/5/18/32 节装配、全部逐节覆写字段、出生快照、质量加权连接与防折叠支柱；
 - short/long 进程内双跑 bit-exact，独立基线分别为
-  `4DAD09DE3CB81C31`、`4E3DFC052BA4E74D`；
+  `655A21496C00E86A`、`59CBCF993DF8ACD8`；
 - 地面 → 18° 斜坡 → 内角墙面 → 外角墙顶 → 天花板的解析课程；
 - 固定 `Start` 领航端、恒定 `+X` 输入下完整经过 1.6m 平台外角立面并落到低地，检查
   `Wall → LowerFloor` 顺序、尾端预算、下降后续行、路径不回访身体内部及非相邻节不成团；
@@ -116,32 +123,38 @@ controller.Tick(new TickContext(gravityPerTick, terrain, tick));
   支撑恢复和确定性自避；
 - 薄墙足端恢复：short 中心扫掠、armored 低速大脚球壳 MTD、同侧撞墙不误复位，以及
   停驶 stance 的既有抓点被墙隔断；两条动态恢复与 stance 遮挡均在 4 tick 内完成；
+- 18 节 long 在解析 0.4m×3m 窄墙上的 Start/End 镜像前向翻越：领端和尾端球体都必须
+  到达远侧、取得远侧真实抓足、继续离墙 1.2m 后停驶收敛；错面连续不超过 8 tick，
+  终态连接偏差仍须不超过 10%；
 - 全状态有限、穿透不超过 2 mm、终态连接偏差不超过节距 10%、深断链连续不超过
   20 tick、换面不超过 40 tick、尾端通过预算 `40 + 8×节数` tick；
 - 16→32 节地形查询量增长不超过 2.25 倍。
 
 既有 Lizard 无引擎基线仍为 `AAA0E4963668E5DC`。
 
-Godot 全矩阵当前共 **32 项 = 旧 20 项 Lizard + 新 12 项 Centipede**，已经全部通过。
-新增 12 项包含四预设巡逻、short 双跑/40Hz/微扰、short/long 全向课程、armored 固定头
-下阶梯，以及 long 嵌入恢复/擦墙。最终 Godot 哈希为：
+Godot 全矩阵当前共 **33 项 = 旧 20 项 Lizard + 新 13 项 Centipede**，已经全部通过。
+新增 13 项包含四预设巡逻、short 双跑/40Hz/微扰、short/long 全向课程、armored 固定头
+下阶梯、long 固定 End 窄墙前向翻越，以及 long 嵌入恢复/擦墙。最终 Godot 哈希为：
 
 | 配置 | 哈希 |
 |---|---|
-| `centipede/short` | `BE58C639D59E1EA2` |
-| `centipede/long` | `0D1D0D51D5E9C26B` |
-| `centipede/armored` | `D595C149C1C6B8EC` |
-| `centipede/ribbon` | `D834CFF4122082C3` |
-| `centipede-course-short` | `D6F99637C6D76EE1` |
-| `centipede-course-long` | `30793ACEDD88F34C` |
-| `centipede-step-down-armored` | `3D2594F93BC2F009` |
-| `centipede-embed-long` | `FE8E2E356129F7A2` |
-| `centipede-wallside-long` | `E2837F5747FDFBFF` |
+| `centipede/short` | `0F040547BFD02043` |
+| `centipede/long` | `B66DAAB5D006190E` |
+| `centipede/armored` | `A6EDF4704829C261` |
+| `centipede/ribbon` | `EB6011908D0FAA19` |
+| `centipede-course-short` | `BB6696619749832D` |
+| `centipede-course-long` | `A2BE4857DB102C19` |
+| `centipede-step-down-armored` | `ECC5207E14979A28` |
+| `centipede-narrow-wall-long-end` | `413E289A97ABD487` |
+| `centipede-embed-long` | `2C8B2D67731F2B7E` |
+| `centipede-wallside-long` | `501B7C44E06FA68B` |
 
-真实 Jolt 课程硬指标：short/long 的 `maxNoneRun=1/9`、`maxBlockedRun=0/0`、
-`maxConnectionRun=4/7`，最大尾端滞后/预算为 `15/80`、`89/184` tick，穿透均为 `0m`。
-固定头下阶梯中领/尾端在 tick `46/116` 落地，滞后 `70/120`，净前进 `3.387m`，
+真实 Jolt 课程硬指标：short/long 的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、
+`maxConnectionRun=3/8`，最大尾端滞后/预算为 `15/80`、`89/184` tick，穿透均为 `0m`。
+固定头下阶梯中领/尾端在 tick `51/121` 落地，滞后 `70/120`，净前进 `3.387m`，
 终态非相邻间距为半径和 `1.917×`，严重成团连续 `0` tick。
+固定 End 窄墙场景完成一次前向翻越后停驶 `381` tick，终态连接偏差 `7%`、
+最大深断链连续 `15` tick，身体与脚端穿透均为 `0m`。
 
 ## 6. 默认非目标
 

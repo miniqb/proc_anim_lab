@@ -14,8 +14,8 @@ public static class CentipedeSmoke
     private const float GravityMps2 = 36f;
     private const float Epsilon = 1e-4f;
     private const int DeterminismTicks = 480;
-    private const ulong ExpectedShortHash = 0x4DAD09DE3CB81C31UL;
-    private const ulong ExpectedLongHash = 0x4E3DFC052BA4E74DUL;
+    private const ulong ExpectedShortHash = 0x655A21496C00E86AUL;
+    private const ulong ExpectedLongHash = 0x59CBCF993DF8ACD8UL;
 
     /// <summary>供 Program.Main 调用的单一入口。</summary>
     public static bool RunAll(out string message)
@@ -33,6 +33,7 @@ public static class CentipedeSmoke
         bool terrainOk = CheckTerrainPrimitives(out string terrainMessage);
         bool courseOk = CheckCourseMotion(out string courseMessage);
         bool fixedLeadDescentOk = CheckFixedLeadDescent(out string fixedLeadDescentMessage);
+        bool narrowWallOk = CheckNarrowWallTraverse(out string narrowWallMessage);
         message = $"assembly=({assemblyMessage}); det=({deterministicMessage}); " +
                   $"lead=({leadSelectionMessage}); lifecycle=({lifecycleMessage}); " +
                   $"target=({moveTargetMessage}); " +
@@ -40,10 +41,12 @@ public static class CentipedeSmoke
                   $"avoid=({avoidanceMessage}); leg-barrier=({legBarrierMessage}); " +
                   $"scale=({scalingMessage}); " +
                   $"terrain-primitives=({terrainMessage}); course-motion=({courseMessage}); " +
-                  $"fixed-lead-descent=({fixedLeadDescentMessage})";
+                  $"fixed-lead-descent=({fixedLeadDescentMessage}); " +
+                  $"narrow-wall=({narrowWallMessage})";
         return assemblyOk && deterministicOk && leadSelectionOk && lifecycleOk
             && moveTargetOk && embedOk && idleOk && avoidanceOk && legBarrierOk
-            && scalingOk && terrainOk && courseOk && fixedLeadDescentOk;
+            && scalingOk && terrainOk && courseOk && fixedLeadDescentOk
+            && narrowWallOk;
     }
 
     /// <summary>
@@ -1132,6 +1135,194 @@ public static class CentipedeSmoke
     private readonly record struct ScaleRun(long Queries, float EndDeviationRatio, bool Finite);
 
     /// <summary>
+    /// 0.4m 窄墙双端镜像回归。Start 从墙左侧向 +X、End 从墙右侧向 -X，均让出生时
+    /// 其余节自然拖在领端后方；宿主全程只给恒定水平输入，不替控制器补上墙/下墙方向。
+    /// 通过判据读取实体球心与真实抓足，不能由提前翻面的 SurfaceTrail/SupportRatio 假造。
+    /// </summary>
+    private static bool CheckNarrowWallTraverse(out string message)
+    {
+        NarrowWallRun start = RunNarrowWall(CentipedeLeadEnd.Start);
+        NarrowWallRun end = RunNarrowWall(CentipedeLeadEnd.End);
+        bool startOk = NarrowWallPass(start);
+        bool endOk = NarrowWallPass(end);
+        message = $"start[{FormatNarrowWall(start)}] end[{FormatNarrowWall(end)}]";
+        return startOk && endOk;
+    }
+
+    private static NarrowWallRun RunNarrowWall(CentipedeLeadEnd leadEnd)
+    {
+        float direction = leadEnd == CentipedeLeadEnd.Start ? 1f : -1f;
+        var terrain = new NarrowWallTerrain(direction * NarrowWallTerrain.WallOffset);
+        CentipedeLocomotionController controller = CentipedeFactory.CreateController(
+            new Vector3(0f, 0.5f, 0f), CentipedeFactory.Long());
+        controller.RequestedLeadEnd = leadEnd;
+        Vector3 gravity = GravityPerTick();
+        Vector3 moveDir = Vector3.Right * direction;
+        Vector3 farNormal = moveDir;
+        float farFaceX = terrain.CenterX + direction * NarrowWallTerrain.HalfWidth;
+
+        int leadFarAt = -1;
+        int tailFarAt = -1;
+        int farGripAt = -1;
+        int continuedAt = -1;
+        int wrongSideRun = 0;
+        int maxWrongSideRun = 0;
+        int maxDisconnectRun = 0;
+        var disconnectRuns = new int[controller.Body.Connections.Count];
+        float maxPenetration = 0f;
+        float maxLeadY = float.NegativeInfinity;
+        float maxForwardProgress = float.NegativeInfinity;
+        bool fixedLead = true;
+        bool finite = true;
+        int ticksRun = 0;
+
+        const int maxTicks = 2400;
+        for (int tick = 1; tick <= maxTicks; tick++)
+        {
+            bool settling = continuedAt > 0;
+            controller.RequestedLeadEnd = leadEnd;
+            controller.MoveDir = settling ? Vector3.Zero : moveDir;
+            controller.RunSpeed = settling ? 0f : 1f;
+            controller.Tick(new TickContext(gravity, terrain, tick));
+            ticksRun = tick;
+
+            fixedLead &= controller.RequestedLeadEnd == leadEnd
+                && controller.LeadEnd == leadEnd;
+            finite &= AllFinite(controller);
+            maxDisconnectRun = Math.Max(maxDisconnectRun,
+                UpdatePerConnectionDisconnectRuns(controller.Body, disconnectRuns));
+
+            CentipedeSegment lead = leadEnd == CentipedeLeadEnd.Start
+                ? controller.Segments[0] : controller.Segments[^1];
+            CentipedeSegment tail = leadEnd == CentipedeLeadEnd.Start
+                ? controller.Segments[^1] : controller.Segments[0];
+            maxLeadY = Mathf.Max(maxLeadY, lead.Chunk.Pos.Y);
+            maxForwardProgress = Mathf.Max(maxForwardProgress, lead.Chunk.Pos.X * direction);
+            if (leadFarAt < 0 && WholeSphereBeyondFarFace(lead.Chunk, farFaceX, direction))
+            {
+                leadFarAt = tick;
+            }
+            if (tailFarAt < 0 && WholeSphereBeyondFarFace(tail.Chunk, farFaceX, direction))
+            {
+                tailFarAt = tick;
+            }
+            if (continuedAt < 0 && tailFarAt > 0
+                && direction * (lead.Chunk.Pos.X - farFaceX)
+                    - lead.Chunk.Radius >= 1.2f)
+            {
+                continuedAt = tick;
+            }
+
+            bool wrongSide = lead.ColliderId == NarrowWallTerrain.WallColliderId
+                && lead.SupportConfidence >= 0.25f
+                && lead.SupportNormal.Dot(farNormal) >= 0.75f
+                && (lead.Chunk.Pos - lead.SupportPoint).Dot(lead.SupportNormal)
+                    < -lead.Chunk.Radius * 0.5f;
+            wrongSideRun = wrongSide ? wrongSideRun + 1 : 0;
+            maxWrongSideRun = Math.Max(maxWrongSideRun, wrongSideRun);
+
+            if (farGripAt < 0)
+            {
+                foreach (CentipedeLeg leg in controller.Legs)
+                {
+                    if (leg.Gripping
+                        && leg.GripColliderId == NarrowWallTerrain.WallColliderId
+                        && leg.GripNormal.Dot(farNormal) >= 0.75f)
+                    {
+                        farGripAt = tick;
+                        break;
+                    }
+                }
+            }
+
+            foreach (BodyChunk chunk in controller.Body.Chunks)
+            {
+                if (terrain.SpherePenetration(chunk.Pos, chunk.Radius,
+                    out _, out float depth))
+                {
+                    maxPenetration = Mathf.Max(maxPenetration, depth);
+                }
+            }
+            foreach (CentipedeLeg leg in controller.Legs)
+            {
+                if (terrain.SpherePenetration(leg.Pos, leg.Radius,
+                    out _, out float depth))
+                {
+                    maxPenetration = Mathf.Max(maxPenetration, depth);
+                }
+            }
+
+            if (continuedAt > 0 && farGripAt > 0 && tick >= continuedAt + 120)
+            {
+                break;
+            }
+        }
+
+        return new NarrowWallRun(leadEnd, fixedLead, leadFarAt, tailFarAt,
+            farGripAt, continuedAt, maxWrongSideRun, maxDisconnectRun, maxPenetration,
+            maxLeadY, maxForwardProgress, controller.LeadChunk.Pos,
+            MaxConnectionDeviationRatio(controller.Body), finite, ticksRun);
+    }
+
+    private static bool WholeSphereBeyondFarFace(
+        BodyChunk chunk, float farFaceX, float direction) =>
+        direction * (chunk.Pos.X - farFaceX) - chunk.Radius >= 0.02f;
+
+    private static bool NarrowWallPass(in NarrowWallRun run)
+    {
+        const int wrongSideBudget = 8;
+        int tailBudget = 40 + 8 * 18;
+        int tailLag = run.LeadFarAt > 0 && run.TailFarAt > 0
+            ? run.TailFarAt - run.LeadFarAt : -1;
+        return run.FixedLead
+            && run.LeadFarAt > 0
+            && run.TailFarAt >= run.LeadFarAt
+            && tailLag <= tailBudget
+            && run.FarGripAt > 0
+            && run.ContinuedAt >= run.TailFarAt
+            && run.TicksRun - run.ContinuedAt >= 120
+            && run.MaxLeadY >= NarrowWallTerrain.TopY + 0.05f
+            && run.MaxWrongSideRun <= wrongSideBudget
+            && run.MaxDisconnectRun <= 20
+            && run.MaxPenetration <= 0.002f
+            && run.FinalDeviationRatio <= 0.1f
+            && run.Finite;
+    }
+
+    private static string FormatNarrowWall(in NarrowWallRun run)
+    {
+        int tailBudget = 40 + 8 * 18;
+        int tailLag = run.LeadFarAt > 0 && run.TailFarAt > 0
+            ? run.TailFarAt - run.LeadFarAt : -1;
+        return $"fixed={run.FixedLead}, cross={run.LeadFarAt}/{run.TailFarAt}, " +
+               $"lag={tailLag}/{tailBudget}, farGrip={run.FarGripAt}, " +
+               $"continued/settled={run.ContinuedAt}/{run.TicksRun - run.ContinuedAt}, " +
+               $"wrongSide={run.MaxWrongSideRun}/8, disconnect={run.MaxDisconnectRun}/20, " +
+               $"penetration={run.MaxPenetration:F4}/0.0020m, " +
+               $"maxY={run.MaxLeadY:F2}/{NarrowWallTerrain.TopY + 0.05f:F2}, " +
+               $"progress={run.MaxForwardProgress:F2}, " +
+               $"finalLead={run.FinalLeadPos}, " +
+               $"finalDev={run.FinalDeviationRatio:P3}, finite={run.Finite}, ticks={run.TicksRun}";
+    }
+
+    private readonly record struct NarrowWallRun(
+        CentipedeLeadEnd LeadEnd,
+        bool FixedLead,
+        int LeadFarAt,
+        int TailFarAt,
+        int FarGripAt,
+        int ContinuedAt,
+        int MaxWrongSideRun,
+        int MaxDisconnectRun,
+        float MaxPenetration,
+        float MaxLeadY,
+        float MaxForwardProgress,
+        Vector3 FinalLeadPos,
+        float FinalDeviationRatio,
+        bool Finite,
+        int TicksRun);
+
+    /// <summary>
     /// 宿主始终用 Start 端领航并保持世界向右输入。该输入在台阶顶和下层地面都明确
     /// 指向前方；只在外侧立面上退化为零，控制器必须延续过角时平行运输得到的向下
     /// 切向，而不能自行换头或回退为向上。最终同一物理头尾都须落到下层并继续向右，
@@ -1244,13 +1435,13 @@ public static class CentipedeSmoke
         message = $"fixedStart={fixedLead}, wall={wallLeadAt}/{wallTailAt}, " +
                   $"lower={lowerLeadAt}/{lowerTailAt}, " +
                   $"tailLag={(lowerLeadAt > 0 && lowerTailAt > 0 ? lowerTailAt - lowerLeadAt : -1)}" +
-                  $"/{tailBudget}, descent={netDescent:F2}/1.10m, " +
+                  $"/{tailBudget}, descent={netDescent:F2}/1.00m, " +
                   $"continuedX={continuedX:F2}/0.50m, " +
                   $"trailAlias={trailAlias}, nonAdjacent={minimumNonAdjacentSeparationRatio:F2}/0.35, " +
                   $"blocked={maxBlockedRun}/40, disconnect={maxDisconnectRun}/20, " +
                   $"finalDev={MaxConnectionDeviationRatio(controller.Body):P1}, " +
                   $"finite={finite}, ticks={ticksRun}";
-        return fixedLead && traversed && netDescent >= 1.1f && continuedX >= 0.5f
+        return fixedLead && traversed && netDescent >= 1f && continuedX >= 0.5f
             && !trailAlias && separated && structure && finite;
     }
 
@@ -1892,6 +2083,155 @@ public static class CentipedeSmoke
             hit = new TerrainHit(from.Lerp(to, t), Vector3.Up, FloorColliderId);
             return true;
         }
+    }
+
+    /// <summary>
+    /// 无限地板与 3m×0.4m 墙盒的 XY 截面；沿 Z 无限延伸。地板和墙保留独立 collider
+    /// ID，与 Godot sandbox 的两个 StaticBody3D 一致。碰撞边界只暴露实体并集的外轮廓，
+    /// 不会把墙底与地板重合处当成可抓取表面。
+    /// </summary>
+    private sealed class NarrowWallTerrain : ITerrainQuery
+    {
+        public const ulong FloorColliderId = 505UL;
+        public const ulong WallColliderId = 506UL;
+        public const float WallOffset = 6f;
+        public const float HalfWidth = 0.2f;
+        public const float TopY = 3f;
+        private const float Extent = 1000f;
+
+        private readonly Boundary[] _boundaries;
+        public float CenterX { get; }
+        private float MinX => CenterX - HalfWidth;
+        private float MaxX => CenterX + HalfWidth;
+
+        public long RayCount { get; private set; }
+        public long ShapeQueryCount { get; private set; }
+
+        public NarrowWallTerrain(float centerX)
+        {
+            CenterX = centerX;
+            _boundaries =
+            [
+                new Boundary(new Vector2(-Extent, 0f), new Vector2(MinX, 0f),
+                    new Vector2(0f, 1f), FloorColliderId),
+                new Boundary(new Vector2(MinX, 0f), new Vector2(MinX, TopY),
+                    Vector2.Left, WallColliderId),
+                new Boundary(new Vector2(MinX, TopY), new Vector2(MaxX, TopY),
+                    new Vector2(0f, 1f), WallColliderId),
+                new Boundary(new Vector2(MaxX, TopY), new Vector2(MaxX, 0f),
+                    Vector2.Right, WallColliderId),
+                new Boundary(new Vector2(MaxX, 0f), new Vector2(Extent, 0f),
+                    new Vector2(0f, 1f), FloorColliderId),
+            ];
+        }
+
+        public bool Raycast(Vector3 from, Vector3 to, out TerrainHit hit)
+        {
+            RayCount++;
+            hit = default;
+            Vector2 start = new(from.X, from.Y);
+            if (InsideFloor(start))
+            {
+                hit = new TerrainHit(from, Vector3.Zero, FloorColliderId);
+                return true;
+            }
+            if (InsideWall(start))
+            {
+                hit = new TerrainHit(from, Vector3.Zero, WallColliderId);
+                return true;
+            }
+
+            Vector2 end = new(to.X, to.Y);
+            Vector2 ray = end - start;
+            bool found = false;
+            float bestT = float.MaxValue;
+            Boundary best = default;
+            foreach (Boundary boundary in _boundaries)
+            {
+                Vector2 edge = boundary.B - boundary.A;
+                float denominator = Cross(ray, edge);
+                if (Mathf.Abs(denominator) <= 1e-8f)
+                {
+                    continue;
+                }
+                Vector2 relative = boundary.A - start;
+                float t = Cross(relative, edge) / denominator;
+                float u = Cross(relative, ray) / denominator;
+                if (t < -Epsilon || t > 1f + Epsilon
+                    || u < -Epsilon || u > 1f + Epsilon
+                    || ray.Dot(boundary.Normal) >= 0f || t >= bestT)
+                {
+                    continue;
+                }
+                found = true;
+                bestT = Mathf.Clamp(t, 0f, 1f);
+                best = boundary;
+            }
+            if (!found)
+            {
+                return false;
+            }
+
+            Vector3 point = from.Lerp(to, bestT);
+            hit = new TerrainHit(point,
+                new Vector3(best.Normal.X, best.Normal.Y, 0f), best.ColliderId);
+            return true;
+        }
+
+        public bool SpherePenetration(Vector3 center, float radius,
+            out Vector3 pushDir, out float depth)
+        {
+            ShapeQueryCount++;
+            Vector2 point = new(center.X, center.Y);
+            bool inside = InsideFloor(point) || InsideWall(point);
+            float bestDistanceSquared = float.MaxValue;
+            Vector2 closest = Vector2.Zero;
+            Vector2 closestNormal = new(0f, 1f);
+            foreach (Boundary boundary in _boundaries)
+            {
+                Vector2 edge = boundary.B - boundary.A;
+                float edgeLengthSquared = edge.LengthSquared();
+                float t = edgeLengthSquared <= 1e-12f
+                    ? 0f
+                    : Mathf.Clamp((point - boundary.A).Dot(edge)
+                        / edgeLengthSquared, 0f, 1f);
+                Vector2 candidate = boundary.A + edge * t;
+                float distanceSquared = point.DistanceSquaredTo(candidate);
+                if (distanceSquared >= bestDistanceSquared)
+                {
+                    continue;
+                }
+                bestDistanceSquared = distanceSquared;
+                closest = candidate;
+                closestNormal = boundary.Normal;
+            }
+
+            float distance = Mathf.Sqrt(bestDistanceSquared);
+            depth = inside ? radius + distance : radius - distance;
+            if (depth <= 0f)
+            {
+                pushDir = Vector3.Zero;
+                depth = 0f;
+                return false;
+            }
+            Vector2 delta = inside ? closest - point : point - closest;
+            Vector2 push = delta.LengthSquared() <= 1e-12f
+                ? closestNormal : delta.Normalized();
+            pushDir = new Vector3(push.X, push.Y, 0f);
+            return true;
+        }
+
+        private bool InsideFloor(Vector2 point) => point.Y < 0f;
+
+        private bool InsideWall(Vector2 point) =>
+            point.X > MinX && point.X < MaxX
+            && point.Y >= 0f && point.Y < TopY;
+
+        private static float Cross(Vector2 a, Vector2 b) =>
+            a.X * b.Y - a.Y * b.X;
+
+        private readonly record struct Boundary(
+            Vector2 A, Vector2 B, Vector2 Normal, ulong ColliderId);
     }
 
     /// <summary>

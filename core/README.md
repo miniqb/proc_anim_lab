@@ -102,6 +102,7 @@ dotnet run --project core/smoke     # 退出码 0=PASS：双跑 bit-exact + 哈�
                                     # + MoveTarget 直喂契约 + RotationChunk 拓扑 + wall-pose 顶死稳定性
                                     # + 蜈蚣装配/显式头尾切换/课程/固定头下阶梯/自避/查询增长
                                     # + 蜈蚣脚跨薄墙恢复（扫掠/低速 MTD/停驶抓点/同侧对照）
+                                    # + long 双端窄墙前向翻越、远侧抓足与停驶收敛
                                     # + 边界扫描
 dotnet run --project core/spider_smoke
                                     # 小/大独立哈希 + 通用拓扑 + 两段 IK + 完整生命周期
@@ -111,19 +112,21 @@ dotnet run --project core/spider_smoke
 ```
 
 当前无引擎基线：Lizard `AAA0E4963668E5DC`、centipede/short
-`4DAD09DE3CB81C31`、centipede/long `4E3DFC052BA4E74D`。改内核后先跑 smoke，再跑仓库根的
-`./tools/run_matrix.sh`。当前 Godot 全矩阵共 **32 项 = 旧 20 项 Lizard + 新 12 项
+`655A21496C00E86A`、centipede/long `59CBCF993DF8ACD8`。改内核后先跑 smoke，再跑仓库根的
+`./tools/run_matrix.sh`。当前 Godot 全矩阵共 **33 项 = 旧 20 项 Lizard + 新 13 项
 Centipede**，已经全部通过。蜈蚣最终 Godot 哈希为：
 
-- 巡逻 short/long/armored/ribbon：`BE58C639D59E1EA2`、`0D1D0D51D5E9C26B`、
-  `D595C149C1C6B8EC`、`D834CFF4122082C3`；
-- course-short/course-long/step-down-armored：`D6F99637C6D76EE1`、
-  `30793ACEDD88F34C`、`3D2594F93BC2F009`；
-- embed-long/wallside-long：`FE8E2E356129F7A2`、`E2837F5747FDFBFF`。
+- 巡逻 short/long/armored/ribbon：`0F040547BFD02043`、`B66DAAB5D006190E`、
+  `A6EDF4704829C261`、`EB6011908D0FAA19`；
+- course-short/course-long/step-down-armored：`BB6696619749832D`、
+  `A2BE4857DB102C19`、`ECC5207E14979A28`；
+- narrow-wall-long-end：`413E289A97ABD487`；
+- embed-long/wallside-long：`2C8B2D67731F2B7E`、`501B7C44E06FA68B`。
 
-short/long 课程的 `maxNoneRun=1/9`、`maxBlockedRun=0/0`、`maxConnectionRun=4/7`，
+short/long 课程的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、`maxConnectionRun=3/8`，
 尾端通过为 `15/80`、`89/184` tick（实际/预算），穿透均为 `0m`。固定头下阶梯的
-领/尾端落地为 tick `46/116`，终态非相邻间距 `1.917×` 半径和，严重成团连续 `0` tick。
+领/尾端落地为 tick `51/121`，终态非相邻间距 `1.917×` 半径和，严重成团连续 `0` tick。
+固定 End 窄墙前向翻越后停驶 `381` tick，终态连接偏差 `7%`、穿透 `0m`。
 
 蝉后端另跑：
 

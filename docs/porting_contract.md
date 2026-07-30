@@ -528,27 +528,31 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 头—SpineFollower 前向构型、全身轴与展开姿态必须在 25 tick 内恢复；中段局部轴相对头部局部轴的
 最大角度领先、连续领先 tick 与过 60° 对齐阈值的时间差只作诊断输出，尚不以任意审美阈值判红。
 
-蜈蚣纯 .NET smoke 的 short/long 双跑 bit-exact 基线为 `4DAD09DE3CB81C31` /
-`4E3DFC052BA4E74D`；解析课程覆盖地面、18°斜坡、内角墙、外角墙顶与天花板；固定
+蜈蚣纯 .NET smoke 的 short/long 双跑 bit-exact 基线为 `655A21496C00E86A` /
+`59CBCF993DF8ACD8`；解析课程覆盖地面、18°斜坡、内角墙、外角墙顶与天花板；固定
 `Start`、恒 `+X` 的解析下阶梯另断言真实立面、低地落脚、继续前进、不回访身体内部及
 不成团。薄墙足端回归另钉住 released foot 的中心扫掠与低速球壳 MTD、停驶 stance 的
-既有抓点遮挡，以及同侧碰墙不得误复位。共同硬门包含 2 mm 穿透、40 tick 换面、20 tick 逐连接深断链、
+既有抓点遮挡，以及同侧碰墙不得误复位。18 节 long 另在 0.4m 窄墙上分别固定 Start/End
+向前翻越，要求实体头尾到远侧、取得真实远侧抓足、继续离墙后停驶收敛。共同硬门包含
+2 mm 穿透、40 tick 换面、20 tick 逐连接深断链、
 `40 + 8×节数` 尾端通过与 16→32 节查询增长 ≤2.25 倍。
 
-Godot 侧新增 12 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/微扰、short/long
-全向课程、armored 固定头下阶梯、long 嵌入恢复与擦墙。与既有 20 项 Lizard 合计
-**32 项完整矩阵，当前全部 GREEN**。最终哈希快照：
+Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/微扰、short/long
+全向课程、armored 固定头下阶梯、long 固定 End 窄墙前向翻越、嵌入恢复与擦墙。
+与既有 20 项 Lizard 合计 **33 项完整矩阵，当前全部 GREEN**。最终哈希快照：
 
-- short/long/armored/ribbon：`BE58C639D59E1EA2` / `0D1D0D51D5E9C26B` /
-  `D595C149C1C6B8EC` / `D834CFF4122082C3`；
-- course-short/course-long/step-down-armored：`D6F99637C6D76EE1` /
-  `30793ACEDD88F34C` / `3D2594F93BC2F009`；
-- embed-long/wallside-long：`FE8E2E356129F7A2` / `E2837F5747FDFBFF`。
+- short/long/armored/ribbon：`0F040547BFD02043` / `B66DAAB5D006190E` /
+  `A6EDF4704829C261` / `EB6011908D0FAA19`；
+- course-short/course-long/step-down-armored：`BB6696619749832D` /
+  `A2BE4857DB102C19` / `ECC5207E14979A28`；
+- narrow-wall-long-end：`413E289A97ABD487`；
+- embed-long/wallside-long：`2C8B2D67731F2B7E` / `501B7C44E06FA68B`。
 
-真实 Jolt 课程中，short/long 的 `maxNoneRun=1/9`、`maxBlockedRun=0/0`、
-`maxConnectionRun=4/7`，最大尾端滞后分别为 15/89 tick，对应预算 80/184 tick，
-穿透均为 `0m`。固定头下阶梯的领/尾端于 tick 46/116 落地，净前进 3.387m，
+真实 Jolt 课程中，short/long 的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、
+`maxConnectionRun=3/8`，最大尾端滞后分别为 15/89 tick，对应预算 80/184 tick，
+穿透均为 `0m`。固定头下阶梯的领/尾端于 tick 51/121 落地，净前进 3.387m，
 终态非相邻间距为半径和 1.917 倍，严重成团连续 0 tick。
+固定 End 窄墙场景完成一次前向翻越后停驶 381 tick，终态连接偏差 7%，穿透 `0m`。
 
 可执行基线真相源分别位于：
 

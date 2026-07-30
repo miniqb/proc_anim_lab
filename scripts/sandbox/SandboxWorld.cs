@@ -36,7 +36,8 @@ public partial class SandboxWorld : Node3D
         "[SANDBOX] usage: --determinism=N [--tps=N] " +
         "[--breed=default|heavy|sprinter|hexapod | " +
         "--creature=centipede/short|long|armored|ribbon [--lead=start|end]] " +
-        "[--route=...|centipede-step-down] [--spawn=x,y,z] [--perturb=x] " +
+        "[--route=...|centipede-step-down|centipede-narrow-wall] " +
+        "[--spawn=x,y,z] [--perturb=x] " +
         "[--yank=T] [--expect-hash=X16]\n" +
         "[SANDBOX] interactive: 1–4 lizards, 5–8 centipedes, R swaps centipede lead, F3 debug";
 
@@ -70,6 +71,7 @@ public partial class SandboxWorld : Node3D
         new(-7.5f, 0f, 0f),
         new(-4f, 0f, 0f),
     };
+    private const float CentipedeNarrowWallFarFaceX = -6.2f;
 
     /// <summary>--route=turn：远离障碍物的纯平地 180° 往返。沿 Z 轴布置，避免坡、台阶和墙，
     /// 只验证多节脊柱能否绕支撑法线完成掉头，而不是让头/髋从彼此中间穿过去。</summary>
@@ -115,6 +117,8 @@ public partial class SandboxWorld : Node3D
     private bool _carrotTurnDrive;
     private bool _centipedeCourseDrive;
     private bool _centipedeStepDownDrive;
+    private bool _centipedeNarrowWallDrive;
+    private int _centipedeNarrowWallSettledTicks;
     private string _routeName = "default";
 
     private enum CentipedeCourseDrivePhase
@@ -695,6 +699,11 @@ public partial class SandboxWorld : Node3D
     /// </summary>
     private void SteerCentipedeAlongWaypoints()
     {
+        if (_centipedeNarrowWallDrive)
+        {
+            SteerCentipedeNarrowWall();
+            return;
+        }
         if (_centipedeStepDownDrive)
         {
             SteerCentipedeStepDown();
@@ -748,6 +757,38 @@ public partial class SandboxWorld : Node3D
             : toTarget.Normalized();
         _creature.RunSpeed = 1f;
         ApplyScriptedCentipedeLeadPolicy();
+    }
+
+    /// <summary>
+    /// 固定 End 端向前翻越旧 0.4m 墙一次，随后停驶。固定收敛窗口避免把某个运动相位
+    /// 恰巧采为终态，专项同时受通用 10% 连接偏差和 2mm 穿透门约束。
+    /// </summary>
+    private void SteerCentipedeNarrowWall()
+    {
+        _creature.MoveTarget = null;
+        if (_waypointsReached >= 1)
+        {
+            _creature.MoveDir = Vector3.Zero;
+            _creature.RunSpeed = 0f;
+            _centipedeNarrowWallSettledTicks++;
+            return;
+        }
+
+        Vector3 target = _waypoints[_waypointIndex];
+        Vector3 toTarget = target - _creature.LeadChunk.Pos;
+        toTarget.Y = 0f;
+        if (toTarget.Length() < 0.4f)
+        {
+            _waypointIndex = (_waypointIndex + 1) % _waypoints.Length;
+            _waypointsReached++;
+            target = _waypoints[_waypointIndex];
+            toTarget = target - _creature.LeadChunk.Pos;
+            toTarget.Y = 0f;
+        }
+        _creature.MoveDir = toTarget.LengthSquared() < 1e-12f
+            ? Vector3.Zero
+            : toTarget.Normalized();
+        _creature.RunSpeed = 1f;
     }
 
     /// <summary>
@@ -1914,6 +1955,25 @@ public partial class SandboxWorld : Node3D
     private int DumpCentipedeFinalState()
     {
         CentipedeLocomotionController controller = _centipedeController!;
+        float narrowWallWholeBodyClearance = float.PositiveInfinity;
+        int narrowWallFinalGrips = 0;
+        if (_centipedeNarrowWallDrive)
+        {
+            foreach (CentipedeSegment segment in controller.Segments)
+            {
+                narrowWallWholeBodyClearance = Mathf.Min(
+                    narrowWallWholeBodyClearance,
+                    CentipedeNarrowWallFarFaceX
+                    - (segment.Chunk.Pos.X + segment.Chunk.Radius));
+            }
+            foreach (CentipedeLeg leg in controller.Legs)
+            {
+                if (leg.Gripping)
+                {
+                    narrowWallFinalGrips++;
+                }
+            }
+        }
         int legBarrierRecoveries = 0;
         foreach (CentipedeLeg leg in controller.Legs)
         {
@@ -1991,6 +2051,14 @@ public partial class SandboxWorld : Node3D
                      $"finalNonAdjacent={_centipedeStepDownFinalSeparationRatio:F3}x " +
                      $"maxPileRun={_centipedeStepDownMaxPileRun} " +
                      $"leadChanged={_centipedeStepDownLeadChanged}");
+        }
+        if (_centipedeNarrowWallDrive)
+        {
+            GD.Print($"[CENTIPEDE-NARROW-WALL] waypoints={_waypointsReached}/1 " +
+                     $"settled={_centipedeNarrowWallSettledTicks}/80 " +
+                     $"lead={controller.LeadEnd}/End " +
+                     $"wholeBodyClearance={narrowWallWholeBodyClearance:F3}/-0.002m " +
+                     $"finalGrips={narrowWallFinalGrips} maxLeadY={_maxHeadY:F2}/3.05");
         }
         for (int i = 0; i < controller.Segments.Count; i++)
         {
@@ -2070,6 +2138,35 @@ public partial class SandboxWorld : Node3D
                 reasons.Add($"下阶梯终态非相邻节最小间距仅 " +
                             $"{_centipedeStepDownFinalSeparationRatio:F2}×半径和" +
                             $"（<{CentipedeStepDownFinalSeparationRatio:F2}）");
+            }
+        }
+        if (_centipedeNarrowWallDrive)
+        {
+            if (_waypointsReached < 1)
+            {
+                reasons.Add($"窄墙向前翻越只完成 {_waypointsReached}/1 次");
+            }
+            if (_centipedeNarrowWallSettledTicks < 80)
+            {
+                reasons.Add($"窄墙翻越后只收敛 {_centipedeNarrowWallSettledTicks}/80 tick");
+            }
+            if (controller.LeadEnd != CentipedeLeadEnd.End
+                || controller.RequestedLeadEnd != CentipedeLeadEnd.End)
+            {
+                reasons.Add("窄墙回归期间显式 End 领航端发生变化");
+            }
+            if (narrowWallWholeBodyClearance < -0.002f)
+            {
+                reasons.Add($"窄墙停驶后仍有身体球未完整越过远侧墙面" +
+                            $"（clearance={narrowWallWholeBodyClearance:F3}m < -0.002m）");
+            }
+            if (narrowWallFinalGrips < 1)
+            {
+                reasons.Add("窄墙停驶终态没有真实抓足");
+            }
+            if (_maxHeadY < 3.05f)
+            {
+                reasons.Add($"窄墙领航端最高仅 {_maxHeadY:F2}m（<3.05m，未越过墙顶）");
             }
         }
         if (_centipedeCourseDrive)
@@ -2301,6 +2398,12 @@ public partial class SandboxWorld : Node3D
                     _centipedeStepDownDrive = true;
                     _routeName = "centipede-step-down";
                 }
+                else if (arg == "--route=centipede-narrow-wall")
+                {
+                    _waypoints = WallRoute;
+                    _centipedeNarrowWallDrive = true;
+                    _routeName = "centipede-narrow-wall";
+                }
                 else if (arg == "--route=wall")
                 {
                     _waypoints = WallRoute;
@@ -2440,10 +2543,21 @@ public partial class SandboxWorld : Node3D
             GD.PrintErr("[SANDBOX] --route=centipede-step-down 仅适用于 centipede");
             return false;
         }
+        if (_centipedeNarrowWallDrive && _centipedeId is null)
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-narrow-wall 仅适用于 centipede");
+            return false;
+        }
         if (_centipedeStepDownDrive
             && (!_leadExplicit || _requestedCentipedeLeadEnd != CentipedeLeadEnd.Start))
         {
             GD.PrintErr("[SANDBOX] --route=centipede-step-down 需要显式 --lead=start");
+            return false;
+        }
+        if (_centipedeNarrowWallDrive
+            && (!_leadExplicit || _requestedCentipedeLeadEnd != CentipedeLeadEnd.End))
+        {
+            GD.PrintErr("[SANDBOX] --route=centipede-narrow-wall 需要显式 --lead=end");
             return false;
         }
         if (_centipedeId is not null && _regressionScenario != RegressionScenario.None)
@@ -2451,7 +2565,8 @@ public partial class SandboxWorld : Node3D
             // 这些路线的驱动与硬门直接读取 LizardLocomotionController 的脊柱/尾链状态。
             // 让蜈蚣静止跑完再报 PASS 是危险假绿；蜈蚣课程使用独立路线与断言接入前先硬拒。
             GD.PrintErr($"[SANDBOX] --route={_routeName} 仅适用于 lizard；" +
-                        "centipede 当前可用 default|wall|stand|carrot|centipede-course");
+                        "centipede 当前可用 default|wall|stand|carrot|centipede-course|" +
+                        "centipede-step-down|centipede-narrow-wall");
             return false;
         }
         return true;
