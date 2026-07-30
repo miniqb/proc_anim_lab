@@ -4,8 +4,8 @@ using Godot;
 namespace ProcAnimLab.Sandbox;
 
 /// <summary>
-/// 沙盒生物选择器。列表位置与数字键位置同口径：前四项保留既有蜥蜴，
-/// 后四项是蜈蚣实例。只负责 UI 与回调，不持有任何运动控制器。
+/// 沙盒生物选择器。列表位置与数字行键位同口径：前四项保留既有蜥蜴，
+/// 中四项是蜈蚣实例，后四项是秃鹫。只负责 UI 与回调，不持有任何运动控制器。
 /// </summary>
 public sealed class CreatureSelectorUI
 {
@@ -39,7 +39,7 @@ public sealed class CreatureSelectorUI
         column.AddChild(_leadLabel);
         column.AddChild(new Label
         {
-            Text = "1–8: switch creature  |  R: swap centipede lead  |  F3: debug",
+            Text = "1–9,0,-,=: switch creature  |  R: swap centipede lead  |  F3: debug",
         });
     }
 

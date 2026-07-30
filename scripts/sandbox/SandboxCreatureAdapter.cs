@@ -216,3 +216,93 @@ internal sealed class CentipedeSandboxCreatureAdapter : ISandboxCreatureAdapter
     public void FoldDeterministicState(DeterminismHasher hasher) =>
         Controller.FoldDeterministicState(hasher);
 }
+
+/// <summary>秃鹫飞行控制器的宿主适配。渲染走翅链专用重载（翅模式配色 + 羽毛线扇），
+/// 不经 <see cref="ISandboxAppendageView"/>——翅链是段链不是单点足端，且身体配色需要
+/// 飞行/栖息/翻滚三态（bool isSupported 表达不了）。</summary>
+internal sealed class VultureSandboxCreatureAdapter : ISandboxCreatureAdapter
+{
+    public VultureFlightController Controller { get; }
+    private readonly VultureBreedParams _breed;
+
+    public string StableId => $"vulture/{_breed.Name}";
+    public string DisplayName => _breed.Name;
+    public Body Body => Controller.Body;
+    public BodyChunk LeadChunk => Controller.FrontSpine;
+    public BodyChunk RespawnAnchor => Controller.RearSpine;
+
+    public Vector3 MoveDir
+    {
+        get => Controller.MoveDir;
+        set => Controller.MoveDir = value;
+    }
+
+    public float RunSpeed
+    {
+        get => Controller.RunSpeed;
+        set => Controller.RunSpeed = value;
+    }
+
+    public Vector3? MoveTarget
+    {
+        get => Controller.MoveTarget;
+        set => Controller.MoveTarget = value;
+    }
+
+    public bool AtMoveTarget => Controller.AtMoveTarget;
+    public int AppendageCount => Controller.Wings.Count;
+    public int GrippingAppendageCount
+    {
+        get
+        {
+            int attached = 0;
+            foreach (VultureWing wing in Controller.Wings)
+            {
+                if (wing.Attached)
+                {
+                    attached++;
+                }
+            }
+            return attached;
+        }
+    }
+
+    public bool AppendageStateIsFinite
+    {
+        get
+        {
+            foreach (VultureWing wing in Controller.Wings)
+            {
+                foreach (VultureWing.WingSegment seg in wing.Segments)
+                {
+                    if (!seg.Pos.IsFinite() || !seg.Vel.IsFinite())
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }
+
+    public VultureSandboxCreatureAdapter(VultureFlightController controller, VultureBreedParams breed)
+    {
+        Controller = controller;
+        _breed = breed;
+    }
+
+    public void Tick(in TickContext ctx) => Controller.Tick(ctx);
+    public void Shift(Vector3 offset) => Controller.Shift(offset);
+    public void Teleport(Vector3 delta) => Controller.Teleport(delta);
+    public void Launch(Vector3 impulse) => Controller.Launch(impulse);
+
+    public void BuildRenderer(BodyRenderer renderer, Node3D parent) =>
+        renderer.Build(parent, new[] { Controller.Body }, null, null,
+            Controller.Wings, Controller, _breed.FeathersPerWing);
+
+    public void DrawDebug(RayDebugDraw debugDraw, Camera3D camera) =>
+        debugDraw.Draw(camera, Controller);
+
+    public void FoldDeterministicState(DeterminismHasher hasher) =>
+        hasher.FoldWings(Controller.Wings);
+}

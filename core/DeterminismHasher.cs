@@ -80,6 +80,20 @@ public sealed class DeterminismHasher
         }
     }
 
+    /// <summary>逐翅逐节折叠 Pos/Vel（Wings/Segments 列表序 = 装配序，固定）。
+    /// 拍翅相位等控制器标量不进哈希（同守则：影响轨迹的状态由轨迹哈希抓到）。</summary>
+    public void FoldWings(IReadOnlyList<VultureWing> wings)
+    {
+        foreach (VultureWing wing in wings)
+        {
+            foreach (VultureWing.WingSegment seg in wing.Segments)
+            {
+                Fold(seg.Pos);
+                Fold(seg.Vel);
+            }
+        }
+    }
+
     /// <summary>
     /// 蜘蛛腿按装配序折叠足端动力学与会影响后续 IK 的 pole 状态。
     /// KneePos 是上述状态的派生输出，也一并折叠，让渲染姿态回归与运动回归使用同一条证据链。

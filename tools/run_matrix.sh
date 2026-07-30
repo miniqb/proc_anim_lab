@@ -1,5 +1,5 @@
 #!/bin/bash
-# 确定性全矩阵回归：33 配置（20 Lizard + 13 Centipede）× 硬断言
+# 确定性全矩阵回归：37 配置（20 Lizard + 13 Centipede + 4 Vulture）× 硬断言
 # （哈希基线 / 有限值 / 深断裂连跑 / 释放 churn / 路点下限 /
 # 位置检查 / 退出码聚合）。任何一项红 → 本脚本非零退出。旧版 `grep '[DET]'` 管道无 pipefail、
 # 探针只打印不断言, NaN、尾链断裂、原生崩溃(exit 134)全都假绿——本脚本就是那次教训的产物。
@@ -32,6 +32,10 @@ HASH_CARROT_TURN_HEAVY=3771A59BBEA8BFC2
 HASH_CARROT_TURN_HEXAPOD=5242DACF5544403E
 HASH_WALL_TAIL=4E84FC3E4EBA1BE3
 HASH_WALL_CORNER=CCCFDC1A3D452797
+HASH_VULTURE=2D5A98F31A341BD9
+HASH_VULTURE_KING=17B7904915D96960
+HASH_VULTURE_SWIFT=9CB6463BBDFBF7B2
+HASH_VULTURE_PERCH=7D2E1015ED56A00E
 
 # —— 并列蜈蚣基线（独立于上方 Lizard 真相源；各场景 tick 数见调用处）——
 HASH_CENTIPEDE_SHORT=0F040547BFD02043
@@ -271,6 +275,13 @@ run hexapod    "$HASH_HEXAPOD"  8  2000 --tps=400 --breed=hexapod
 # 评审复现固化:嵌入脱困（P1-3）与贴墙擦边（P1-2），位置断言在下方
 run embed      -                -  60   --tps=400 --route=stand --spawn=0,-0.1,0
 run wallside   -                -  120  --tps=400 --route=stand --spawn=-5.65,0.3,0
+# 秃鹫（VultureFlightController，与蜥蜴并列的飞行生物控制器）：
+# fly = 3D 巡航环线反复越 3m 薄墙（[RESULT] 断言飞行占比 ≥80% + 越墙高度 ≥4m）；
+# perch = 空中路点后喂地面目标，[RESULT] 断言真的降落吸附且终态栖息。
+run vulture       "$HASH_VULTURE"       21 2000 --tps=400 --route=fly --breed=vulture --spawn=0,0.5,0
+run vulture-king  "$HASH_VULTURE_KING"  24 2000 --tps=400 --route=fly --breed=king --spawn=0,0.5,0
+run vulture-swift "$HASH_VULTURE_SWIFT" 28 2000 --tps=400 --route=fly --breed=swift --spawn=0,0.5,0
+run vulture-perch "$HASH_VULTURE_PERCH" 2  800  --tps=400 --route=perch --breed=vulture --spawn=0,0.5,0
 
 # 并列蜈蚣矩阵（13 配置）：四预设巡逻 + short 双跑/40Hz/微扰 +
 # short/long 全向课程 + armored 固定头下阶梯 + long 窄墙/嵌入恢复/擦墙。long 课程必须实际抵达 ceiling 阶段，

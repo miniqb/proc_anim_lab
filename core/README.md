@@ -29,11 +29,15 @@
   多面抱持
 - 蝉后端：`CicadaLocomotionController`（双 chunk 差分飞行、停驻、起飞、Charge）+
   `CicadaParams` / `CicadaFactory` + 四翼四触须的固定 tick 表现状态
+- 秃鹫后端：`VultureWing`（段链翅膀：Flap 相位行波 / Grab 射线抓附，对身体零回传）+
+  `VultureFlightController`（重力常开 + 拍翅相位同步 sin² 升力脉冲注入后脊柱；
+  起飞/悬停/降落由 MoveTarget 几何与翅膀模式组合涌现，无 locomotion 状态机）+
+  `VultureBreedParams` / `BodyFactory` 秃鹫四预设（vulture/king/swift/quad）
 - 接缝：`ITerrainQuery`（射线 + 球体穿透 MTD 两原语；零法线 = HitFromInside）
   - `godot/RaycastTerrainQuery.cs`：Godot 适配器（**归宿主程序集编译**，core csproj 排除它；
     查询对象复用 + `CollisionMask`/`SetExclusions`）
   - `PlaneTerrainQuery`：纯解析平面（测试用）
-- 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（蜥蜴/蜈蚣无引擎冒烟）、
+- 回归：`DeterminismHasher`（FNV-1a 64 状态哈希）、`smoke/`（蜥蜴/蜈蚣/秃鹫无引擎冒烟）、
   `spider_smoke/`（蜘蛛拓扑、弯腿几何、生命周期、急转左右槽及站距平衡恢复与确定性）、
   `cicada_smoke/`（蝉专项无引擎冒烟）
 
@@ -41,7 +45,9 @@
 `Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端，
 `CentipedeLeg` + `CentipedeLocomotionController` + `CentipedeParams` 是蜈蚣式运动后端，
 `SpiderLeg` + `SpiderLocomotionController` + `SpiderBreedParams` 是蜘蛛式运动后端，
-`CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端。四者是共享层之上的并列控制器，
+`CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端，
+`VultureWing` + `VultureFlightController` + `VultureBreedParams` 是秃鹫式飞行后端。
+五者是共享层之上的并列控制器，
 不互相继承；后续物种也应沿这个边界增加后端，不把 locomotion 模式堆进一个万能类。
 蜈蚣与蝉的完整契约分别见
 [`docs/centipede_controller.md`](../docs/centipede_controller.md) 和

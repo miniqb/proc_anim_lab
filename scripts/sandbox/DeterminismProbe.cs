@@ -27,7 +27,8 @@ public sealed class DeterminismProbe
         _checkpointInterval = checkpointInterval;
     }
 
-    public void Record(long tick, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null)
+    public void Record(long tick, IReadOnlyList<Body> bodies, IReadOnlyList<Limb>? limbs = null,
+        IReadOnlyList<VultureWing>? wings = null)
     {
         if (Finished)
         {
@@ -41,6 +42,10 @@ public sealed class DeterminismProbe
         if (limbs is not null)
         {
             _hasher.FoldLimbs(limbs);
+        }
+        if (wings is not null)
+        {
+            _hasher.FoldWings(wings);
         }
 
         FinishTick(tick);
