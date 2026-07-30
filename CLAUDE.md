@@ -40,6 +40,8 @@
 - **[`docs/centipede_controller.md`](docs/centipede_controller.md)** —— 并列蜈蚣后端：任意节/逐节覆写装配、双端表面轨迹、真实抓足、生命周期、四个稳定预设与当前验证边界。
 - **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`+`BodyPart` 继承树、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱或多节腿前先查这里的先例。
 - **[`docs/cicada_controller.md`](docs/cicada_controller.md)** —— **M6 产物**。Cicada 双 chunk 飞行、稳定 3D 姿态、显式停驻、Charge、附肢表现、宿主接口与专项回归。
+- [`docs/known_issue_three_chunk_turn_response.md`](docs/known_issue_three_chunk_turn_response.md) —— **历史问题**（已随 RearBrace 轮消失，2026-07-30 重跑确认）：三节脊柱行进中切向时中段领先头段。保留确定性复现、指标定义与前后对照。
+- **蜘蛛 / 秃鹫 / 人形三个并列后端没有独立文档**：契约分别在 [`docs/porting_contract.md`](docs/porting_contract.md) §2.3 / §2.5·§4.1b / §4.2·§5.4，以及本文件 §5 的对应段落。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
 - 源文档（主项目，真相源）：`../random_room/random-room-runtime/docs/rainworld_procedural_animation_research.md`（本项目内为**工作副本**，两边如有更新需手动同步；副本中指向主项目其它文档的相对链接会失效，属正常）。
 - 主项目怪物美术/规格（回迁时对接）：`../random_room/random-room-runtime/docs/monster_visual_research.md`、`procedural_monster_visual_spec.md`、`tyrant_enemy_requirements.md`。

@@ -132,7 +132,8 @@ controller.Tick(new TickContext(gravityPerTick, terrain, tick));
 
 既有 Lizard 无引擎基线仍为 `AAA0E4963668E5DC`。
 
-Godot 全矩阵当前共 **33 项 = 旧 20 项 Lizard + 新 13 项 Centipede**，已经全部通过。
+Godot 全矩阵当前共 **45 项 = 20 项 Lizard + 13 项 Centipede + 4 项 Vulture + 8 项 Humanoid**
+（本文档只负责其中的 13 项 Centipede；权威清单见 [`../tools/run_matrix.sh`](../tools/run_matrix.sh)），已经全部通过。
 新增 13 项包含四预设巡逻、short 双跑/40Hz/微扰、short/long 全向课程、armored 固定头
 下阶梯、long 固定 End 窄墙前向翻越，以及 long 嵌入恢复/擦墙。最终 Godot 哈希为：
 

@@ -50,10 +50,13 @@
 | `CicadaParams.cs` | 蝉出生参数（尺寸、飞行动力、翼/触须表现尺度） | Cicada 个体差异的确定性子集 |
 | `CicadaFactory.cs` | 双 chunk 身体装配 + light/dark 两个预设 | Cicada 构造 |
 | `CicadaWingState.cs` / `CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
+| `VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
+| `VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
+| `VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
 | `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
 | `PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
-| `smoke/` | 蜥蜴与蜈蚣无引擎冒烟回归 console 工程（§7.2） | — |
+| `smoke/` | 蜥蜴 / 蜈蚣 / 秃鹫 / 人形的无引擎冒烟回归 console 工程（§7.2） | — |
 | `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK 与生命周期无引擎回归 | — |
 | `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
 
@@ -234,6 +237,36 @@ CicadaLocomotionController controller =
 - `Shift` 平移全部世界坐标记忆并保留状态；`Teleport` / `Launch` 清飞行目标、停驻和 Charge。
 - RW 的 `stamina` 主要服务负载、黏附和被抓交互；这些宿主接缝未引入前，不得把它误作普通飞行燃料。
 
+### 2.5 秃鹫装配契约（VultureFlightController）
+
+```csharp
+VultureBreedParams p = BodyFactory.Vulture();      // 或 KingVulture/Swift/QuadWing/VultureByName(name)
+VultureFlightController bird = BodyFactory.CreateVultureController(origin, p);  // origin = 肩线中心
+```
+
+- 与蜥蜴并列的**飞行**后端，只共享 `Body`/chunk/connection/`ITerrainQuery`；`VultureBreedParams`
+  与 `BreedParams` 是两张互不混装的表（`AllVultureBreeds()` / `IsVultureBreed(name)` 路由；
+  未知名回落基准 vulture，同蜥蜴 `ByName` 的静默回落语义）。
+- 身体 = 四 chunk 刚架（前脊柱 / 后脊柱 / 双肩，六条 Rigid 全三角化，`RestLength` 取出生几何）
+  + 头 PullOnly 拴绳（`WeightA=0`：头的重量拖不动身体）。翅膀挂在肩 chunk 上。
+- **与地面生物的根本差异：重力常开，没有重力开关。** 升力 = 与拍翅相位同步的 sin² 脉冲
+  （谷值恰为 0），只注入后脊柱单 chunk，由约束松弛摊到四个躯干 chunk，周期均值与重力平衡
+  ——**悬停时的上下颠簸是这套机制的直接后果（≙ RW 手感），不是 bug**。下降不施向下力：
+  意图朝下时倒拨拍翅相位（`FlapGlideRate`），冻结在低升力半区滑翔。
+- **升力逐翅注入，不设 `AirBorne` 外层门**（≙ RW 写在每只翅膀的 Fly 分支里）：混合翅态下仍在
+  拍的翅膀继续托身体——「单翅失能 → 失衡侧倾」的涌现以此为前提。全翅 Grab（栖息）时天然零注入。
+- **没有 locomotion 状态机**：模式在每只翅膀上（`VultureWing.WingMode.Flap|Grab`），
+  `AirBorne`/栖息由翅膀组合涌现。起飞/降落由 `MoveTarget` 几何触发（落点贴地探测 + 进入
+  `LandEngageRadius` → 全翅 Grab + 制动 + 切换锁 `LandingModeLockTicks`；栖息 + 远/悬空目标 →
+  全翅 Flap + `TakeoffBoostTicks` 助推）。切换锁存在的意义是防止俯冲降落被坠落自救掰回 Flap。
+- `VultureWing` **不复用 `Limb`**（plant-and-trail 是地面步态状态机）：段链粒子 + 只抗拉绳约束，
+  对身体零回传，唯一例外是抓地时的悬挂拉力。`Flap` 的扫掠幅度（5~15m）故意远超可达距离——
+  伺服饱和截断才是有效机制，不要把它当成几何目标去「修正」。
+- 注速一律做 headroom 钳制（`MaxFlySpeed`/`MaxRiseSpeed`）：连续喂点必须显式封顶，同蜥蜴
+  `MaxMoveSpeed` 的论证。
+- 直喂契约的飞行版补充（实测教训）：巡航路点须离地形 **≥ 降落贴地探测深度（1.2m）**，否则内核
+  会如实降落；下降段要给滑翔垂度留约 1m 余量，否则擦墙顶。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -263,6 +296,11 @@ CicadaLocomotionController controller =
   先按上一轮模式配置身体并执行 `Body.Tick` → 读取本 tick 接触、停驻表面和 Charge 撞击
   → 更新 `Mode` / `FlightPower` / 输入目标 → 向前后 chunk 注入下一 tick 使用的差分飞行动力
   → 更新稳定 3D 姿态框架、四翼与触须。渲染不反向影响物理。
+- `VultureFlightController.Tick` 内部序（≙ RW `Vulture.Act`）：解析直喂目标与到达迟滞 →
+  拍翅相位/振幅 → 逐翅模式决策（坠落自救 → 降落 → 起飞 → 逐翅自主）→ 身体阻尼/俯仰配平 →
+  悬停或巡航推进（或栖息爬行）→ **逐翅升力注入** → 降落制动/起飞助推 → 头部伺服 →
+  `Body.Tick` → 翅膀 tick → 支撑汇总 → 清除派生意图。升力必须留在 `Body.Tick` 之前，
+  换序等于把脉冲挪到另一个相位上，周期均值与重力的平衡即失效。
 
 ### 3.2 渲染插值
 
@@ -372,6 +410,23 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   非嵌入），不要落在内核身体的几何附近乱推——嵌入虽会被 S4 MTD 解出，但可能与
   根方向形成来回拉锯。落点取「根位置 + 品种站高」最稳。
 
+### 4.1b 秃鹫（VultureFlightController）的输入面差异
+
+三旋钮同名同义，差异全部来自「会飞」：
+
+- `MoveDir` 是**完整 3D** 意图（含竖直分量，不像人形被压平）；`MoveTarget` 同样是 3D 路径点，
+  到点半径字段名为 `MoveTargetArriveRadius`（默认 0.6m）。共用同一 `MoveIntentDeadzone=0.1`。
+- `AtMoveTarget` **带迟滞**（进 1× / 出 2× 半径）：悬停时升力谷值的下沉会把身体带出到点半径，
+  无迟滞会在「悬停↔爬回」间逐 tick 抖动。迟滞态**绑定具体目标**——宿主换点即复位，否则新点
+  落在旧点的 2× 出圈半径内会被误报到达（评审确认缺陷，smoke `[CORE-VULTURE-CONTRACT]` 钉死）。
+- 悬停锚（`HoverAnchor`）只在**真到点**时取喂点：零油门 + 远处残留目标不得绕过油门自动巡航。
+- `Shift`/`Teleport`/`Launch` 与蜥蜴同名同义（`Shift` 保留飞行/抓附状态并平移全部世界坐标记忆）。
+- 观测面：`AirBorne`/`AnyWingAttached`（是否栖息/挂住）、`SupportValue`、`WingFlap`/
+  `WingFlapAmplitude`（拍翅相位与展开度，渲染用）、`HoverAnchor`、`LandingBrakeTicks`/
+  `TakeoffBoostTicks`/`ModeSwitchLockTicks`、`LastMoveIntent`，以及逐翅
+  `VultureWing.Mode`/`Segments[i].LerpPos(t)`/`GripPos`/`GripNormal`/`Attached`/`Gripping`。
+  全部只读；翅膀段是渲染与抓附的唯一真相，不要另建一套骨架去反推。
+
 ### 4.2 人形（HumanoidLocomotionController）的输入面差异
 
 三旋钮语义与蜥蜴一致（`MoveDir`/`RunSpeed`/可选 `MoveTarget`，同一 `MoveIntentDeadzone`），
@@ -407,6 +462,7 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 | `SpiderLocomotionController.ApplyGravity` / `.SupportNormal` | 蜘蛛抓稳状态与完整表面朝向 |
 | `SpiderLeg.LerpRoot(t)` / `.LerpKnee(t)` / `.LerpPos(t)` | 蜘蛛两段腿：根→膝→足端 |
 | `SpiderLeg.Gripping` / `.ReachingForTerrain` / `.GripNormal` | 蜘蛛真实抓点状态；膝点不作为物理接触 |
+| `VultureWing.Segments[i].LerpPos(t)` / `.Mode` / `.Attached` | 秃鹫翅膀段链（渲染与抓附的唯一真相）；其余观测量见 §4.1b |
 
 ### 5.2 AI / 游戏逻辑可读
 
@@ -530,8 +586,12 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 #    双跑 bit-exact + 哈希对基线（钉死在 Program.cs 的 ExpectedHash，防「确定但错误」）
 #    + 里程/约束收敛/无 NaN + 嵌入恢复 + Shift 连续性 + Launch 恢复
 #    + MoveTarget 到达/取消/传送契约 + RotationChunk 拓扑（互绑/覆盖/钉定/尾链/退化语义）
-#    + wall-pose 墙顶顶死+侧扰动稳定性 + 蜈蚣装配/显式头尾切换/表面课程/生命周期/自避/查询增长
+#    + wall-pose 墙顶顶死+侧扰动稳定性 + heavy 上墙回摆收敛（推墙/停驶双场景）
+#    + 蜈蚣装配/显式头尾切换/表面课程/生命周期/自避/查询增长
 #    + 蜈蚣脚跨薄墙恢复（中心扫掠/低速球壳 MTD/停驶抓点/同侧碰墙对照）
+#    + 秃鹫（起飞→巡航→悬停→降落栖息全流程哈希 / 击飞恢复 / Shift 逐字段 / 装配不变量 /
+#      评审修复契约：无假到达、零油门不漂移、混合翅态波峰注入、俯冲自救吸附）
+#    + 人形八断言（DET/STAND/STUN/ACT/SHIFT/GRAVITY/HANDS/GAIT）
 #    + TypeRef 引擎边界扫描。
 dotnet run --project core/smoke
 
@@ -572,6 +632,8 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 `carrot-turn-heavy`/`carrot-turn-hexapod` 另在纯平地稳定行进中把 External 目标侧转约 90°（实际方向点积门控）：
 头—SpineFollower 前向构型、全身轴与展开姿态必须在 25 tick 内恢复；中段局部轴相对头部局部轴的
 最大角度领先、连续领先 tick 与过 60° 对齐阈值的时间差只作诊断输出，尚不以任意审美阈值判红。
+（2026-07-30 重跑：两条配置的诊断项均已归零、恢复 7/6 tick——RearBrace 轮的顺带结果，
+历史对照见 [`known_issue_three_chunk_turn_response.md`](known_issue_three_chunk_turn_response.md)。）
 
 蜈蚣纯 .NET smoke 的 short/long 双跑 bit-exact 基线为 `655A21496C00E86A` /
 `59CBCF993DF8ACD8`；解析课程覆盖地面、18°斜坡、内角墙、外角墙顶与天花板；固定
