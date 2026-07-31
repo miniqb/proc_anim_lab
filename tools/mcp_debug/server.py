@@ -251,7 +251,7 @@ def debug_locals(frame: int = 0, depth: int = 2) -> str:
     fr = (frames.get("stackFrames") or [None])[0]
     if not fr:
         return f"没有第 {frame} 层栈帧。"
-    scopes = _dap("scopes", {"frameId": fr["frameId"]}) or {}
+    scopes = _dap("scopes", {"frameId": fr["id"]}) or {}
     out = [f"帧 #{frame} {fr.get('name')}"]
     for sc in scopes.get("scopes", []):
         if sc.get("expensive"):
@@ -270,7 +270,7 @@ def debug_eval(expr: str, frame: int = 0, depth: int = 1) -> str:
     fr = (frames.get("stackFrames") or [None])[0]
     if not fr:
         return f"没有第 {frame} 层栈帧。"
-    res = _dap("evaluate", {"expression": expr, "frameId": fr["frameId"], "context": "repl"}) or {}
+    res = _dap("evaluate", {"expression": expr, "frameId": fr["id"], "context": "repl"}) or {}
     lines = [f"{expr} = {res.get('result')}"]
     lines.extend(_expand(res.get("variablesReference", 0), depth))
     return "\n".join(lines)
