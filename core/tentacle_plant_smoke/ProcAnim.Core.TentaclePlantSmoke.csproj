@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- TentaclePlant 专项无引擎回归：纯 .NET 驱动固定 tick，不加载 Godot 场景树。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ProcAnim.Core.TentaclePlantSmoke</RootNamespace>
+    <AssemblyName>ProcAnim.Core.TentaclePlantSmoke</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ProcAnim.Core.csproj" />
+  </ItemGroup>
+</Project>

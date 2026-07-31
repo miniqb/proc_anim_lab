@@ -35,6 +35,10 @@
   多面抱持
 - 蝉后端：`CicadaLocomotionController`（双 chunk 差分飞行、停驻、起飞、Charge）+
   `CicadaParams` / `CicadaFactory` + 四翼四触须的固定 tick 表现状态
+- 拟态草后端：`TentacleChain`（独立多节触手、路径引导、地形回溯）+
+  `TentaclePlantController`（锚定式三维游荡、目标蓄势、突刺、抓取回收）+
+  `TentaclePlantParams` / `TentaclePlantFactory`（original/short/hunter 三个稳定预设）；
+  完整契约见 [`docs/tentacle_plant_controller.md`](../docs/tentacle_plant_controller.md)
 - 秃鹫后端：`VultureWing`（段链翅膀：Flap 相位行波 / Grab 射线抓附，对身体零回传）+
   `VultureFlightController`（重力常开 + 拍翅相位同步 sin² 升力脉冲注入后脊柱；
   起飞/悬停/降落由 MoveTarget 几何与翅膀模式组合涌现，无 locomotion 状态机）+
@@ -46,7 +50,8 @@
 - 回归：`DeterminismHasher`（FNV-1a 64 状态哈希；人形折叠序 chunks → legs → arms）、
   `smoke/`（蜥蜴/人形/蜈蚣/秃鹫无引擎冒烟）、
   `spider_smoke/`（蜘蛛拓扑、弯腿几何、生命周期、急转左右槽及站距平衡恢复与确定性）、
-  `cicada_smoke/`（蝉专项无引擎冒烟）
+  `cicada_smoke/`（蝉专项无引擎冒烟）、
+  `tentacle_plant_smoke/`（拟态草装配、三维游荡、攻击时序、命中/扑空、生命周期与确定性）
 
 `BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
 `Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端，
@@ -54,12 +59,14 @@
 `CentipedeLeg` + `CentipedeLocomotionController` + `CentipedeParams` 是蜈蚣式运动后端，
 `SpiderLeg` + `SpiderLocomotionController` + `SpiderBreedParams` 是蜘蛛式运动后端，
 `CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端，
+`TentacleChain` + `TentaclePlantController` + `TentaclePlantParams` 是拟态草伏击后端，
 `VultureWing` + `VultureFlightController` + `VultureBreedParams` 是秃鹫式飞行后端。
-六者是共享层之上的并列控制器，
+七者是共享层之上的并列控制器，
 不互相继承；后续物种也应沿这个边界增加后端，不把 locomotion 模式堆进一个万能类。
-蜈蚣与蝉的完整契约分别见
+蜈蚣、蝉与拟态草的完整契约分别见
 [`docs/centipede_controller.md`](../docs/centipede_controller.md) 和
-[`docs/cicada_controller.md`](../docs/cicada_controller.md)。
+[`docs/cicada_controller.md`](../docs/cicada_controller.md)、
+[`docs/tentacle_plant_controller.md`](../docs/tentacle_plant_controller.md)。
 
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 
@@ -123,32 +130,14 @@ dotnet run --project core/spider_smoke
                                     # + 可达环/反折恢复 + 抓点背书/超时 + 180°/天花板重抓
                                     # + 小/大逐腿完整步幅、后腿拖步与抬脚高度门
                                     # + 左右 90°/180° 的足端/AEP 槽位与左右站距平衡恢复
-```
-
-当前无引擎基线：Lizard `AAA0E4963668E5DC`、centipede/short
-`655A21496C00E86A`、centipede/long `59CBCF993DF8ACD8`。改内核后先跑 smoke，再跑仓库根的
-`./tools/run_matrix.sh`。当前 Godot 全矩阵共 **33 项 = 旧 20 项 Lizard + 新 13 项
-Centipede**，已经全部通过。蜈蚣最终 Godot 哈希为：
-
-- 巡逻 short/long/armored/ribbon：`0F040547BFD02043`、`B66DAAB5D006190E`、
-  `A6EDF4704829C261`、`EB6011908D0FAA19`；
-- course-short/course-long/step-down-armored：`BB6696619749832D`、
-  `A2BE4857DB102C19`、`ECC5207E14979A28`；
-- narrow-wall-long-end：`413E289A97ABD487`；
-- embed-long/wallside-long：`2C8B2D67731F2B7E`、`501B7C44E06FA68B`。
-
-short/long 课程的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、`maxConnectionRun=3/8`，
-尾端通过为 `15/80`、`89/184` tick（实际/预算），穿透均为 `0m`。固定头下阶梯的
-领/尾端落地为 tick `51/121`，终态非相邻间距 `1.917×` 半径和，严重成团连续 `0` tick。
-固定 End 窄墙前向翻越后停驶 `381` tick，终态连接偏差 `7%`、穿透 `0m`。
-
-蝉后端另跑：
-
-```bash
 dotnet run --project core/cicada_smoke
-./tools/run_cicada_matrix.sh
+                                    # 飞行/停驻/起飞/Charge/3D 姿态与生命周期
+dotnet run --project core/tentacle_plant_smoke
+                                    # 三预设装配 + 三向安装 + idle/hit/miss/occluded
+                                    # + 攻击阶段时序 + Shift/Remount/释放目标 + 双跑确定性
 ```
 
-改内核后先跑三个 smoke，再跑仓库根的 `./tools/run_spider_matrix.sh`、
-`./tools/run_cicada_matrix.sh` 和 `./tools/run_matrix.sh` 三套全矩阵回归
-（断言化，见 CLAUDE.md §5），保证已有 Lizard / Centipede / Spider / Cicada 基线保持不变。
+哈希和配置数量以各 smoke / matrix 脚本的当前输出与钉死常量为唯一真相源；文档不复制
+可能漂移的快照。改共享内核后先跑全部无引擎 smoke，再跑仓库根的
+`./tools/run_matrix.sh`、`./tools/run_spider_matrix.sh`、`./tools/run_cicada_matrix.sh` 和
+`./tools/run_tentacle_plant_matrix.sh`，保证既有后端基线不漂移。

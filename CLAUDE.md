@@ -2,11 +2,13 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**M6 Cicada 独立后端 + 并列蜈蚣控制器 + 秃鹫飞行控制器 + 人形运动后端完成（2026-07-30）**——
-> `ProcAnim.Core` 现在包含 Lizard / Humanoid / Spider / Centipede / Cicada / Vulture 六个平行的物种控制器。
+> 当前状态：**TentaclePlant 锚定伏击后端 + M6 Cicada 独立后端 + 既有并列物种控制器（2026-07-31）**——
+> `ProcAnim.Core` 现在包含 Lizard / Humanoid / Spider / Centipede / Cicada / Vulture /
+> TentaclePlant 七个平行的物种控制器。
 > 蜈蚣的任意节装配、双端表面轨迹、真实抓足和四个稳定预设，蝉的 3D 飞行、显式三面停驻、Charge、
 > 四翼四触须和 light/dark 预设，以及秃鹫的重力常开升力脉冲飞行、拍翅行波、栖息/起飞涌现和
-> 四个品种预设均已落地并有独立回归；M5 内核抽离、回迁契约及 Lizard 外部评审修复保持完成。
+> 四个品种预设均已落地并有独立回归；拟态草另以三向锚定、独立段链、伏击抓取回收和三预设
+> 展示固定生物参数空间；M5 内核抽离、回迁契约及 Lizard 外部评审修复保持完成。
 > 「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
@@ -38,8 +40,9 @@
 - **[`docs/rainworld_procedural_animation_research.md`](docs/rainworld_procedural_animation_research.md)** —— **核心参考**。雨世界程序化动画系统深度研究 + **反编译实证（§11 代码级：BodyPart/Limb/LizardLimb/TailSegment/TerrainCurve 等）** + **Godot 移植策略（§12：为什么用射线而不是细网格）**。
 - **[`docs/porting_contract.md`](docs/porting_contract.md)** —— **M5 产物**。`ProcAnim.Core` → `random-room-runtime` 回迁契约：模块清单与依赖面、装配/驱动/输入/输出四契约、`ITerrainQuery` 接缝语义、确定性守则与三层回归、两条迁移路线与两种集成姿态（含主项目对接面调研快照）。
 - **[`docs/centipede_controller.md`](docs/centipede_controller.md)** —— 并列蜈蚣后端：任意节/逐节覆写装配、双端表面轨迹、真实抓足、生命周期、四个稳定预设与当前验证边界。
-- **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`+`BodyPart` 继承树、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱或多节腿前先查这里的先例。
+- **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`/`BodyPart` 继承树与独立 `Tentacle` 段链、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱、肢体或固定触手前先查这里的先例。
 - **[`docs/cicada_controller.md`](docs/cicada_controller.md)** —— **M6 产物**。Cicada 双 chunk 飞行、稳定 3D 姿态、显式停驻、Charge、附肢表现、宿主接口与专项回归。
+- **[`docs/tentacle_plant_controller.md`](docs/tentacle_plant_controller.md)** —— **并列拟态草后端**。基于当前 DLL 的 TentaclePlant/Tentacle 直接取证：锚定安装、独立多节触手、三维确定性游荡、蓄势—突刺—回收、纯值目标/效果接缝、三向安装沙盒与专项回归。
 - [`docs/known_issue_three_chunk_turn_response.md`](docs/known_issue_three_chunk_turn_response.md) —— **历史问题**（已随 RearBrace 轮消失，2026-07-30 重跑确认）：三节脊柱行进中切向时中段领先头段。保留确定性复现、指标定义与前后对照。
 - **蜘蛛 / 秃鹫 / 人形三个并列后端没有独立文档**：契约分别在 [`docs/porting_contract.md`](docs/porting_contract.md) §2.3 / §2.5·§4.1b / §4.2·§5.4，以及本文件 §5 的对应段落。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
@@ -211,6 +214,29 @@
 > 起飞/Charge；`core/cicada_smoke` 和 `tools/run_cicada_matrix.sh` 覆盖固定哈希、40/400Hz、
 > 微扰、三面停驻、起飞、撞墙与双预设。详细契约见 `docs/cicada_controller.md`。
 >
+> **并列拟态草后端（TentaclePlant，2026-07-31）**：当前 DLL 直接取证纠正了旧分类误记——
+> 原作 `Tentacle` 是自有 `tChunks[]` / `TentacleProps` / 地形回溯的独立类，**不继承**
+> `BodyPart` 或 `Limb`；TentaclePlant / PoleMimic / GarbageWorm 也都是 `Creature` 直系，
+> 共性仅为 2 chunk、0 connection、固定根 + 独立触手链，伏击/伪装/抓矛行为互不复用。
+> 本项目因此新增平行的 `TentacleChain` / `TentaclePlantController` /
+> `TentaclePlantParams` / `TentaclePlantFactory`，不改 Lizard 或共享积分语义。original
+> 直接换算原作 `300px=7.5m`、8 段、根/梢 `8/1px`；原作攻击事实为可视近距目标
+> 90 tick 充能（过半明显 Windup）→10 tick 锁向突刺→结束后 40 tick 余留抓取窗，
+> 命中约 80 tick 收回，再以距根 0.5m 或额外强拉 30 tick 请求吞入；扑空没有虚构硬 cooldown。
+> 3D 扩展由 `TentaclePlantMount(Point,OutwardNormal,TangentHint,ColliderId)` 建完整局部系，
+> 游荡区是以 mount 前方偏置点为球心、裁掉安装平面后方部分的轴对称球冠，
+> floor/wall/ceiling 同公式；固定序的 `GuidePoints` /
+> `BacktrackFrom` 只走 `ITerrainQuery`，不靠世界 Up 或引擎随机。宿主写 nullable
+> `TentaclePlantTargetSnapshot`，核心每 tick 输出
+> `TentaclePlantTargetEffect`（TargetId/CaptureStarted/Held/PositionCorrection/VelocityDelta/
+> Released/ConsumeRequested），真实猎物、伤害与吞入归 gameplay 权威。稳定 ID =
+> `tentacle-plant/original|short|hunter`（7.5m/8 段基准、5m/6 段更软慢蓄势、
+> 9m/10 段更硬快攻）；未知 ID 快速失败。独立入口为
+> `scenes/tentacle_plant_sandbox.tscn`、`core/tentacle_plant_smoke` 与
+> `tools/run_tentacle_plant_matrix.sh`；覆盖三向 idle、hit、miss、occluded、双跑/40vs400/
+> 微扰、生命周期、finite/root 固定与查询峰值，哈希和配置数量只认脚本当前输出。
+> 完整依据、API、3D 取舍与已知问题见 `docs/tentacle_plant_controller.md`。
+>
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
 > **SpineFollower 修复（RotationChunk 轮后追加，2026-07；多节脊柱爬墙 V 形折叠 bug）**：`LizardLocomotionController.ApplyLocomotionForce` 原先让链尾 `Hips` 直接追「目标点身后一节」，偏移量取 `SpineLength`（= 脊柱**全长**，头到髋各连接 RestLength 之和）——两节脊柱（Head/Hips 相邻）时这恰好退化成正确语义，三节以上（heavy/hexapod）时中间节完全没有驱动力，两条独立刚性连接在「头到髋直线距离 < 脊柱全长」的欠约束自由度上被动折成 V 形，且抓稳后重力关闭，错误姿态可稳定维持（反编译 `Lizard.cs:2277-2280` 核实根因：RW 原版只用 `bodyChunkConnections[0].distance`——**单节**长度——驱动 `bodyChunks[1]`，链尾 `bodyChunks[2]` 从不被直接追踪，只靠连接约束被动拖行）。修复：新增 `LizardLocomotionController.SpineFollower`（≙ `bodyChunks[1]`，工厂钉定为 `chunks[1]`）与 `HeadLinkLength`（单节长度）承接这个追踪力，`Hips` 恢复纯被动拖行。两节脊柱下 `SpineFollower` 与 `Hips` 是同一 chunk 且 `HeadLinkLength` 数值与原 `SpineLength` 相同——`default`/`sprinter`/`wall`/`stand`/`carrot`/`embed`/`wallside` 七条矩阵配置与 smoke 哈希逐位不变（no-op 有数学证明，非仅回归验证）；`heavy`/`hexapod`（三节脊柱）换新基线：路点数 heavy 6→8、hexapod 8→9（同 2000 tick），官方巡逻路线下头-中-髋夹角由折叠态稳定 ~53° 回升到稳态 ~177°（转弯/翻越瞬态低至 116°~151°，但数百 tick 内自行回直，不再像修复前那样滞留）。
@@ -290,10 +316,17 @@
 > #   人形（hwalk）：humanoid 27 路点、humanoid-brute 23、humanoid-waif 34。
 > # 当前 45 项 = 20 项 Lizard + 13 项 Centipede + 4 项 Vulture + 8 项 Humanoid，完整矩阵已 GREEN。
 >
-> # ③ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
+> # ③ 拟态草专项（独立计数，不预写未验证哈希/矩阵总数）：
+> dotnet run --project core/tentacle_plant_smoke
+> ./tools/run_tentacle_plant_matrix.sh
+> # 覆盖 original/short/hunter、floor/wall/ceiling idle、hit/miss/occluded、
+> # 双跑/40vs400/1mm 微扰、Shift/Remount/ReleaseHeldTarget、finite/root 固定与查询峰值。
+>
+> # ④ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 可执行基线真相源：tools/run_matrix.sh + core/smoke/Program.cs
 > # （ExpectedHash 蜥蜴 / ExpectedVultureHash 秃鹫 / HumanoidExpectedHash 人形）+
-> # core/smoke/CentipedeSmoke.cs。有意改内核时更新对应真相源，别处一律引用不复制。
+> # core/smoke/CentipedeSmoke.cs；拟态草另见 tools/run_tentacle_plant_matrix.sh +
+> # core/tentacle_plant_smoke/Program.cs。有意改内核时更新对应真相源，别处一律引用不复制。
 > ```
 
 ## 6. 环境

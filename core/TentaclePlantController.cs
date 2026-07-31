@@ -1,0 +1,841 @@
+using System;
+using System.Collections.Generic;
+using Godot;
+
+namespace ProcAnim.Core;
+
+/// <summary>宿主提供的固定安装面。工厂会归一化法线并把 TangentHint 投影到切平面。</summary>
+public readonly struct TentaclePlantMount
+{
+    public readonly Vector3 Point;
+    public readonly Vector3 OutwardNormal;
+    public readonly Vector3 TangentHint;
+    public readonly ulong ColliderId;
+
+    public TentaclePlantMount(
+        Vector3 point,
+        Vector3 outwardNormal,
+        Vector3 tangentHint,
+        ulong colliderId)
+    {
+        Point = point;
+        OutwardNormal = outwardNormal;
+        TangentHint = tangentHint;
+        ColliderId = colliderId;
+    }
+
+    internal TentaclePlantMount Shifted(Vector3 delta) =>
+        new(Point + delta, OutwardNormal, TangentHint, ColliderId);
+}
+
+/// <summary>
+/// 宿主权威目标的单 tick 快照。控制器绝不持有或修改外部实体引用；VelocityPerTick
+/// 与内核 BodyChunk.Vel 同单位。
+/// </summary>
+public readonly struct TentaclePlantTargetSnapshot
+{
+    public readonly ulong StableId;
+    public readonly Vector3 Position;
+    public readonly Vector3 VelocityPerTick;
+    public readonly float Radius;
+    public readonly float Mass;
+    public readonly bool HostVisible;
+    public readonly bool HostGrabbable;
+
+    public TentaclePlantTargetSnapshot(
+        ulong stableId,
+        Vector3 position,
+        Vector3 velocityPerTick,
+        float radius,
+        float mass,
+        bool hostVisible,
+        bool hostGrabbable)
+    {
+        StableId = stableId;
+        Position = position;
+        VelocityPerTick = velocityPerTick;
+        Radius = radius;
+        Mass = mass;
+        HostVisible = hostVisible;
+        HostGrabbable = hostGrabbable;
+    }
+
+    internal TentaclePlantTargetSnapshot Shifted(Vector3 delta) =>
+        new(StableId, Position + delta, VelocityPerTick, Radius, Mass, HostVisible, HostGrabbable);
+}
+
+/// <summary>
+/// 本 tick 对宿主目标的请求。宿主应用 PositionCorrection/VelocityDelta 并在下一 tick
+/// 回喂新快照；Released/ConsumeRequested 是事件，不代表内核擅自销毁外部实体。
+/// </summary>
+public readonly struct TentaclePlantTargetEffect
+{
+    public readonly ulong TargetId;
+    public readonly bool CaptureStarted;
+    public readonly bool Held;
+    public readonly bool Released;
+    public readonly bool ConsumeRequested;
+    public readonly Vector3 PositionCorrection;
+    public readonly Vector3 VelocityDelta;
+
+    public TentaclePlantTargetEffect(
+        ulong targetId,
+        bool captureStarted,
+        bool held,
+        bool released,
+        bool consumeRequested,
+        Vector3 positionCorrection,
+        Vector3 velocityDelta)
+    {
+        TargetId = targetId;
+        CaptureStarted = captureStarted;
+        Held = held;
+        Released = released;
+        ConsumeRequested = consumeRequested;
+        PositionCorrection = positionCorrection;
+        VelocityDelta = velocityDelta;
+    }
+}
+
+public enum TentaclePlantPhase
+{
+    Wandering,
+    Tracking,
+    Windup,
+    Striking,
+    Recovering,
+    Holding,
+}
+
+/// <summary>
+/// RW TentaclePlant 思路的独立 3D 后端。它与蜥蜴控制器平行，只共享 Body/ITerrainQuery；
+/// 目标和抓持结果走纯值宿主契约，触手动力学由 <see cref="TentacleChain"/> 独占。
+/// </summary>
+public sealed class TentaclePlantController
+{
+    public TentaclePlantParams Params { get; }
+    public TentaclePlantMount Mount { get; private set; }
+    public Vector3 Outward { get; private set; }
+    public Vector3 Tangent { get; private set; }
+    public Vector3 Bitangent { get; private set; }
+
+    public readonly Body Body;
+    public readonly BodyChunk Root;
+    public readonly BodyChunk Hand;
+    public readonly TentacleChain Chain;
+
+    public IReadOnlyList<TentacleSegmentState> Segments => Chain.Segments;
+    public TentaclePlantTargetSnapshot? Target { get; set; }
+    public TentaclePlantTargetEffect TargetEffect { get; private set; }
+    public TentaclePlantPhase Phase { get; private set; } = TentaclePlantPhase.Wandering;
+    public int PhaseTick { get; private set; }
+    public float AttackCharge { get; private set; }
+    public float CanGrab { get; private set; }
+    public float Extension { get; private set; } = 1f;
+    public long AttackSerial { get; private set; }
+    public ulong? HeldTargetId { get; private set; }
+    public Vector3 WanderGoal { get; private set; }
+    public IReadOnlyList<Vector3> GuidePoints => Chain.GuidePoints;
+    public int BacktrackFrom => Chain.BacktrackFrom;
+    public int TickQueryCount { get; private set; }
+    public int PeakQueryCount { get; private set; }
+
+    private readonly TentaclePlantParams _parameters;
+    private readonly ulong _initialSeed;
+    private readonly CountingTerrainQuery _countingTerrain = new();
+    private ulong _randomState;
+    private Vector3 _attackDirection;
+    private int _chargeUnits;
+    private int _strikeTicksRemaining;
+    private int _strikeTick;
+    private int _grabWindowTicksRemaining;
+    private int _retractTicksElapsed;
+    private int _consumeTicks;
+    private bool _consumeSent;
+    private ulong? _pendingReleaseId;
+    private ulong? _captureSuppressedId;
+
+    internal TentaclePlantController(
+        TentaclePlantMount mount,
+        TentaclePlantParams parameters,
+        ulong stableSeed,
+        Body body,
+        BodyChunk root,
+        BodyChunk hand,
+        TentacleChain chain)
+    {
+        _parameters = parameters.Snapshot();
+        Params = parameters.Snapshot();
+        _initialSeed = MixSeed(stableSeed);
+        _randomState = _initialSeed;
+        Body = body;
+        Root = root;
+        Hand = hand;
+        Chain = chain;
+        ApplyMountFrame(mount);
+        WanderGoal = InitialWanderGoal();
+        _attackDirection = Outward;
+    }
+
+    /// <summary>
+    /// 固定 tick 入口。顺序：Body → chain → 感知/attack → 下一 tick 力 →
+    /// root/hand/tip 耦合 → 宿主抓持效果。
+    /// </summary>
+    public void Tick(in TickContext ctx)
+    {
+        TargetEffect = default;
+        bool releasedThisTick = ReleaseMissingOrChangedTarget();
+        UpdateCaptureSuppression();
+        if (_pendingReleaseId is { } releasedId)
+        {
+            TargetEffect = new TentaclePlantTargetEffect(
+                releasedId, false, false, true, false, Vector3.Zero, Vector3.Zero);
+            _pendingReleaseId = null;
+            releasedThisTick = true;
+        }
+
+        _countingTerrain.Reset(ctx.Terrain);
+        var countedContext = new TickContext(
+            ctx.GravityPerTick,
+            _countingTerrain,
+            ctx.TickIndex);
+
+        Body.GravityScale = 0f;
+        Body.Tick(countedContext);
+
+        Vector3 goal = HeldTargetId is not null && Target is { } held
+            ? held.Position
+            : Target is { } target
+                ? target.Position
+                : WanderGoal;
+        Chain.TickPhysics(
+            countedContext,
+            goal,
+            Outward,
+            Tangent,
+            Extension);
+
+        bool visibleAttackTarget = EvaluateAttackTarget(_countingTerrain);
+        ActAttack(visibleAttackTarget);
+        Vector3 strikeImpulse = Phase == TentaclePlantPhase.Striking
+            ? _attackDirection * _parameters.LungeImpulse
+            : Vector3.Zero;
+        Chain.InjectShapeForces(
+            goal,
+            Outward,
+            Extension,
+            WindupAmount(),
+            strikeImpulse);
+        Hand.Vel += strikeImpulse;
+        CoupleHandAndTip(_countingTerrain);
+        AnchorRoot();
+
+        if (!releasedThisTick && HeldTargetId is null && Target is { } candidate)
+        {
+            TryCapture(candidate);
+        }
+        if (HeldTargetId is not null && Target is { } heldTarget &&
+            heldTarget.StableId == HeldTargetId.Value)
+        {
+            ActHolding(heldTarget);
+        }
+        else
+        {
+            Extension = 1f;
+            _retractTicksElapsed = 0;
+            _consumeTicks = 0;
+            _consumeSent = false;
+            if (Target is null)
+            {
+                UpdateWanderGoal(_countingTerrain);
+            }
+        }
+
+        TickQueryCount = _countingTerrain.Count;
+        PeakQueryCount = Math.Max(PeakQueryCount, TickQueryCount);
+    }
+
+    /// <summary>整体原点平移：所有世界坐标输入、路径、随机游走目标与插值历史同步移动。</summary>
+    public void Shift(Vector3 delta)
+    {
+        Mount = Mount.Shifted(delta);
+        Body.Shift(delta);
+        Chain.Shift(delta);
+        WanderGoal += delta;
+        if (Target is { } target)
+        {
+            Target = target.Shifted(delta);
+        }
+    }
+
+    /// <summary>
+    /// 把同一实例重新安装到另一表面。清空攻击、抓持、回退、随机年龄和插值历史。
+    /// </summary>
+    public void Remount(in TentaclePlantMount mount)
+    {
+        TentaclePlantMount canonical = TentaclePlantFactory.CanonicalizeMount(mount);
+        if (HeldTargetId is { } held)
+        {
+            _pendingReleaseId = held;
+        }
+        ApplyMountFrame(canonical);
+        Vector3 rootPos = canonical.Point + Outward * _parameters.RootSurfaceOffset;
+        Root.Pos = Root.LastPos = rootPos;
+        Root.Vel = Vector3.Zero;
+        Vector3 handPos = rootPos + Outward *
+            (_parameters.Length * _parameters.SpawnExtension);
+        Hand.Pos = Hand.LastPos = handPos;
+        Hand.Vel = Vector3.Zero;
+        Chain.Remount(Outward);
+
+        Target = null;
+        HeldTargetId = null;
+        AttackCharge = 0f;
+        _chargeUnits = 0;
+        CanGrab = 0f;
+        _grabWindowTicksRemaining = 0;
+        Extension = 1f;
+        _retractTicksElapsed = 0;
+        AttackSerial = 0;
+        _strikeTicksRemaining = 0;
+        _strikeTick = 0;
+        _consumeTicks = 0;
+        _consumeSent = false;
+        _captureSuppressedId = null;
+        _randomState = _initialSeed;
+        WanderGoal = InitialWanderGoal();
+        _attackDirection = Outward;
+        Phase = TentaclePlantPhase.Wandering;
+        PhaseTick = 0;
+        PeakQueryCount = 0;
+        TickQueryCount = 0;
+    }
+
+    /// <summary>显式解除当前抓持；Released 在下一次 Tick 的 TargetEffect 中发出。</summary>
+    public void ReleaseHeldTarget()
+    {
+        if (HeldTargetId is not { } held)
+        {
+            return;
+        }
+        _pendingReleaseId = held;
+        _captureSuppressedId = held;
+        HeldTargetId = null;
+        Extension = 1f;
+        _retractTicksElapsed = 0;
+        _consumeTicks = 0;
+        _consumeSent = false;
+        SetPhase(Target is null
+            ? TentaclePlantPhase.Wandering
+            : TentaclePlantPhase.Tracking);
+    }
+
+    private bool EvaluateAttackTarget(ITerrainQuery terrain)
+    {
+        if (HeldTargetId is not null || _strikeTicksRemaining > 0 ||
+            Target is not { } target || !target.HostVisible)
+        {
+            return false;
+        }
+        Vector3 fromRoot = target.Position - Root.Pos;
+        if (fromRoot.LengthSquared() >
+                _parameters.Length * _parameters.Length ||
+            fromRoot.Dot(Outward) < 0f)
+        {
+            return false;
+        }
+
+        bool visible = CanSee(terrain, Hand.Pos, target);
+        int count = Chain.Segments.Length;
+        visible |= CanSee(terrain, Chain.Segments[count / 4].Pos, target);
+        visible |= CanSee(terrain, Chain.Segments[count / 2].Pos, target);
+        visible |= CanSee(terrain, Chain.Segments[(count * 3) / 4].Pos, target);
+        if (visible)
+        {
+            float leadTicks = Hand.Pos.DistanceTo(target.Position) *
+                _parameters.PredictionTicksPerMeter;
+            Vector3 predicted = target.Position + target.VelocityPerTick * leadTicks;
+            _attackDirection = SafeDirection(predicted - Hand.Pos, Outward);
+        }
+        return visible;
+    }
+
+    private bool CanSee(
+        ITerrainQuery terrain,
+        Vector3 origin,
+        in TentaclePlantTargetSnapshot target)
+    {
+        if (!terrain.Raycast(origin, target.Position, out TerrainHit hit))
+        {
+            return true;
+        }
+        float tolerance = Math.Max(target.Radius, _parameters.GuideClearanceRadius);
+        return hit.Point.DistanceSquaredTo(target.Position) <= tolerance * tolerance;
+    }
+
+    private void ActAttack(bool canCharge)
+    {
+        if (HeldTargetId is not null)
+        {
+            AttackCharge = 0f;
+            _chargeUnits = 0;
+            _strikeTicksRemaining = 0;
+            DecayGrabWindow();
+            SetPhase(TentaclePlantPhase.Holding);
+            return;
+        }
+
+        if (_strikeTicksRemaining > 0)
+        {
+            _strikeTick++;
+            _strikeTicksRemaining--;
+            AttackCharge = 1f + _strikeTick / (float)_parameters.LungeTicks;
+            _grabWindowTicksRemaining = _parameters.GrabWindowTicks;
+            CanGrab = 1f;
+            SetPhase(TentaclePlantPhase.Striking);
+            if (_strikeTicksRemaining == 0)
+            {
+                AttackCharge = 0f;
+                _chargeUnits = 0;
+                _strikeTick = 0;
+            }
+            return;
+        }
+
+        DecayGrabWindow();
+        int maximumChargeUnits = _parameters.ChargeTicks * 2;
+        if (canCharge)
+        {
+            _chargeUnits = Math.Min(maximumChargeUnits, _chargeUnits + 2);
+        }
+        else
+        {
+            _chargeUnits = Math.Max(0, _chargeUnits - 1);
+        }
+        AttackCharge = _chargeUnits / (float)maximumChargeUnits;
+
+        // charge 达满的同一 tick 就是第一帧扑击；不多等一个逻辑步。
+        if (_chargeUnits >= maximumChargeUnits)
+        {
+            _strikeTicksRemaining = _parameters.LungeTicks;
+            _strikeTick = 0;
+            AttackSerial++;
+            ActAttack(canCharge);
+            return;
+        }
+
+        if (CanGrab > 0f)
+        {
+            SetPhase(TentaclePlantPhase.Recovering);
+        }
+        else if (AttackCharge >= _parameters.WindupStart)
+        {
+            SetPhase(TentaclePlantPhase.Windup);
+        }
+        else if (Target is not null)
+        {
+            SetPhase(TentaclePlantPhase.Tracking);
+        }
+        else
+        {
+            SetPhase(TentaclePlantPhase.Wandering);
+        }
+    }
+
+    private void DecayGrabWindow()
+    {
+        if (_grabWindowTicksRemaining > 0)
+        {
+            _grabWindowTicksRemaining--;
+        }
+        CanGrab = _grabWindowTicksRemaining /
+                  (float)_parameters.GrabWindowTicks;
+    }
+
+    private float WindupAmount()
+    {
+        if (AttackCharge < _parameters.WindupStart || AttackCharge >= 1f)
+        {
+            return 0f;
+        }
+        return Mathf.InverseLerp(_parameters.WindupStart, 1f, AttackCharge);
+    }
+
+    private void TryCapture(in TentaclePlantTargetSnapshot target)
+    {
+        if (!target.HostGrabbable || _captureSuppressedId == target.StableId)
+        {
+            return;
+        }
+        float grabRadius = (Phase == TentaclePlantPhase.Striking || CanGrab > 0f)
+            ? _parameters.StrikeGrabRadius
+            : _parameters.TipRadius;
+        float combinedRadius = grabRadius + Math.Max(0f, target.Radius);
+        float distanceSquared = DistancePointToSegmentSquared(
+            target.Position,
+            Hand.LastPos,
+            Hand.Pos);
+        if (distanceSquared > combinedRadius * combinedRadius)
+        {
+            distanceSquared = DistancePointToSegmentSquared(
+                target.Position,
+                Chain.Tip.LastPos,
+                Chain.Tip.Pos);
+            if (distanceSquared > combinedRadius * combinedRadius)
+            {
+                return;
+            }
+        }
+
+        float relativeSpeed = (target.VelocityPerTick - Hand.Vel).Length();
+        if (CanGrab <= 0f && relativeSpeed > _parameters.LowRelativeGrabSpeed)
+        {
+            return;
+        }
+
+        HeldTargetId = target.StableId;
+        AttackCharge = 0f;
+        _chargeUnits = 0;
+        _strikeTicksRemaining = 0;
+        _strikeTick = 0;
+        Extension = 1f;
+        _retractTicksElapsed = 0;
+        _consumeTicks = 0;
+        _consumeSent = false;
+        SetPhase(TentaclePlantPhase.Holding);
+        TargetEffect = new TentaclePlantTargetEffect(
+            target.StableId,
+            true,
+            true,
+            false,
+            false,
+            Vector3.Zero,
+            Vector3.Zero);
+    }
+
+    private void ActHolding(in TentaclePlantTargetSnapshot target)
+    {
+        _retractTicksElapsed = Math.Min(
+            _parameters.RetractTicks,
+            _retractTicksElapsed + 1);
+        Extension = 1f -
+                    _retractTicksElapsed / (float)_parameters.RetractTicks;
+
+        Vector3 error = Hand.Pos - target.Position;
+        float targetMass = Math.Max(0.01f, target.Mass);
+        float totalMass = targetMass + _parameters.CarryHandMass;
+        float targetShare = _parameters.CarryHandMass / totalMass;
+        float handShare = targetMass / totalMass;
+        Vector3 positionCorrection = error * targetShare;
+        Vector3 handCorrection = -error * handShare;
+        Hand.Vel += handCorrection;
+        Chain.Tip.Vel += handCorrection;
+
+        Vector3 velocityDelta =
+            (Hand.Vel - target.VelocityPerTick) * _parameters.CarryVelocityGain +
+            positionCorrection;
+        velocityDelta += (Root.Pos - target.Position).LimitLength(1f) *
+            (_parameters.CarryRootPull * (1f - Extension));
+
+        bool consume = false;
+        if (Extension <= 0f)
+        {
+            _consumeTicks++;
+            if (!_consumeSent &&
+                (target.Position.DistanceTo(Root.Pos) <= _parameters.ConsumeDistance ||
+                 _consumeTicks >= _parameters.ConsumeForceTicks))
+            {
+                consume = true;
+                _consumeSent = true;
+            }
+        }
+        else
+        {
+            _consumeTicks = 0;
+        }
+
+        bool captureStarted = TargetEffect.CaptureStarted;
+        TargetEffect = new TentaclePlantTargetEffect(
+            target.StableId,
+            captureStarted,
+            true,
+            false,
+            consume,
+            positionCorrection,
+            velocityDelta);
+    }
+
+    private bool ReleaseMissingOrChangedTarget()
+    {
+        if (HeldTargetId is not { } held)
+        {
+            return false;
+        }
+        if (Target is { } target && target.StableId == held)
+        {
+            return false;
+        }
+        _pendingReleaseId = held;
+        HeldTargetId = null;
+        Extension = 1f;
+        _retractTicksElapsed = 0;
+        _consumeTicks = 0;
+        _consumeSent = false;
+        return true;
+    }
+
+    private void UpdateCaptureSuppression()
+    {
+        if (_captureSuppressedId is not { } suppressed)
+        {
+            return;
+        }
+        if (Target is not { } target || target.StableId != suppressed)
+        {
+            _captureSuppressedId = null;
+            return;
+        }
+
+        float radius = _parameters.StrikeGrabRadius + Math.Max(0f, target.Radius);
+        bool touchingHand = DistancePointToSegmentSquared(
+            target.Position,
+            Hand.LastPos,
+            Hand.Pos) <= radius * radius;
+        bool touchingTip = DistancePointToSegmentSquared(
+            target.Position,
+            Chain.Tip.LastPos,
+            Chain.Tip.Pos) <= radius * radius;
+        if (!touchingHand && !touchingTip)
+        {
+            _captureSuppressedId = null;
+        }
+    }
+
+    private void CoupleHandAndTip(ITerrainQuery terrain)
+    {
+        Vector3 delta = Chain.Tip.Pos - Hand.Pos;
+        float totalMass = Hand.Mass + Chain.Tip.Mass;
+        float handShare = Chain.Tip.Mass / totalMass;
+        Vector3 position = Hand.Pos + delta * handShare;
+        Vector3 velocity =
+            (Hand.Vel * Hand.Mass + Chain.Tip.Vel * Chain.Tip.Mass) / totalMass;
+
+        Vector3 motion = position - Chain.Tip.LastPos;
+        float motionLength = motion.Length();
+        if (motionLength > 1e-6f &&
+            terrain.Raycast(
+                Chain.Tip.LastPos,
+                position + motion / motionLength * Chain.Tip.Radius,
+                out TerrainHit hit) &&
+            SphereTerrain.Resolve(
+                hit,
+                Chain.Tip.Radius,
+                0.35f,
+                ref position,
+                ref velocity,
+                out Vector3 normal))
+        {
+            Chain.Tip.TerrainContact = true;
+            Chain.Tip.ContactNormal = normal;
+        }
+        if (terrain.SpherePenetration(
+                position,
+                Chain.Tip.Radius,
+                out Vector3 pushDir,
+                out float depth))
+        {
+            position += pushDir * depth;
+            SphereTerrain.RespondVelocity(pushDir, 0.35f, ref velocity);
+            Chain.Tip.TerrainContact = true;
+            Chain.Tip.ContactNormal = pushDir;
+        }
+
+        Hand.Pos = Chain.Tip.Pos = position;
+        Hand.Vel = Chain.Tip.Vel = velocity;
+    }
+
+    private void AnchorRoot()
+    {
+        Vector3 position = Mount.Point + Outward * _parameters.RootSurfaceOffset;
+        Root.Pos = position;
+        Root.LastPos = position;
+        Root.Vel = Vector3.Zero;
+    }
+
+    private void UpdateWanderGoal(ITerrainQuery terrain)
+    {
+        Vector3 center = Root.Pos + Outward * _parameters.WanderCenterDistance;
+        Vector3 randomDirection = RandomUnitVector();
+        Vector3 candidate = WanderGoal +
+            randomDirection * _parameters.WanderStep +
+            RandomUnitVector() * _parameters.WanderJitter;
+        Vector3 fromCenter = candidate - center;
+        if (fromCenter.Length() > _parameters.WanderRadius)
+        {
+            candidate = center + fromCenter.Normalized() * _parameters.WanderRadius;
+        }
+
+        float currentClearance = ClearanceScore(terrain, WanderGoal);
+        float candidateClearance = ClearanceScore(terrain, candidate);
+        bool candidateFree = !terrain.SpherePenetration(
+            candidate,
+            _parameters.GuideClearanceRadius,
+            out _,
+            out _);
+        if (candidateFree &&
+            (candidateClearance >= currentClearance ||
+             currentClearance < _parameters.WanderProbeDistance))
+        {
+            WanderGoal = candidate;
+        }
+
+        if (NextFloat() < 1f / _parameters.WanderResetMeanTicks &&
+            (Hand.Pos.DistanceTo(WanderGoal) > _parameters.WanderGoalCatchupDistance ||
+             currentClearance < _parameters.GuideClearanceRadius))
+        {
+            WanderGoal = Hand.Pos;
+        }
+    }
+
+    private float ClearanceScore(ITerrainQuery terrain, Vector3 point)
+    {
+        float best = _parameters.WanderClearanceDistance;
+        AccumulateClearance(terrain, point, Outward, ref best);
+        AccumulateClearance(terrain, point, -Outward, ref best);
+        AccumulateClearance(terrain, point, Tangent, ref best);
+        AccumulateClearance(terrain, point, -Tangent, ref best);
+        AccumulateClearance(terrain, point, Bitangent, ref best);
+        AccumulateClearance(terrain, point, -Bitangent, ref best);
+        return best;
+    }
+
+    private void AccumulateClearance(
+        ITerrainQuery terrain,
+        Vector3 point,
+        Vector3 direction,
+        ref float best)
+    {
+        if (terrain.Raycast(
+                point,
+                point + direction * _parameters.WanderClearanceDistance,
+                out TerrainHit hit))
+        {
+            best = Math.Min(best, point.DistanceTo(hit.Point));
+        }
+    }
+
+    private Vector3 InitialWanderGoal()
+    {
+        float distance = Mathf.Lerp(
+            _parameters.WanderCenterDistance,
+            _parameters.Length,
+            NextFloat());
+        return Root.Pos + Outward * distance;
+    }
+
+    private void ApplyMountFrame(in TentaclePlantMount mount)
+    {
+        Mount = mount;
+        Outward = mount.OutwardNormal;
+        Tangent = mount.TangentHint;
+        Bitangent = SafeDirection(Outward.Cross(Tangent),
+            TentaclePlantFactory.StablePerpendicular(Outward));
+        Tangent = SafeDirection(Bitangent.Cross(Outward), Tangent);
+    }
+
+    private void SetPhase(TentaclePlantPhase phase)
+    {
+        if (Phase == phase)
+        {
+            PhaseTick++;
+        }
+        else
+        {
+            Phase = phase;
+            PhaseTick = 0;
+        }
+    }
+
+    private float NextFloat()
+    {
+        ulong x = _randomState;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        _randomState = x;
+        ulong bits = x * 2685821657736338717UL;
+        return (bits >> 40) * (1f / 16777216f);
+    }
+
+    private Vector3 RandomUnitVector()
+    {
+        float z = NextFloat() * 2f - 1f;
+        float angle = NextFloat() * Mathf.Tau;
+        float radial = Mathf.Sqrt(Math.Max(0f, 1f - z * z));
+        // local z 沿 Outward，xy 覆盖两个切向轴。
+        return Tangent * (Mathf.Cos(angle) * radial) +
+               Bitangent * (Mathf.Sin(angle) * radial) +
+               Outward * z;
+    }
+
+    private static ulong MixSeed(ulong seed)
+    {
+        ulong z = seed + 0x9E3779B97F4A7C15UL;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+        z ^= z >> 31;
+        return z == 0UL ? 0xA0761D6478BD642FUL : z;
+    }
+
+    private static Vector3 SafeDirection(Vector3 value, Vector3 fallback)
+    {
+        if (value.LengthSquared() > 1e-10f)
+        {
+            return value.Normalized();
+        }
+        return fallback.LengthSquared() > 1e-10f ? fallback.Normalized() : Vector3.Up;
+    }
+
+    private static float DistancePointToSegmentSquared(
+        Vector3 point,
+        Vector3 a,
+        Vector3 b)
+    {
+        Vector3 ab = b - a;
+        float denominator = ab.LengthSquared();
+        if (denominator <= 1e-10f)
+        {
+            return point.DistanceSquaredTo(a);
+        }
+        float t = Mathf.Clamp((point - a).Dot(ab) / denominator, 0f, 1f);
+        return point.DistanceSquaredTo(a + ab * t);
+    }
+
+    private sealed class CountingTerrainQuery : ITerrainQuery
+    {
+        private ITerrainQuery? _inner;
+        public int Count { get; private set; }
+
+        public void Reset(ITerrainQuery inner)
+        {
+            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            Count = 0;
+        }
+
+        public bool Raycast(Vector3 from, Vector3 to, out TerrainHit hit)
+        {
+            Count++;
+            return _inner!.Raycast(from, to, out hit);
+        }
+
+        public bool SpherePenetration(
+            Vector3 center,
+            float radius,
+            out Vector3 pushDir,
+            out float depth)
+        {
+            Count++;
+            return _inner!.SpherePenetration(center, radius, out pushDir, out depth);
+        }
+    }
+}

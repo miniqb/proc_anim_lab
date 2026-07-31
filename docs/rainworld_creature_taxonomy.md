@@ -1,6 +1,6 @@
 # 雨世界生物分类学（反编译实证）
 
-> **用途**：给 `proc_anim_lab` 一张"原作到底有多少种身体架构"的地图。本项目的蜥蜴品种表（[`BreedParams`](../core/BreedParams.cs)）只覆盖蜥蜴一支的形态空间，其余并列后端各有自己的参数表（`SpiderBreedParams`/`CentipedeParams`/`CicadaParams`/`VultureBreedParams`/`HumanoidParams`，互不混表）；这份文档回答"再往下扩会撞到哪些已有先例"。
+> **用途**：给 `proc_anim_lab` 一张"原作到底有多少种身体架构"的地图。本项目的蜥蜴品种表（[`BreedParams`](../core/BreedParams.cs)）只覆盖蜥蜴一支的形态空间，其余并列后端各有自己的参数表（`SpiderBreedParams`/`CentipedeParams`/`CicadaParams`/`VultureBreedParams`/`HumanoidParams`/`TentaclePlantParams`，互不混表）；这份文档回答"再往下扩会撞到哪些已有先例"。
 >
 > **证据来源**：`~/workspace/others/Managed_extracted/Assembly-CSharp.dll`（用户自有 Rain World 桌面副本，含 Downpour/MSC + **Watcher** DLC）。整程序集反编译后逐类统计：
 > ```bash
@@ -59,19 +59,25 @@ Creature
 
 > 对本项目的意义：原作也没有把 locomotion 模式做成类层级——这与 CLAUDE.md §2.6「模式靠涌现、不做状态机分支」的路线一致，不是我们的简化。
 
-### 肢体侧（`BodyPart` 子类树）
+### 肢体侧（`BodyPart` 子类树 + 独立 `Tentacle` 系统）
 
 ```
 BodyPart
 ├─ Limb ──── LizardLimb   MillipedeLimb   TardigradeLimb
 │            ScavengerHand   ScavengerLeg   SlugcatHand
-│            └─ Tentacle ── DaddyTentacle  DeerTentacle
-│                           LoachLeg  LoachTentacle  VultureTentacle
 ├─ TailSegment    GenericBodyPart    Fin    DanglerSegment
 └─ LizardScale    AxolotlScale    VultureAppendage    VultureFeather
+
+Tentacle                         ← 独立类，不继承 BodyPart / Limb
+├─ DaddyTentacle   DeerTentacle   VultureTentacle
+└─ LoachLeg        LoachTentacle
 ```
 
-**关键事实：`Tentacle : Limb`。** 多节触手不是独立系统，是"单粒子腿"换成了 `tChunks[]` 链 + 一组 `TentacleProps`（stiff / rope / shorten + 一串刚度衰减系数）。本项目 `Limb.cs` 若要升级到多节腿，走的是这条既有路径，而不是新建一套。
+**关键事实：当前 DLL 中 `Tentacle` 是独立类，不继承 `BodyPart` 或 `Limb`。** 它自己持有
+`tChunks[]`、路径/地形回溯状态和一组 `TentacleProps`（`stiff` / `rope` / `shorten` +
+目标吸引、沿段对齐、回溯与穿地容错参数）。`DaddyTentacle`、`DeerTentacle`、
+`VultureTentacle`、`LoachLeg`、`LoachTentacle` 才是在这套独立段链之上的专用子类。
+因此本项目扩展多节触手时应新建并列的段链原语，不能把现有单粒子 `Limb.cs` 当作原作继承依据。
 
 ---
 
@@ -139,8 +145,18 @@ BodyPart
 
 ### F. 固定 / 半固定（`abstractImmobile`）
 
-- **TentaclePlant / PoleMimic**：2 chunk、**0 connection** + 一条长 `Tentacle`。PoleMimic 的模板 ancestor 就是 TentaclePlant。
-- **GarbageWorm**：2 chunk、0 connection + `Tentacle`（长度 `400 × bodySize`，`tChunks` 约 15 节）。
+- **TentaclePlant**：2 body chunk、**0 connection** + 独立 `Tentacle`。触手理想长度
+  `300px`、8 个 `tChunks`，半径从根部 `8px` 递减到末端 `1px`；根 chunk 不碰地形并在
+  `Update` 中钉回洞口 `rootPos`。
+- **PoleMimic**：同为 2 chunk、0 connection + `Tentacle`，但实现类并不继承
+  `TentaclePlant`；只有模板 ancestor 是 TentaclePlant。长度取地图杆路径
+  `tilePositions.Length × 40px`，段数等于路径点数，平时会把段钉回伪装杆路径。
+- **GarbageWorm**：2 chunk、0 connection + `Tentacle`；长度 `400px × bodySize`，
+  段数为 `int(15 × Lerp(bodySize, 1, 0.5))`。它以抬头观察、抓矛和缩洞为主，不复用
+  TentaclePlant 的伏击蓄力逻辑。
+
+三者的共性是“宿主本体锚定 + 独立触手段链”，不是共同 locomotion 基类；捕猎、伪装和
+交互行为分别留在三个 `Creature` 实现中。
 
 ### G. 纯水生
 
@@ -188,7 +204,11 @@ AItile.Accessibility { OffScreen, Floor, CurvedFloor, Corridor, Climb, Wall, Cei
 
 2. **多节身体抗折叠，原作给了两种方案**：节数少走全对全（Centipede / DaddyLongLegs / TempleGuard / NeedleWorm），节数多走链式 + 跨节斜撑（SkyWhale 的 `2n-3`）。我们当前的 `BodyStiffness` PushOnly 支柱是后者的稀疏版；升到 5 节以上脊柱时，"每节都撑"有直接依据。
 
-3. **要做多节腿不必新建系统**：`Tentacle : Limb`，把单粒子换成 `tChunks[]` 链 + `TentacleProps` 即可，`Deer` / `MirosBird`（脖子）/ `Vulture`（抓取触手）都是同一套的不同配置。这是 M4 之后扩展腿部表现力的最短路径。
+3. **多节触手应作为独立段链原语**：当前 DLL 的 `Tentacle` 不属于 `BodyPart` / `Limb`
+   继承树，而是自带 `tChunks[]`、路径回溯和 `TentacleProps` 的系统；
+   `Deer` / `DaddyLongLegs` / `Vulture` 等在其上派生专用触手。对本项目而言，正确边界是
+   复用 chunk、地形查询和固定 tick 底座，新增并列 `TentacleChain`，而不是扩充蜥蜴
+   plant-and-trail `Limb`。
 
 ---
 
