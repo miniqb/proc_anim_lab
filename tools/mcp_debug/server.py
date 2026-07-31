@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import json
-import os
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +25,7 @@ app = MCPServer("procanim-debug")
 
 PORT_FILE = Path.home() / ".proc_anim_debug_bridge.json"
 REPO = Path(__file__).resolve().parents[2]
+DEBUG_APP = Path.home() / "Applications" / "Godot_mono_debug.app"
 
 
 # ---------------------------------------------------------------- 桥接层
@@ -117,6 +118,17 @@ def _describe_stop(st: dict) -> str:
             f"  > {code}")
 
 
+def _require_no_session() -> None:
+    """已有活动会话时拒绝再起一个。
+
+    VS Code 允许多会话并存，但 activeDebugSession 只指向最后一个——桥的所有 DAP
+    透传都打在它身上，旧会话会变成看不见摸不着的僵尸。
+    """
+    s = _call("/status").get("session")
+    if s:
+        raise BridgeError(f"已有活动调试会话「{s['name']}」——先 debug_stop 再起新的。")
+
+
 def _require_stop() -> dict:
     st = _call("/status")
     if not st.get("stopped"):
@@ -152,12 +164,111 @@ def debug_launch(config: str, wait_ms: int = 20000) -> str:
 
     可用配置：
       "内核 smoke（Lizard/Centipede/Vulture/Humanoid）" / "内核 spider_smoke" / "内核 cicada_smoke"
+        —— 纯 dotnet 宿主，开箱即用
       "Godot 沙盒（交互）" / "Godot 无头矩阵配置（可改 args）"
+        —— 走重签名副本 ~/Applications/Godot_mono_debug.app（官方那份带 hardened
+           runtime 且无 get-task-allow，macOS 会拒绝调试器接管）
     启动后若在 wait_ms 内命中断点，直接返回停驻位置。
     """
+    _require_no_session()
     _call("/launch", {"config": config}, timeout=60)
     st = _wait_stop(wait_ms)
     return f"已启动「{config}」\n{_describe_stop(st)}"
+
+
+def _godot_processes() -> list[dict]:
+    """枚举本机 Godot 进程。
+
+    attachable 只看可执行文件是不是重签名那份：macOS 的 task_for_pid 闸门认的是
+    目标进程的签名，attach 和 launch 过的是同一道关——官方 app 起的进程附加不上。
+    """
+    out = subprocess.run(["ps", "-ax", "-o", "pid=,ppid=,args="],
+                         capture_output=True, text=True).stdout
+    procs = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, ppid, args = parts
+        exe = args.split(" ", 1)[0]
+        if not exe.endswith("/Godot"):
+            continue
+        procs.append({
+            "pid": int(pid),
+            "ppid": int(ppid),
+            "exe": exe,
+            "args": args,
+            "attachable": exe.startswith(str(DEBUG_APP)),
+            # 编辑器播放场景时给子进程加的自有调试端口，用来区分「被播放的场景」和编辑器本体
+            "played": "--remote-debug" in args,
+        })
+    return procs
+
+
+def _format_procs(procs: list[dict]) -> str:
+    lines = []
+    for p in procs:
+        tag = "可附加" if p["attachable"] else "不可附加(官方签名)"
+        role = "播放中的场景" if p["played"] else "编辑器/独立进程"
+        lines.append(f"  pid={p['pid']} ppid={p['ppid']} [{tag}] [{role}]\n    {p['args'][:150]}")
+    return "\n".join(lines)
+
+
+@app.tool()
+def debug_list_processes() -> str:
+    """列出运行中的 Godot 进程，标出哪些可以附加调试器。"""
+    procs = _godot_processes()
+    return _format_procs(procs) if procs else "没有运行中的 Godot 进程。"
+
+
+@app.tool()
+def debug_attach(pid: int = 0, wait_ms: int = 10000) -> str:
+    """附加到已在运行的 Godot 进程——用于你自己起的场景（Godot 编辑器里播放，
+    或直接运行 app），不打断它、不重启。
+
+    不传 pid 时自动挑：优先带 --remote-debug 的「播放中的场景」；多个候选会列出来
+    让你指定。目标必须是 ~/Applications/Godot_mono_debug.app 起的进程。
+    """
+    _require_no_session()
+    procs = _godot_processes()
+    if not procs:
+        return "没有找到运行中的 Godot 进程。"
+
+    if pid:
+        target = next((p for p in procs if p["pid"] == pid), None)
+        if target is None:
+            return f"pid {pid} 不是运行中的 Godot 进程。当前：\n{_format_procs(procs)}"
+    else:
+        candidates = [p for p in procs if p["played"]] or procs
+        if len(candidates) > 1:
+            return f"有多个候选，请指定 pid：\n{_format_procs(candidates)}"
+        target = candidates[0]
+
+    if not target["attachable"]:
+        return (f"pid {target['pid']} 用的是\n  {target['exe']}\n"
+                "它没有 get-task-allow，macOS 会拒绝附加（跟 launch 同一道闸门）。\n"
+                f"请改用 {DEBUG_APP} 打开编辑器或场景——"
+                "编辑器播放出来的子进程会继承同一份签名，也就一并可调试。")
+
+    _call("/launch", {"config": {
+        "name": f"attach Godot {target['pid']}",
+        "type": "coreclr",
+        "request": "attach",
+        "processId": str(target["pid"]),
+    }}, timeout=60)
+
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        st = _call("/status")
+        if st.get("session"):
+            break
+        time.sleep(0.1)
+    else:
+        return f"附加请求已发出，但 15s 内没看到调试会话建立（pid {target['pid']}）。"
+
+    st = _wait_stop(wait_ms) if _call("/status").get("breakpoints") else _call("/status")
+    tail = _describe_stop(st) if st.get("stopped") else "进程继续运行中（未停在断点）。"
+    return f"已附加到 pid {target['pid']}\n  {target['args'][:150]}\n{tail}"
 
 
 @app.tool()
