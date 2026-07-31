@@ -14,7 +14,7 @@
    是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
 3. **宿主 tick 里装 0.025s 累加器**驱动选定物种控制器的 `Tick`，渲染读
    `LerpPos(插值分数)`（§3）；回归先跑对应的 `core/smoke` / `core/spider_smoke`
-   / `core/cicada_smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条
+   / `core/cicada_smoke` / `core/tentacle_plant_smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条
    headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
@@ -50,6 +50,9 @@
 | `CicadaParams.cs` | 蝉出生参数（尺寸、飞行动力、翼/触须表现尺度） | Cicada 个体差异的确定性子集 |
 | `CicadaFactory.cs` | 双 chunk 身体装配 + light/dark 两个预设 | Cicada 构造 |
 | `CicadaWingState.cs` / `CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
+| `TentacleChain.cs` | 独立多节触手原语：段长/柔性解算、局部导引折线、静态地形避让与回退 | Tentacle / TentacleChunk / TentacleProps |
+| `TentaclePlantController.cs` | 锚定式拟态草控制器：确定性三维游荡、目标充能、Windup、突刺、抓取与回收 | TentaclePlant.Update |
+| `TentaclePlantParams.cs` / `TentaclePlantFactory.cs` | 拟态草出生参数、安装框架、目标/效果纯值类型，以及 original/short/hunter 三个稳定预设 | TentaclePlant 构造与种内扩展 |
 | `VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
 | `VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
 | `VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
@@ -59,6 +62,7 @@
 | `smoke/` | 蜥蜴 / 蜈蚣 / 秃鹫 / 人形的无引擎冒烟回归 console 工程（§7.2） | — |
 | `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK 与生命周期无引擎回归 | — |
 | `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
+| `tentacle_plant_smoke/` | 拟态草独立无引擎回归（装配、三面游荡、攻击时序、目标效果、生命周期与确定性） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -77,11 +81,12 @@
 
 ### 1.3 内核明确不做（≙ CLAUDE.md 非目标）
 
-AI 寻路（`MoveDir`/邻近 `MoveTarget` 从外面来）、战斗、游泳/水中运动、正式渲染与美术、
+AI 寻路（`MoveDir`/邻近 `MoveTarget` 从外面来）、动态目标扫描与 gameplay 目标所有权、
+战斗、游泳/水中运动、正式渲染与美术、
 碰撞体/Area 的创建、宿主根节点的移动（集成姿态见 §8.3）、任何日志输出
 （内核零 `GD.*`/`Console.*`）。
 
-## 2. 装配契约（BreedParams → BodyFactory）
+## 2. 装配契约（各物种 Params → Factory）
 
 ```csharp
 BreedParams p = BodyFactory.Heavy();            // 或 Default/Sprinter/Hexapod/ByName(name)
@@ -267,6 +272,43 @@ VultureFlightController bird = BodyFactory.CreateVultureController(origin, p);  
 - 直喂契约的飞行版补充（实测教训）：巡航路点须离地形 **≥ 降落贴地探测深度（1.2m）**，否则内核
   会如实降落；下降段要给滑翔垂度留约 1m 余量，否则擦墙顶。
 
+### 2.6 拟态草装配契约（TentaclePlantController）
+
+```csharp
+TentaclePlantParams p = TentaclePlantFactory.Original(); // 或 Short / Hunter / ByName
+TentaclePlantMount mount = new(mountPoint, outwardNormal, tangentHint, colliderId);
+TentaclePlantController plant =
+    TentaclePlantFactory.CreateController(mount, p, seed);
+```
+
+- 拟态草是与 Lizard 并列的**固定式伏击后端**，不复用 `BreedParams`、`BodyFactory`、
+  `Limb` 或移动输入。原作当前 DLL 的 `Tentacle` 自身也是独立类，不继承 `BodyPart` / `Limb`。
+- `TentaclePlantFactory` 提供 `Original/Short/Hunter/AllPresets/ByName/CreateController`；
+  稳定 ID 为 `tentacle-plant/original|short|hunter`，未知名称快速失败。创建时冻结参数快照。
+- `TentaclePlantMount(Point, OutwardNormal, TangentHint, ColliderId)` 定义宿主安装真相。
+  核心正交化得到 `Outward/Tangent/Bitangent`；地板、墙、天花板走同一局部公式，
+  不按世界 `Up` 分支。退化 hint 使用固定回退，不能引入随机 roll。
+- 原作基准为 2 body chunk、0 connection + 独立 8 段触手，理想长度 `300px=7.5m`、
+  根/梢半径 `8px/1px=0.2m/0.025m`。本项目的 `TentacleChain` 只共享 chunk、
+  `ITerrainQuery` 和固定 tick 底座，不修改蜥蜴的积分或 plant-and-trail 语义。
+- 三维游荡区是以 `Root + Outward × WanderCenterDistance` 为球心、以
+  `WanderRadius` 为半径并裁掉 mount 安装平面后方部分的轴对称球冠；`GuidePoints`
+  只公开 0–2 个真实折点（根与目标为隐含端点），`BacktrackFrom` 为 `-1` 或首个需回卷的
+  触手段索引。它们表达当前局部绕障和回退证据，是核心输出；Godot 沙盒只渲染，不参与决策。
+- 宿主每 tick 写 nullable `Target`（`TentaclePlantTargetSnapshot` 纯值，字段为
+  `StableId/Position/VelocityPerTick/Radius/Mass/HostVisible/HostGrabbable`）。核心不扫描动态
+  物体、不持有 Node/对象引用；`TargetEffect` 每 tick 覆盖，携带
+  `TargetId/CaptureStarted/Held/PositionCorrection/VelocityDelta/Released/ConsumeRequested`，
+  由 gameplay 权威目标应用。
+- `TentaclePlantPhase` 为
+  `Wandering/Tracking/Windup/Striking/Recovering/Holding`。original 对有效可见目标充能
+  90 tick，过半进入明显 Windup，再突刺 10 tick；突刺结束后抓取窗再衰减 40 tick。
+  命中后约 80 tick 完全缩回，再以距根 `0.5m` 或额外强拉 30 tick 请求吞入。
+  扑空后没有凭空增加硬 cooldown；`CanGrab` 余窗处于 Recovering 时即可并行重新积累充能。
+- `Shift` 是世界 rebase，完整平移 mount、段链、目标记忆、wander goal、guide points 和
+  插值历史；`Remount` 是地形不随体移动的重新安装，清攻击/抓取/导引并从新根重建；
+  `ReleaseHeldTarget` 显式释放并通过下一次 `Tick` 的 `TargetEffect.Released` 通知宿主。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -296,6 +338,9 @@ VultureFlightController bird = BodyFactory.CreateVultureController(origin, p);  
   先按上一轮模式配置身体并执行 `Body.Tick` → 读取本 tick 接触、停驻表面和 Charge 撞击
   → 更新 `Mode` / `FlightPower` / 输入目标 → 向前后 chunk 注入下一 tick 使用的差分飞行动力
   → 更新稳定 3D 姿态框架、四翼与触须。渲染不反向影响物理。
+- `TentaclePlantController.Tick` 内部序：`Body.Tick` → `TentacleChain` 路径/物理 →
+  感知与攻击标量 → 注入下一 tick 形态力 → `Root`/`Hand`/tip 耦合 → 抓持回收效果。
+  宿主不得拆开此序，也不得把目标效果提前到同 tick 反向改写段链。
 - `VultureFlightController.Tick` 内部序（≙ RW `Vulture.Act`）：解析直喂目标与到达迟滞 →
   拍翅相位/振幅 → 逐翅模式决策（坠落自救 → 降落 → 起飞 → 逐翅自主）→ 身体阻尼/俯仰配平 →
   悬停或巡航推进（或栖息爬行）→ **逐翅升力注入** → 降落制动/起飞助推 → 头部伺服 →
@@ -304,7 +349,8 @@ VultureFlightController bird = BodyFactory.CreateVultureController(origin, p);  
 
 ### 3.2 渲染插值
 
-渲染帧读 `chunk.LerpPos(t)` / `limb.LerpPos(t)`，`t` = 物理插值分数 ∈ [0,1)。
+渲染帧读 `chunk.LerpPos(t)` / `limb.LerpPos(t)`；拟态草另读 `Root`、`Hand` 和
+`Segments` 的插值位置。`t` = 物理插值分数 ∈ [0,1)。
 Godot 宿主：`t = (float)Engine.GetPhysicsInterpolationFraction()`（沙盒即此）。
 渲染永远比物理「晚」不到一个 tick；**逻辑一律不读渲染帧率**。
 
@@ -349,7 +395,13 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 当前/预定抓点整体平移；`Teleport` 另外作废轨迹、抓握、支撑和 `MoveTarget`；`Launch`
 统一叠加全身体速度并交还重力。两类控制器可以共用宿主生命周期事件，但状态不可互换。
 
-## 4. 输入契约（AI 有两个旋钮 + 一个可选路径点直喂）
+拟态草不用移动生物的 `Teleport/Launch`：`Shift` 只用于世界 rebase 并保留攻击/抓取连续性；
+地形不随体移动的换洞必须调用 `Remount(newMount)`，它会清目标、抓取、攻击和旧导引；
+`ReleaseHeldTarget()` 立即释放内核目标，并在下一次 `Tick` 发出 `Released`；之后按
+`Target` 是否仍存在进入 Tracking 或 Wandering。固定生物没有合法的击飞语义，
+不要为了接口整齐向根或段链硬塞 `Launch`。
+
+## 4. 输入契约（移动后端的方向/速度/路径点；固定后端的目标快照）
 
 | 输入 | 类型/域 | 语义 |
 |------|---------|------|
@@ -448,6 +500,27 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 - 重力开关的判据是「清醒且近地」而非「腿抓稳」（人形的腿不承重）；`Launch`/坠远
   自动回归重力，落地站稳（`GroundedCounter ≥ GroundedTicks`）后恢复失重伺服态。
 
+### 4.3 拟态草的目标/效果接缝
+
+拟态草不接受 `MoveDir`、`RunSpeed` 或 `MoveTarget`。AI/宿主每 tick 选择至多一个猎物，
+把其稳定 ID、位置、速度、半径和有效/可见信息复制进 nullable
+`TentaclePlantController.Target`。该快照是本 tick 唯一动态目标输入；核心不枚举场景对象，
+也不经 `ITerrainQuery` 查询生物。
+
+`Tick` 返回 `void`，并覆盖只读 `TargetEffect`：
+
+| 输出 | 宿主语义 |
+|---|---|
+| `TargetId` | 本 tick 效果所属的稳定目标 ID |
+| `CaptureStarted` | 本 tick 手端首次几何命中；宿主建立抓取关系 |
+| `Held` | 内核仍保持 `HeldTargetId` 对应目标 |
+| `PositionCorrection` / `VelocityDelta` | 由 gameplay 权威目标应用的建议位置/速度修正 |
+| `Released` | 解除抓取；宿主同 tick 清关系 |
+| `ConsumeRequested` | 已拉至根部或强拉宽限到期；宿主决定吞入、销毁或其它玩法结果 |
+
+宿主拒绝抓取、目标逃脱/死亡或 ID 变更时，应在下一 tick 的 `Target` 如实反映，并在需要时调用
+`ReleaseHeldTarget()`；不得通过回写 `Phase`、`HeldTargetId` 或段位置伪造结果。
+
 ## 5. 输出契约（渲染与 AI 的观测面）
 
 ### 5.1 渲染读什么（沙盒 `BodyRenderer` 是参考实现）
@@ -462,6 +535,8 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 | `SpiderLocomotionController.ApplyGravity` / `.SupportNormal` | 蜘蛛抓稳状态与完整表面朝向 |
 | `SpiderLeg.LerpRoot(t)` / `.LerpKnee(t)` / `.LerpPos(t)` | 蜘蛛两段腿：根→膝→足端 |
 | `SpiderLeg.Gripping` / `.ReachingForTerrain` / `.GripNormal` | 蜘蛛真实抓点状态；膝点不作为物理接触 |
+| `TentaclePlantController.Root` / `.Hand` / `.Segments[i]` 的插值位置 | 拟态草根、根粗梢细段链和末端手；`GuidePoints` 作为 0–2 个折点补在根与当前目标之间，`BacktrackFrom` 索引 `Segments` |
+| `TentaclePlantController.Phase` / `.CanGrab` | 拟态草按 Wandering/Tracking/Windup/Striking/Recovering/Holding 配色与攻击窗提示 |
 | `VultureWing.Segments[i].LerpPos(t)` / `.Mode` / `.Attached` | 秃鹫翅膀段链（渲染与抓附的唯一真相）；其余观测量见 §4.1b |
 
 ### 5.2 AI / 游戏逻辑可读
@@ -509,6 +584,17 @@ AI / 游戏逻辑：`Uprightness`（躯干轴·up ∈[-1,1]，摔倒检测/爬�
 `ThrowChargeTicks`/`ThrowAnimTicks`/`ThrowDir`、`MainHandPos`/`MainHandDir`（持物/武器
 钉定与朝向）、`Arm.ReachedSnapPosition`（≙ RW 握拳/张开贴图切换的判定位）。
 
+### 5.5 拟态草观察面
+
+渲染读取 `Body`、`Root`、`Hand`、`Segments` 及其插值位置；段半径由根到梢递减，
+手端是正式物理/抓取输出，不由 renderer 另算。mount 的 `Outward/Tangent/Bitangent`
+提供稳定三维朝向，避免侧墙/天花板安装时 roll 翻转。
+
+AI、gameplay 与诊断可读 `Phase`、`AttackCharge`、`CanGrab`、`Extension`、
+`AttackSerial`、`HeldTargetId`、`WanderGoal`、`GuidePoints`、`BacktrackFrom` 和地形查询计数。
+`TargetEffect` 是唯一 gameplay 目标效果出口（§4.3）。除 nullable `Target` 输入外，
+上述状态均只读；沙盒调试线不能反向驱动核心。
+
 ## 6. ITerrainQuery 契约（唯一接缝的全部语义）
 
 ```csharp
@@ -554,6 +640,9 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
    斜坡/棱线法线连续、`GetRestInfo` 的 MTD 语义**均已在 Jolt 上实证**（全矩阵 +
    embed/wallside 配置）。主项目同为 Jolt，后端语义风险已消除；接入时跑一遍
    `--route=stand`/`--route=wall` 等价场景做环境级确认即可。
+9. **拟态草安装例外**：`TentaclePlantMount.Point` 是宿主确认的洞口安装点，
+   `ColliderId` 标识安装地形。合法埋地只限根部代理；可见段和手仍必须遵守射线/MTD 净空。
+   目标视线和 `GuidePoints` 也只看这里定义的静态地形；动态猎物由 §4.3 的纯值快照提供。
 
 ### 6.1 查询量级（性能预算参考）
 
@@ -568,6 +657,9 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 - 人形（3 chunk + 2 腿 + 2 手臂）实测 **17.4 射线/tick/只 + 7 形状查询/tick/只**：
   比蜥蜴还省——手臂扇扫（10 根/次）每 tick 只允许一只手轮询（tick 奇偶交替，确定性 +
   预算双保），撑点探地/髋伺服探地各 1 根/tick，plant-and-trail 限流对腿照旧生效。
+- 拟态草查询由目标视线、固定候选导引探针和可见段碰撞构成；候选顺序与单 tick 上限必须固定。
+  `TickQueryCount` / `PeakQueryCount` 进入 smoke 峰值门。具体预算以
+  `tentacle_plant_smoke` 和 Godot matrix 当前输出为准，文档不预写未测数字。
 
 ## 7. 确定性守则与回归
 
@@ -603,15 +695,26 @@ dotnet run --project core/smoke
 #    身体对齐、足端/目标本侧槽恢复、腿对分离、IK/pole 连续性与前进门。
 dotnet run --project core/spider_smoke
 
-# ③ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
+# ③ Cicada 无引擎冒烟：飞行/停驻/起飞/Charge/3D 姿态与生命周期。
+dotnet run --project core/cicada_smoke
+
+# ④ 拟态草无引擎冒烟：三预设、三向安装、游荡/绕障/回卷、攻击时序、
+#    TargetEffect、Shift/Remount/释放目标、同 seed 双跑/不同 seed 与 8/16 段查询增长。
+dotnet run --project core/tentacle_plant_smoke
+
+# ⑤ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
 #    小/大窄墙双侧抱持、墙—墙 L 角、墙→天花板，以及小/大型三向急转恢复。
 ./tools/run_spider_matrix.sh
 
-# ④ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ⑥ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
+#    双跑/40vs400/1mm 微扰与三预设；哈希由脚本当前基线判定。
+./tools/run_tentacle_plant_matrix.sh
+
+# ⑦ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ⑤ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑧ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
@@ -667,6 +770,7 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
   `core/smoke/CentipedeSmoke.cs`；
 - Spider：`tools/run_spider_matrix.sh` 与 `core/spider_smoke/Program.cs`；
 - Cicada：`tools/run_cicada_matrix.sh` 与 `core/cicada_smoke/Program.cs`；
+- TentaclePlant：`tools/run_tentacle_plant_matrix.sh` 与 `core/tentacle_plant_smoke/Program.cs`；
 - Humanoid：`tools/run_matrix.sh`（HASH_HUMANOID_* 六条）与 `core/smoke/Program.cs`
   的 `HumanoidExpectedHash`。
 
@@ -677,7 +781,8 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 
 主项目无单元测试工程、`tests/` 为空，惯例是 **headless 场景冒烟**（`MotionSmoke` 模式：
 `--headless --scene …` + PASS 标记；其 ClockProbe 已验证过「两次构建 40 步轨迹逐 float 一致」，
-确定性标准同构）。建议：`core/smoke` 原样带走（纯 .NET，秒级），另加一条
+确定性标准同构）。建议：对应物种的 `core/*_smoke` 原样带走（拟态草为
+`core/tentacle_plant_smoke`，纯 .NET、秒级），另加一条
 `tech_validation/m10_motion/` 风格的场景探针跑真实地形（等价本仓库 `--determinism` 模式）。
 
 ## 8. 迁移路线与集成姿态（主项目对接面调研结论，2026-07）
@@ -737,6 +842,13 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 
 > 建议路径：姿态 1 先落地验证（不动任何现有边界），姿态 2 留给需要「真爬墙怪」的品种。
 
+**固定生物例外：拟态草不走两种移动姿态的 tether。**
+宿主安装根始终是位置/导航/伤害权威；出生时把地形点、洞外法线、切向提示和 collider ID
+写入 `TentaclePlantMount`，核心只模拟根外的手和段链。世界原点重置调用 `Shift`；
+真正换洞/换安装面调用 `Remount`，不能把每帧根微动当作连续 Remount。
+AI snapshot 另选出一个猎物转成 `TentaclePlantTargetSnapshot`；tick 后由 gameplay 层消费
+`TentaclePlantTargetEffect`。视觉层仍不建动态 collider、不移动宿主根，也不直接移动猎物。
+
 ### 8.4 版本对齐
 
 内核 csproj 的 `GodotSharp` 版本须与目标仓库 Godot 版本一致（当前两边同为 4.7.0，零动作）；
@@ -751,4 +863,5 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 | 时基 | 40 tick/s，dt = 0.025 s（仅存在于宿主换算层，内核不见 dt） |
 | 重力 | 默认 36 m/s²（≙ RW 0.9px/tick²）→ `gravityPerTick = 36×0.025² = 0.0225` |
 | 基准体 | 头 0.20m / 髋 0.25m / 脊柱节长 0.3m / 腿长 0.55m / 脚 0.06m / 尾节 0.15m（缩放因子全 1 时） |
+| 拟态草 original | 触手理想长度 7.5m / 8 段 / 根半径 0.2m / 梢半径 0.025m（原作 300/8/8/1px 直接换算） |
 | 摩擦双档 | 抓稳 0.8/0.5、坠落 0.999/0.3（AirFriction/SurfaceFriction，数值直取 RW，LizardLocomotionController 按重力开关切换） |
