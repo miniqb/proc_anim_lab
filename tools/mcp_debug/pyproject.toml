@@ -1,0 +1,6 @@
+[project]
+name = "procanim-debug-mcp"
+version = "0.1.0"
+description = "把 VS Code 的 .NET 调试会话暴露成 MCP 工具（断点/变量/单步）"
+requires-python = ">=3.10"
+dependencies = ["mcp>=2.0.0"]

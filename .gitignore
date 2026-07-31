@@ -14,5 +14,9 @@ obj/
 .vscode/
 .idea/
 
+# Python 工具链（tools/mcp_debug 由 uv 管理，uv.lock 进版本控制）
+.venv/
+__pycache__/
+
 # macOS
 .DS_Store

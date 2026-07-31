@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "procanim-debug": {
+      "command": "uv",
+      "args": ["run", "--directory", "tools/mcp_debug", "server.py"]
+    }
+  }
+}
