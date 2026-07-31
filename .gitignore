@@ -10,5 +10,9 @@ bin/
 obj/
 *.user
 
+# 编辑器（调试配置为本机私有，见 .vscode/launch.json）
+.vscode/
+.idea/
+
 # macOS
 .DS_Store
