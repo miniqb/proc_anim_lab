@@ -103,6 +103,12 @@ run short-ceiling-hit tentacle-plant/short  ceiling hit 900 400 \
     --plant-expect-hash="$HASH_SHORT_CEILING_HIT"
 run hunter-wall-hit   tentacle-plant/hunter wall    hit 900 400 \
     --plant-expect-hash="$HASH_HUNTER_WALL_HIT"
+# hunter 长度球边缘：中心略越过 9m，但半径 0.16m 的猎物表面仍在可达包络内。
+# hit 钉住真实抓取/吞入，miss 钉住首次扑击时序；旧中心点 gate 两项都会永久红灯。
+run hunter-wall-edge-hit tentacle-plant/hunter wall hit 450 400 \
+    --plant-target-local=9,0.9,0.45
+run hunter-wall-edge-miss tentacle-plant/hunter wall miss 450 400 \
+    --plant-target-local=9,0.9,0.45
 # 同环境再跑一组，避免“预设差异”其实只来自安装 frame。
 run short-floor-idle  tentacle-plant/short  floor idle 900 400 \
     --plant-expect-hash="$HASH_SHORT_FLOOR_IDLE"

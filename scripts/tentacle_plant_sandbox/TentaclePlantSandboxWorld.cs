@@ -69,6 +69,7 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private string _presetName = PresetNames[0];
     private string _mountName = MountNames[0];
     private string _route = "hit";
+    private Vector3? _targetLocalOverride;
     private float _perturb;
     private ulong? _expectHash;
 
@@ -857,6 +858,11 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _targetActive,
             _targetPos,
             TargetRadius);
+        Vector3 targetOffset = _targetPos - _mountPoint;
+        Vector3 targetLocal = new(
+            targetOffset.Dot(_mountOutward),
+            targetOffset.Dot(_mountTangent),
+            targetOffset.Dot(_mountBitangent));
         _hud?.UpdateStatus(
             _preset.Name,
             _mountName,
@@ -867,6 +873,10 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _plant.Extension,
             _plant.HeldTargetId,
             _targetActive,
+            _plant.TargetStatus,
+            targetLocal,
+            _targetPos.DistanceTo(_plant.Root.Pos),
+            _plant.Params.Length,
             _hostCaptured,
             _targetConsumed,
             _plant.TargetEffect.CaptureStarted,
@@ -1090,6 +1100,11 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     string text = argument["--plant-seed=".Length..];
                     _instanceSeed = ParseUInt64(text);
                 }
+                else if (argument.StartsWith("--plant-target-local=", StringComparison.Ordinal))
+                {
+                    _targetLocalOverride = ParseLocalVector(
+                        argument["--plant-target-local=".Length..]);
+                }
                 else if (argument.StartsWith("--plant-perturb=", StringComparison.Ordinal))
                 {
                     _perturb = float.Parse(
@@ -1125,21 +1140,47 @@ public partial class TentaclePlantSandboxWorld : Node3D
         return true;
     }
 
-    private Vector3 TargetForRoute(string route) => route switch
+    private Vector3 TargetForRoute(string route)
     {
-        // 初生手位于 outward≈2.675m；遮挡板从 2.8m 开始，目标放在其后，
-        // 避免“手出生在墙后、tick 1 被动触碰”的假失败。
-        "occluded" => LocalPoint(4.20f, 0.10f, 0.08f),
-        // 把演示猎物放在各预设约 65% 的工作半径处：既能展示长距离锁向
-        // 扑击与回收，又不会让 short 越出自身攻击球。
-        _ => LocalPoint(_preset.Length * 0.65f, 0.90f, 0.45f),
-    };
+        if (_targetLocalOverride is { } local)
+        {
+            return LocalPoint(local.X, local.Y, local.Z);
+        }
+        return route switch
+        {
+            // 初生手位于 outward≈2.675m；遮挡板从 2.8m 开始，目标放在其后，
+            // 避免“手出生在墙后、tick 1 被动触碰”的假失败。
+            "occluded" => LocalPoint(4.20f, 0.10f, 0.08f),
+            // 把演示猎物放在各预设约 65% 的工作半径处：既能展示长距离锁向
+            // 扑击与回收，又不会让 short 越出自身攻击球。
+            _ => LocalPoint(_preset.Length * 0.65f, 0.90f, 0.45f),
+        };
+    }
 
     private Vector3 LocalPoint(float outward, float tangent, float bitangent) =>
         _mountPoint
         + _mountOutward * outward
         + _mountTangent * tangent
         + _mountBitangent * bitangent;
+
+    private static Vector3 ParseLocalVector(string text)
+    {
+        string[] parts = text.Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 3)
+        {
+            throw new FormatException(
+                "target-local 必须是 outward,tangent,bitangent 三个逗号分隔数值");
+        }
+        var value = new Vector3(
+            float.Parse(parts[0], CultureInfo.InvariantCulture),
+            float.Parse(parts[1], CultureInfo.InvariantCulture),
+            float.Parse(parts[2], CultureInfo.InvariantCulture));
+        if (!IsFinite(value))
+        {
+            throw new FormatException("target-local 必须全部有限");
+        }
+        return value;
+    }
 
     private static ulong ParseUInt64(string text, bool hexadecimalByDefault = false)
     {

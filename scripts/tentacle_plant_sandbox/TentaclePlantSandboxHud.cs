@@ -1,5 +1,6 @@
 using System;
 using Godot;
+using ProcAnim.Core;
 
 namespace ProcAnimLab.TentaclePlantSandbox;
 
@@ -28,7 +29,7 @@ public sealed class TentaclePlantSandboxHud
         var panel = new PanelContainer
         {
             Position = new Vector2(14f, 14f),
-            CustomMinimumSize = new Vector2(390f, 0f),
+            CustomMinimumSize = new Vector2(470f, 0f),
         };
         layer.AddChild(panel);
 
@@ -76,7 +77,11 @@ public sealed class TentaclePlantSandboxHud
         float canGrab,
         float extension,
         ulong? heldTarget,
-        bool targetVisible,
+        bool targetActive,
+        TentaclePlantTargetStatus targetStatus,
+        Vector3 targetLocal,
+        float targetRootDistance,
+        float attackLength,
         bool hostCaptured,
         bool targetConsumed,
         bool captureStarted,
@@ -89,6 +94,10 @@ public sealed class TentaclePlantSandboxHud
         int peakQueries,
         long attackSerial)
     {
+        string targetGeometry = targetActive
+            ? $"O/T/B {targetLocal.X,6:F2}/{targetLocal.Y,6:F2}/{targetLocal.Z,6:F2}m  " +
+              $"root {targetRootDistance:F2}/{attackLength:F2}m"
+            : "n/a";
         _status.Text =
             $"type  {preset}\n" +
             $"mount  {mount,-7} scenario  {route}\n" +
@@ -97,7 +106,8 @@ public sealed class TentaclePlantSandboxHud
             $"backtrack  {(backtrackFrom < 0 ? "none" : backtrackFrom.ToString())}\n" +
             $"held  {(heldTarget is null ? "none" : heldTarget.Value.ToString()),-8} " +
             $"attack serial  {attackSerial}\n" +
-            $"mock prey  visible:{targetVisible} captured:{hostCaptured} consumed:{targetConsumed}\n" +
+            $"mock prey  active:{targetActive} captured:{hostCaptured} consumed:{targetConsumed}\n" +
+            $"target  {targetGeometry}  gate:{targetStatus}\n" +
             $"effect  capture:{captureStarted} held:{effectHeld} " +
             $"release:{released} consume:{consumeRequested}\n" +
             $"terrain queries  {tickQueries}/tick  peak {peakQueries}";

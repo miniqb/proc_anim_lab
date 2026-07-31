@@ -18,6 +18,7 @@ internal static class Program
         Check("FACTORY", CheckFactoryAndValidation, failures);
         Check("MOUNTS", CheckThreeDimensionalMounts, failures);
         Check("ATTACK", CheckAttackTimelineAndForceOrder, failures);
+        Check("ENVELOPE", CheckTargetVolumeAttackEnvelope, failures);
         Check("GRASP", CheckGraspAndHostContract, failures);
         Check("ROUTING", CheckRoutingBacktrackAndQueries, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
@@ -433,6 +434,170 @@ internal static class Program
             $"gates={outOfRange.AttackCharge:F3}/{occluded.AttackCharge:F3}");
     }
 
+    private static (bool, string) CheckTargetVolumeAttackEnvelope()
+    {
+        const float radius = 0.16f;
+        TentaclePlantMount[] mounts =
+        {
+            new(Vector3.Zero, Vector3.Up, Vector3.Right, 201UL),
+            new(Vector3.Zero, Vector3.Forward, Vector3.Up, 202UL),
+            new(Vector3.Zero, Vector3.Down, Vector3.Right, 203UL),
+        };
+        var terrain = new OpenTerrain();
+        bool rotatedEdgeHits = true;
+        float minimumEdgeExcess = float.MaxValue;
+        int latestWindup = -1;
+        int latestStrike = -1;
+
+        for (int mountIndex = 0; mountIndex < mounts.Length; mountIndex++)
+        {
+            TentaclePlantController edge = TentaclePlantFactory.CreateController(
+                mounts[mountIndex],
+                TentaclePlantFactory.Hunter(),
+                (ulong)(220 + mountIndex));
+            Vector3 edgePosition = edge.Mount.Point +
+                                   edge.Outward * edge.Params.Length +
+                                   edge.Tangent * 0.90f +
+                                   edge.Bitangent * 0.45f;
+            float centerDistance = edgePosition.DistanceTo(edge.Root.Pos);
+            minimumEdgeExcess = Math.Min(
+                minimumEdgeExcess,
+                centerDistance - edge.Params.Length);
+            bool surfaceIntersects = centerDistance > edge.Params.Length &&
+                                     centerDistance < edge.Params.Length + radius;
+            long tick = 0;
+            int firstWindup = -1;
+            int firstStrike = -1;
+            bool chargeableBeforeWindup = true;
+            for (int i = 1; i <= edge.Params.ChargeTicks; i++)
+            {
+                edge.Target = NewTarget(
+                    (ulong)(230 + mountIndex),
+                    edgePosition,
+                    Vector3.Zero,
+                    visible: true,
+                    grabbable: false,
+                    radius: radius);
+                Tick(edge, terrain, ref tick);
+                if (i < edge.Params.ChargeTicks / 2)
+                {
+                    chargeableBeforeWindup &=
+                        edge.TargetStatus == TentaclePlantTargetStatus.Chargeable;
+                }
+                if (firstWindup < 0 && edge.Phase == TentaclePlantPhase.Windup)
+                {
+                    firstWindup = i;
+                }
+                if (firstStrike < 0 && edge.Phase == TentaclePlantPhase.Striking)
+                {
+                    firstStrike = i;
+                }
+            }
+            latestWindup = Math.Max(latestWindup, firstWindup);
+            latestStrike = Math.Max(latestStrike, firstStrike);
+            rotatedEdgeHits &= surfaceIntersects && chargeableBeforeWindup &&
+                               firstWindup == 35 && firstStrike == 70 &&
+                               edge.AttackSerial == 1;
+        }
+
+        TentaclePlantController planeEdge = NewPlant(
+            TentaclePlantFactory.Hunter(),
+            240UL);
+        long planeTick = 0;
+        planeEdge.Target = NewTarget(
+            241UL,
+            planeEdge.Mount.Point - planeEdge.Outward * (radius * 0.5f) +
+            planeEdge.Tangent * 2f,
+            Vector3.Zero,
+            visible: true,
+            grabbable: false,
+            radius: radius);
+        Tick(planeEdge, terrain, ref planeTick);
+        bool planeSurfaceIntersects =
+            planeEdge.TargetStatus == TentaclePlantTargetStatus.Chargeable &&
+            planeEdge.AttackCharge > 0f;
+
+        TentaclePlantController capSeamInside = NewPlant(
+            TentaclePlantFactory.Hunter(),
+            246UL);
+        long capSeamInsideTick = 0;
+        capSeamInside.Target = NewTarget(
+            247UL,
+            capSeamInside.Mount.Point - capSeamInside.Outward * 0.10f +
+            capSeamInside.Tangent * 9.05f,
+            Vector3.Zero,
+            visible: true,
+            grabbable: false,
+            radius: radius);
+        Tick(capSeamInside, terrain, ref capSeamInsideTick);
+        bool capSeamIntersectionAccepted =
+            capSeamInside.TargetStatus == TentaclePlantTargetStatus.Chargeable &&
+            capSeamInside.AttackCharge > 0f;
+
+        TentaclePlantController capSeamOutside = NewPlant(
+            TentaclePlantFactory.Hunter(),
+            248UL);
+        long capSeamOutsideTick = 0;
+        capSeamOutside.Target = NewTarget(
+            249UL,
+            capSeamOutside.Mount.Point - capSeamOutside.Outward * 0.15f +
+            capSeamOutside.Tangent * 9.15f,
+            Vector3.Zero,
+            visible: true,
+            grabbable: false,
+            radius: radius);
+        Tick(capSeamOutside, terrain, ref capSeamOutsideTick);
+        bool capSeamDisjointRejected =
+            capSeamOutside.TargetStatus == TentaclePlantTargetStatus.OutOfRange &&
+            Near(capSeamOutside.AttackCharge, 0f);
+
+        TentaclePlantController behind = NewPlant(
+            TentaclePlantFactory.Hunter(),
+            242UL);
+        long behindTick = 0;
+        behind.Target = NewTarget(
+            243UL,
+            behind.Mount.Point - behind.Outward * (radius + 0.001f) +
+            behind.Tangent * 2f,
+            Vector3.Zero,
+            visible: true,
+            grabbable: false,
+            radius: radius);
+        Tick(behind, terrain, ref behindTick);
+        bool fullyBehindRejected =
+            behind.TargetStatus == TentaclePlantTargetStatus.BehindMount &&
+            Near(behind.AttackCharge, 0f);
+
+        TentaclePlantController outside = NewPlant(
+            TentaclePlantFactory.Hunter(),
+            244UL);
+        long outsideTick = 0;
+        outside.Target = NewTarget(
+            245UL,
+            outside.Root.Pos + outside.Outward *
+            (outside.Params.Length + radius + 0.001f),
+            Vector3.Zero,
+            visible: true,
+            grabbable: false,
+            radius: radius);
+        Tick(outside, terrain, ref outsideTick);
+        bool fullyOutsideRejected =
+            outside.TargetStatus == TentaclePlantTargetStatus.OutOfRange &&
+            Near(outside.AttackCharge, 0f);
+
+        bool ok = rotatedEdgeHits && planeSurfaceIntersects &&
+                  capSeamIntersectionAccepted && capSeamDisjointRejected &&
+                  fullyBehindRejected && fullyOutsideRejected;
+        return (
+            ok,
+            $"edgeExcess={minimumEdgeExcess:F4}m windup/strike=" +
+            $"{latestWindup}/{latestStrike} rotated={rotatedEdgeHits} " +
+            $"plane={planeSurfaceIntersects} seam=" +
+            $"{capSeamIntersectionAccepted}/{capSeamDisjointRejected} " +
+            $"behind={fullyBehindRejected} " +
+            $"outside={fullyOutsideRejected}");
+    }
+
     private static (bool, string) CheckGraspAndHostContract()
     {
         var terrain = new OpenTerrain();
@@ -456,6 +621,7 @@ internal static class Program
                         plant.TargetEffect.TargetId == id &&
                         plant.TargetEffect.CaptureStarted &&
                         plant.TargetEffect.Held &&
+                        plant.TargetStatus == TentaclePlantTargetStatus.Held &&
                         plant.Phase == TentaclePlantPhase.Holding &&
                         plant.PhaseTick == 0;
         bool firstRetractTick = Near(

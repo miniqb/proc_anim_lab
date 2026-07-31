@@ -107,6 +107,19 @@ public enum TentaclePlantPhase
     Holding,
 }
 
+/// <summary>最近一次固定 tick 对宿主目标的攻击资格判定。</summary>
+public enum TentaclePlantTargetStatus
+{
+    NoTarget,
+    HostHidden,
+    Held,
+    StrikeLocked,
+    OutOfRange,
+    BehindMount,
+    Occluded,
+    Chargeable,
+}
+
 /// <summary>
 /// RW TentaclePlant 思路的独立 3D 后端。它与蜥蜴控制器平行，只共享 Body/ITerrainQuery；
 /// 目标和抓持结果走纯值宿主契约，触手动力学由 <see cref="TentacleChain"/> 独占。
@@ -139,6 +152,8 @@ public sealed class TentaclePlantController
     public int BacktrackFrom => Chain.BacktrackFrom;
     public int TickQueryCount { get; private set; }
     public int PeakQueryCount { get; private set; }
+    public TentaclePlantTargetStatus TargetStatus { get; private set; } =
+        TentaclePlantTargetStatus.NoTarget;
 
     private readonly TentaclePlantParams _parameters;
     private readonly ulong _initialSeed;
@@ -307,6 +322,7 @@ public sealed class TentaclePlantController
         _attackDirection = Outward;
         Phase = TentaclePlantPhase.Wandering;
         PhaseTick = 0;
+        TargetStatus = TentaclePlantTargetStatus.NoTarget;
         PeakQueryCount = 0;
         TickQueryCount = 0;
     }
@@ -332,16 +348,49 @@ public sealed class TentaclePlantController
 
     private bool EvaluateAttackTarget(ITerrainQuery terrain)
     {
-        if (HeldTargetId is not null || _strikeTicksRemaining > 0 ||
-            Target is not { } target || !target.HostVisible)
+        if (Target is not { } target)
         {
+            TargetStatus = TentaclePlantTargetStatus.NoTarget;
             return false;
         }
-        Vector3 fromRoot = target.Position - Root.Pos;
-        if (fromRoot.LengthSquared() >
-                _parameters.Length * _parameters.Length ||
-            fromRoot.Dot(Outward) < 0f)
+        if (!target.HostVisible)
         {
+            TargetStatus = TentaclePlantTargetStatus.HostHidden;
+            return false;
+        }
+        if (HeldTargetId is not null)
+        {
+            TargetStatus = TentaclePlantTargetStatus.Held;
+            return false;
+        }
+        if (_strikeTicksRemaining > 0)
+        {
+            TargetStatus = TentaclePlantTargetStatus.StrikeLocked;
+            return false;
+        }
+
+        // Target 是有体积的宿主实体。攻击长度球与 mount 前半空间都按球体相交
+        // 判定，避免猎物表面仍可达、但中心刚越过边界时永久只 Tracking 不充能。
+        float targetRadius = Math.Max(0f, target.Radius);
+        Vector3 fromRoot = target.Position - Root.Pos;
+        float reach = _parameters.Length + targetRadius;
+        if (fromRoot.LengthSquared() > reach * reach)
+        {
+            TargetStatus = TentaclePlantTargetStatus.OutOfRange;
+            return false;
+        }
+        float mountForward = (target.Position - Mount.Point).Dot(Outward);
+        if (mountForward < -targetRadius)
+        {
+            TargetStatus = TentaclePlantTargetStatus.BehindMount;
+            return false;
+        }
+        if (DistanceSquaredToAttackEnvelope(target.Position, mountForward) >
+            targetRadius * targetRadius)
+        {
+            // 长度球与洞外半空间的接缝：目标球可能分别碰到两者，却没有同一个
+            // 体积点落在二者交集内。此时仍属于攻击包络外。
+            TargetStatus = TentaclePlantTargetStatus.OutOfRange;
             return false;
         }
 
@@ -357,7 +406,52 @@ public sealed class TentaclePlantController
             Vector3 predicted = target.Position + target.VelocityPerTick * leadTicks;
             _attackDirection = SafeDirection(predicted - Hand.Pos, Outward);
         }
+        TargetStatus = visible
+            ? TentaclePlantTargetStatus.Chargeable
+            : TentaclePlantTargetStatus.Occluded;
         return visible;
+    }
+
+    private float DistanceSquaredToAttackEnvelope(
+        Vector3 point,
+        float mountForward)
+    {
+        Vector3 fromRoot = point - Root.Pos;
+        float rootDistance = fromRoot.Length();
+        if (mountForward >= 0f)
+        {
+            float radialExcess = Math.Max(0f, rootDistance - _parameters.Length);
+            return radialExcess * radialExcess;
+        }
+
+        // 先试长度球上的径向最近点；它若仍在洞外半空间，就是整个球冠的最近点。
+        if (rootDistance > _parameters.Length && rootDistance > 1e-6f)
+        {
+            Vector3 sphereProjection = Root.Pos +
+                fromRoot * (_parameters.Length / rootDistance);
+            if ((sphereProjection - Mount.Point).Dot(Outward) >= 0f)
+            {
+                float radialExcess = rootDistance - _parameters.Length;
+                return radialExcess * radialExcess;
+            }
+        }
+
+        // 否则半空间约束生效，最近点在安装平面与长度球相交的圆盘上。
+        float rootForward = (Root.Pos - Mount.Point).Dot(Outward);
+        float planeRadiusSquared = _parameters.Length * _parameters.Length -
+                                   rootForward * rootForward;
+        if (planeRadiusSquared <= 0f)
+        {
+            float radialExcess = Math.Max(0f, rootDistance - _parameters.Length);
+            return radialExcess * radialExcess;
+        }
+        Vector3 pointOnPlane = point - Outward * mountForward;
+        Vector3 rootOnPlane = Root.Pos - Outward * rootForward;
+        float tangentDistance = pointOnPlane.DistanceTo(rootOnPlane);
+        float tangentExcess = Math.Max(
+            0f,
+            tangentDistance - Mathf.Sqrt(planeRadiusSquared));
+        return mountForward * mountForward + tangentExcess * tangentExcess;
     }
 
     private bool CanSee(
@@ -377,6 +471,7 @@ public sealed class TentaclePlantController
     {
         if (HeldTargetId is not null)
         {
+            TargetStatus = TentaclePlantTargetStatus.Held;
             AttackCharge = 0f;
             _chargeUnits = 0;
             _strikeTicksRemaining = 0;
@@ -387,6 +482,7 @@ public sealed class TentaclePlantController
 
         if (_strikeTicksRemaining > 0)
         {
+            TargetStatus = TentaclePlantTargetStatus.StrikeLocked;
             _strikeTick++;
             _strikeTicksRemaining--;
             AttackCharge = 1f + _strikeTick / (float)_parameters.LungeTicks;
@@ -494,6 +590,7 @@ public sealed class TentaclePlantController
         }
 
         HeldTargetId = target.StableId;
+        TargetStatus = TentaclePlantTargetStatus.Held;
         AttackCharge = 0f;
         _chargeUnits = 0;
         _strikeTicksRemaining = 0;
