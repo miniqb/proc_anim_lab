@@ -56,8 +56,9 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 
 - **几何/出生**：`Length`、`SegmentCount`、`RootRadius`、`TipRadius`、
   `HandVisualRadius`、`StrikeGrabRadius`、`RootMass`、`HandMass`、
-  `TipMass`、`RootSurfaceOffset`、`SpawnExtension`。半径与质量沿链递减；根/手视觉半径与突刺抓取半径
-  分开，不能拿表现尺寸暗改捕获范围。
+  `TipMass`、`RootSurfaceOffset`、`SpawnExtension`。半径与质量沿链递减；`SpawnExtension`
+  是首个物理 tick 经地形背书后尝试铺开的出生比例，不是构造函数无条件穿过前方碰撞体的距离。
+  根/手视觉半径与突刺抓取半径分开，不能拿表现尺寸暗改捕获范围。
 - **柔性段链**：`SegmentDamping`、`SegmentVelocityCap`、`TipGoalAttraction`、
   `InnerGoalAttraction`、`GuideAttraction`、`BacktrackSpeed`、`OutwardRootForce`、
   `ShapeSeparationForce`、`SelfAvoidanceStrength`、`SelfAvoidancePadding`、
@@ -100,7 +101,26 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 不得让手或段链直接穿过遮挡板。
 
 若直线已被球形净空否决、8 个候选又都不可行，核心会把导引终点退到首个障碍前的安全前缀，
-并主动收住外段；不会继续沿旧的直达目标把细梢穿进整株无法通过的窄缝。
+并主动收住外段；不会继续沿旧的直达目标把细梢穿进整株无法通过的窄缝。`BacktrackFrom`
+生效期间暂停全链的向外根力与隔节互推，只保留导引和相邻节回拉；否则这两种表现力会沿安全
+前缀传到贴障后缀，把 15-tick 重铺窗口反复压回同一碰撞面。
+目标在进入路由与形态力前还会沿根到目标方向钳到 `Length` 可达球；因此宿主给出 15m 或 25m
+远目标时只改变方向，不会让固定查询预算形成魔法距离。若自定义参数或复杂障碍仍耗尽
+`RoutingQueryBudget`，本 tick 改用零长度安全前缀，绝不保留上一条可能已失效的 carrot。
+
+构造与 `Remount` 时尚没有可合法查询的 Godot physics space，所以所有可见段和 `Hand` 先折叠在
+`mount.Point + Outward × RootRadius`；首个 `Tick` 在 `Body.Tick` 前用中心线射线和固定间距球净空
+尝试铺到 `Length × SpawnExtension`，一旦命中便把后缀留在最后安全进度。这个“先折叠、后安全播种”
+是 3D 连续碰撞扩展，也与原作 reset 时把触手段收拢到同一位置的做法一致；它避免薄板内的段被
+MTD 推到远侧后形成不可恢复的隔墙拓扑。
+
+原作正常状态的 body hand / 触手 tip 是 50/50 位置与速度加性耦合，回卷时由 tip 取得权威，
+且 body hand 受 `idealLength × 2 × extended` 根部硬拴；本项目保留这三点。回收后段的误差会在
+碰撞前用一次 tip→root 反向 PullOnly 投影传回整链，必要时再相对根统一缩短，因此全链约束与
+根部硬拴能同时成立而不增加地形查询。由于 3D `Hand` 是无连接代理，耦合仍发生在主绳约束之后，
+公开 tick 结束前会再次投影末链与根部硬拴、做地形安全回退并重施梢端速度上限。这一道是
+3D 稳定扩展，用于保证突刺/重目标回收不会再把单节拉成数倍或让代理越过静态障碍，不声称原作
+在同一位置有第二次求解。
 
 `GuidePoints`、`BacktrackFrom` 和查询计数都是核心只读输出。沙盒可以把它们画出来，
 但不得用调试图形反向决定运动。合法埋地只限根部；可见段和手仍受静态地形净空约束。
@@ -110,13 +130,17 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 核心不扫描动态物体。宿主负责选择猎物，并把
 `StableId / Position / VelocityPerTick / Radius / Mass / HostVisible / HostGrabbable`
 写入 nullable `Target`。`HostGrabbable` 只约束捕获，宿主仍可让不可抓目标参与追踪与充能；
-控制器据其余字段做范围、视线、预测、阶段和几何命中判定。
+控制器据其余字段做范围、视线、预测、阶段和几何命中判定。位置、速度、半径和质量必须有限，
+半径与质量不得为负；无效快照在进入固定 tick 前快速失败，不能把 NaN 注入链与确定性哈希。
 
 3D 攻击包络是“以物理根为中心的长度球”与“安装面洞外半空间”的交集。判定使用
 `Radius` 表达的猎物球体是否与该包络相交，而不是只检查目标中心：目标中心可比
 `Length` 最多多出自身半径，或比安装面最多退后自身半径；只有整个猎物球都越出长度球、
 或整个球都在安装面后方时才拒绝充能。原作只对 main body chunk 中心做二维距离检查；
 这里是为连续 3D 目标体积补出的边界语义。
+视线射线的目标端容差只取 `Radius`，路由用的 `GuideClearanceRadius` 不参与视觉判断；通过手/梢
+扫掠和速度门后，真正建立抓取关系前还会再做一次手到目标球的静态地形视线校验。因此
+`HostVisible=false` 的开放地形低速被动触碰仍可抓取，但 0.15m 薄板后的目标不能借扩大抓取球穿墙。
 
 每次 `Tick` 都覆盖只读 `TargetEffect`；`TargetId` 指明本次效果所属的稳定目标，其余字段语义为：
 
@@ -129,6 +153,13 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 核心从不直接移动目标节点、扣血或销毁对象。宿主若不接受 `CaptureStarted`，必须调用
 `ReleaseHeldTarget()`，或在下一 tick 清空 `Target` / 换成另一稳定 ID；仅把同一目标的
 `HostGrabbable` 改为 `false` 不会解除已建立的核心抓持。
+
+`Held` 期间位置关系是刚性的：`PositionCorrection` 覆盖本 tick 最终 `Hand.Pos` 与目标快照的
+完整误差，宿主应用后目标与手端重合；`Mass` / `CarryHandMass` 的权重保留在 `VelocityDelta`
+和 Hand/Tip 反作用中，用来表达轻重目标不同的速度响应。不能把位置修正也按质量缩小，否则扎根
+绳约束会拒绝 Hand 本应承担的位移份额，重目标会在仍标记 `Held` 时逐 tick 离手数米。吞入距离门
+同样按应用这份刚性位置修正后的手端位置判断；只有额外强拉达到 `ConsumeForceTicks` 才允许走
+原作已有的强制请求分支。
 
 ## 4. 行为阶段与固定序
 
@@ -163,6 +194,13 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 5. 耦合 `Root` / `Hand` / tip；
 6. 判定抓取、保持、释放或吞入，并覆盖回收效果 `TargetEffect`。
 
+捕获建立的 tick 保持完整 `Extension`；之后每个已抓持 tick，段链先用本 tick 将公开的下一档
+`Extension` 解算，再在第 6 步提交同一标量，故 80 tick 回收不会出现“几何仍按旧长度、输出却已缩短”
+的错位。保持阶段计算宿主 `VelocityDelta` 时读取的是施加 hand 回收修正**之前**的速度；否则目标质量
+大于 `CarryHandMass / CarryVelocityGain` 时误差项会翻号成正反馈。反作用写回 Hand/Tip 后还会重施
+`SegmentVelocityCap`。宿主仍须按 §5 在 tick 后把 `PositionCorrection` / `VelocityDelta` 应用到同一
+权威目标并于下一 tick 回喂，核心不代管动态实体。
+
 宿主只调用一次 `Tick(TickContext)`，不得拆开或重排这些阶段。逻辑固定 40 tick/s；
 `Vel` 仍是米/tick 位移，渲染只读插值状态。
 
@@ -182,7 +220,7 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 - `Shift(delta)`：世界 rebase。平移根、手、全部段、目标记忆、wander goal、guide points 和
   插值历史，保持阶段、充能、seed 与抓取连续性。
 - `Remount(mount)`：地形不随体移动的重新安装。替换完整 mount frame，清导引、旧目标记忆、
-  抓取和攻击阶段，并从新洞口重新播种可见链。
+  抓取和攻击阶段，立即把可见链折叠到新洞口外缘，并在下一物理 tick 按新地形安全播种。
 - `ReleaseHeldTarget()`：立即解除内核抓持，并在**下一次 `Tick`**通过
   `TargetEffect.Released` 通知宿主；若 `Target` 仍存在则进入 `Tracking`，否则进入
   `Wandering`。`Remount()` 对已有抓持的释放通知也遵循下一 tick 语义。
@@ -236,8 +274,15 @@ dotnet run --project core/tentacle_plant_smoke
 两条入口都以退出码和断言判定。无引擎 smoke 覆盖：
 
 - 三预设装配、参数快照与未知 ID 快速失败；
-- 三向安装、游荡域/净空、局部两折点与回卷恢复；
-- 45/90/10/40/80+30 tick 时序、被动低速捕获、质量牵引及目标失效门；
+- 三向安装、游荡域/净空、局部两折点与回卷恢复；开放地形首 tick 必须铺到
+  `Length × SpawnExtension`，original/hunter 在三向 0.25m 薄板前的出生/Remount 各跑
+  2000 tick，要求全程无远侧段、无中心线穿板且连续回卷不超过 60 tick；
+- 45/90/10/40/80+30 tick 时序、三预设攻击期链节/梢端位移硬门、被动低速捕获、质量牵引及
+  目标失效门；
+- `{0.25, 1, 4, 10}` 质量的真实闭合宿主回路，保证全程 finite、Hand/Tip 同位、内部速度不越过
+  `SegmentVelocityCap`、链节不持续超长、`2 × Length × Extension` 根部硬拴零超差，且请求吞入时
+  目标已进入 `ConsumeDistance`；0.15m 薄板负例与开放地形正例共同钉住抓取视线；
+- `15.1 / 15.2 / 25m` 同方向远目标的连续横向响应，防止查询预算边界再次冻结导引；
 - hunter 在三向安装下的目标球长度/前半空间交界，以及整个目标球越界时的拒绝门；
 - `Shift`、`Remount`、`ReleaseHeldTarget` 的逐字段生命周期；
 - 同 seed 双跑 bit-exact、不同 seed 轨迹差异、8/16 段查询增长、穿透和所有数值 finite。

@@ -1,22 +1,6 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene format=3 uid="uid://bu40asds2i5dr"]
 
-[ext_resource type="Script" path="res://scripts/tentacle_plant_sandbox/TentaclePlantSandboxWorld.cs" id="1_world"]
-
-[sub_resource type="StandardMaterial3D" id="mat_floor"]
-albedo_color = Color(0.18, 0.22, 0.16, 1)
-roughness = 0.94
-
-[sub_resource type="StandardMaterial3D" id="mat_wall"]
-albedo_color = Color(0.25, 0.29, 0.24, 1)
-roughness = 0.88
-
-[sub_resource type="StandardMaterial3D" id="mat_ceiling"]
-albedo_color = Color(0.20, 0.25, 0.24, 1)
-roughness = 0.9
-
-[sub_resource type="StandardMaterial3D" id="mat_occluder"]
-albedo_color = Color(0.52, 0.22, 0.12, 1)
-roughness = 0.76
+[ext_resource type="Script" uid="uid://5s0u4wc7pcxs" path="res://scripts/tentacle_plant_sandbox/TentaclePlantSandboxWorld.cs" id="1_world"]
 
 [sub_resource type="BoxShape3D" id="shape_floor"]
 size = Vector3(24, 0.4, 24)
@@ -24,11 +8,19 @@ size = Vector3(24, 0.4, 24)
 [sub_resource type="BoxMesh" id="mesh_floor"]
 size = Vector3(24, 0.4, 24)
 
+[sub_resource type="StandardMaterial3D" id="mat_floor"]
+albedo_color = Color(0.18, 0.22, 0.16, 1)
+roughness = 0.94
+
 [sub_resource type="BoxShape3D" id="shape_back_wall"]
 size = Vector3(24, 8, 0.4)
 
 [sub_resource type="BoxMesh" id="mesh_back_wall"]
 size = Vector3(24, 8, 0.4)
+
+[sub_resource type="StandardMaterial3D" id="mat_wall"]
+albedo_color = Color(0.25, 0.29, 0.24, 1)
+roughness = 0.88
 
 [sub_resource type="BoxShape3D" id="shape_ceiling"]
 size = Vector3(24, 0.4, 16)
@@ -36,84 +28,91 @@ size = Vector3(24, 0.4, 16)
 [sub_resource type="BoxMesh" id="mesh_ceiling"]
 size = Vector3(24, 0.4, 16)
 
+[sub_resource type="StandardMaterial3D" id="mat_ceiling"]
+albedo_color = Color(0.2, 0.25, 0.24, 1)
+roughness = 0.9
+
 [sub_resource type="BoxShape3D" id="shape_occluder"]
 size = Vector3(7, 0.4, 7)
 
 [sub_resource type="BoxMesh" id="mesh_occluder"]
 size = Vector3(7, 0.4, 7)
 
+[sub_resource type="StandardMaterial3D" id="mat_occluder"]
+albedo_color = Color(0.52, 0.22, 0.12, 1)
+roughness = 0.76
+
 [sub_resource type="Environment" id="env"]
 background_mode = 1
 background_color = Color(0.025, 0.038, 0.028, 1)
 ambient_light_source = 3
-ambient_light_color = Color(0.50, 0.63, 0.52, 1)
+ambient_light_color = Color(0.5, 0.63, 0.52, 1)
 ambient_light_energy = 0.62
 tonemap_mode = 2
 
-[node name="TentaclePlantSandboxWorld" type="Node3D"]
+[node name="TentaclePlantSandboxWorld" type="Node3D" unique_id=1669904529]
 script = ExtResource("1_world")
 
-[node name="Terrain" type="Node3D" parent="."]
+[node name="Terrain" type="Node3D" parent="." unique_id=541331931]
 
-[node name="Floor" type="StaticBody3D" parent="Terrain"]
-position = Vector3(0, -0.2, 0)
+[node name="Floor" type="StaticBody3D" parent="Terrain" unique_id=771268440]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.2, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor" unique_id=1694302593]
 shape = SubResource("shape_floor")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor" unique_id=974528114]
 mesh = SubResource("mesh_floor")
 surface_material_override/0 = SubResource("mat_floor")
 
-[node name="BackWall" type="StaticBody3D" parent="Terrain"]
-position = Vector3(0, 4, -10)
+[node name="BackWall" type="StaticBody3D" parent="Terrain" unique_id=2108189070]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, -10)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/BackWall"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/BackWall" unique_id=156359902]
 shape = SubResource("shape_back_wall")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/BackWall"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/BackWall" unique_id=633270485]
 mesh = SubResource("mesh_back_wall")
 surface_material_override/0 = SubResource("mat_wall")
 
-[node name="Ceiling" type="StaticBody3D" parent="Terrain"]
-position = Vector3(0, 8, -2)
+[node name="Ceiling" type="StaticBody3D" parent="Terrain" unique_id=1454375825]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, -2)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Ceiling"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Ceiling" unique_id=173857433]
 shape = SubResource("shape_ceiling")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Ceiling"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Ceiling" unique_id=598742657]
 mesh = SubResource("mesh_ceiling")
 surface_material_override/0 = SubResource("mat_ceiling")
 
-[node name="Occluder" type="StaticBody3D" parent="Terrain"]
-position = Vector3(1000, 1000, 1000)
+[node name="Occluder" type="StaticBody3D" parent="Terrain" unique_id=1882952934]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1000, 1000, 1000)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Occluder"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Occluder" unique_id=982415186]
 shape = SubResource("shape_occluder")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Occluder"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Occluder" unique_id=2028741613]
 mesh = SubResource("mesh_occluder")
 surface_material_override/0 = SubResource("mat_occluder")
 
-[node name="Camera3D" type="Camera3D" parent="."]
-position = Vector3(8.5, 5.7, 11.5)
-rotation = Vector3(-0.27, 0.62, 0)
+[node name="Camera3D" type="Camera3D" parent="." unique_id=653923386]
+transform = Transform3D(0.8138785, -0.15498035, 0.55998474, 0, 0.96377087, 0.26673144, -0.58103514, -0.21708699, 0.78439236, 8.5, 5.7, 11.5)
 current = true
 fov = 56.0
 far = 80.0
 
-[node name="KeyLight" type="DirectionalLight3D" parent="."]
-rotation = Vector3(-0.82, -0.58, -0.28)
-light_color = Color(0.80, 0.92, 0.82, 1)
+[node name="KeyLight" type="DirectionalLight3D" parent="." unique_id=1032199728]
+transform = Transform3D(0.69315535, 0.6162421, -0.37387356, -0.18853569, 0.65565246, 0.7311458, 0.69569397, -0.43630916, 0.5706526, 0, 0, 0)
+light_color = Color(0.8, 0.92, 0.82, 1)
 light_energy = 1.25
 shadow_enabled = true
 
-[node name="FillLight" type="OmniLight3D" parent="."]
-position = Vector3(4, 4.5, 4)
+[node name="FillLight" type="OmniLight3D" parent="." unique_id=630576742]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 4.5, -2.2981815)
 light_color = Color(1, 0.65, 0.34, 1)
-light_energy = 2.2
-omni_range = 13.0
+light_energy = 14.0
 shadow_enabled = true
+omni_range = 13.0
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1067787686]
 environment = SubResource("env")

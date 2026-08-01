@@ -28,6 +28,7 @@ public sealed class CreatureSelectorUI
         row.AddChild(new Label { Text = "Creature:" });
 
         _dropdown = new OptionButton();
+        SandboxUiFocus.MakePointerOnly(_dropdown);
         foreach (string name in creatureNames)
         {
             _dropdown.AddItem(name);

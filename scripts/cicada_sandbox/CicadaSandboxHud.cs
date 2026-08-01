@@ -1,5 +1,6 @@
 using System;
 using Godot;
+using ProcAnimLab.Sandbox;
 
 namespace ProcAnimLab.CicadaSandbox;
 
@@ -38,6 +39,7 @@ public sealed class CicadaSandboxHud
         presetRow.AddChild(new Label { Text = "Preset:" });
 
         _presetPicker = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        SandboxUiFocus.MakePointerOnly(_presetPicker);
         foreach (string name in presetNames)
         {
             _presetPicker.AddItem(name);

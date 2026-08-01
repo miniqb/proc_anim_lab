@@ -62,6 +62,7 @@ public sealed class TentacleChain
     private int _rebuildTicks;
     private int _routingQueries;
     private bool _guideBlocked;
+    private bool _terrainSeedPending = true;
 
     internal TentacleChain(
         BodyChunk anchor,
@@ -71,10 +72,10 @@ public sealed class TentacleChain
         Anchor = anchor;
         _parameters = parameters;
         Segments = new TentacleSegmentState[parameters.SegmentCount];
-        float spawnLength = parameters.Length * parameters.SpawnExtension;
+        Vector3 foldedPosition = anchor.Pos + outward *
+            Math.Max(0f, parameters.RootRadius - parameters.RootSurfaceOffset);
         for (int i = 0; i < Segments.Length; i++)
         {
-            float t = (i + 1f) / Segments.Length;
             float radius = Mathf.Lerp(
                 parameters.RootRadius,
                 parameters.TipRadius,
@@ -84,7 +85,7 @@ public sealed class TentacleChain
                 parameters.TipMass,
                 i / (float)(Segments.Length - 1));
             Segments[i] = new TentacleSegmentState(
-                anchor.Pos + outward * (spawnLength * t),
+                foldedPosition,
                 radius,
                 mass);
         }
@@ -105,6 +106,7 @@ public sealed class TentacleChain
         Vector3 tangent,
         float extension)
     {
+        goal = ClampGoalToReach(goal);
         _routingQueries = 0;
         bool rebuildingAtTickStart = _rebuildTicks > 0;
         _guideAge++;
@@ -125,6 +127,7 @@ public sealed class TentacleChain
         extension = Mathf.Clamp(extension, 0f, 1f);
         float effectiveLength = _parameters.Length *
             Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
+        float maximumTipReach = _parameters.Length * 2f * extension;
 
         DampSegments();
         ApplySelfAvoidance(outward, tangent);
@@ -132,6 +135,11 @@ public sealed class TentacleChain
         for (int i = 0; i < _parameters.ConstraintIterations; i++)
         {
             RelaxRope(effectiveLength);
+            ConstrainTipToRoot(maximumTipReach);
+        }
+        if (maximumTipReach < effectiveLength)
+        {
+            ConstrainRopeBackward(effectiveLength);
         }
         CollideIntegratedMotion(ctx);
         DetectBlockedSuffix(ctx.Terrain, outward);
@@ -168,11 +176,59 @@ public sealed class TentacleChain
         float windupAmount,
         Vector3 strikeImpulse)
     {
+        goal = ClampGoalToReach(goal);
         extension = Mathf.Clamp(extension, 0f, 1f);
         float effectiveLength = _parameters.Length *
             Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
         ApplyServoForces(goal, outward, effectiveLength, windupAmount);
         Tip.Vel += strikeImpulse;
+    }
+
+    /// <summary>
+    /// Hand proxy 的 50/50 耦合发生在本 tick 绳约束之后；这里交替投影末链与根部硬拴，
+    /// 保住已经解好的安全前缀，并把公开 tick 末的几何恢复到两个上限内。
+    /// </summary>
+    internal void ConstrainTipAfterCoupling(
+        ITerrainQuery terrain,
+        float extension,
+        Vector3 safeTipPosition)
+    {
+        extension = Mathf.Clamp(extension, 0f, 1f);
+        float effectiveLength = _parameters.Length *
+            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
+        float linkLength = effectiveLength / Segments.Length;
+        float maximumTipReach = _parameters.Length * 2f * extension;
+        TentacleSegmentState previous = Segments[^2];
+        for (int i = 0; i < _parameters.ConstraintIterations; i++)
+        {
+            CorrectStretch(previous.Pos, Tip, linkLength, previous: null);
+            ConstrainTipToRoot(maximumTipReach);
+        }
+
+        Vector3 motion = Tip.Pos - safeTipPosition;
+        float motionLength = motion.Length();
+        bool blockedSweep = motionLength > 1e-6f &&
+            terrain.Raycast(
+                safeTipPosition,
+                Tip.Pos + motion / motionLength * Tip.Radius,
+                out TerrainHit hit) &&
+            hit.Point.DistanceSquaredTo(Tip.Pos) >
+            (Tip.Radius + 0.002f) * (Tip.Radius + 0.002f);
+        bool embedded = terrain.SpherePenetration(
+            Tip.Pos,
+            Tip.Radius,
+            out _,
+            out _);
+        bool constraintsInvalid =
+            Tip.Pos.DistanceTo(previous.Pos) > linkLength + 1e-4f ||
+            Tip.Pos.DistanceTo(Anchor.Pos) > maximumTipReach + 1e-4f;
+        if (blockedSweep || embedded || constraintsInvalid)
+        {
+            // Chain.TickPhysics 已为 safeTipPosition 做过约束与碰撞；若新投影
+            // 缺少地形背书或两个约束未收敛，就回到这份安全位置。
+            Tip.Pos = safeTipPosition;
+        }
+        Tip.Vel = Tip.Vel.LimitLength(_parameters.SegmentVelocityCap);
     }
 
     public void Shift(Vector3 delta)
@@ -188,15 +244,93 @@ public sealed class TentacleChain
         _lastGuideTarget += delta;
     }
 
-    internal void Remount(Vector3 outward)
+    /// <summary>
+    /// 构造和 Remount 时核心尚未拿到地形查询；第一次 Tick 前沿安装方向检查整条
+    /// 初生中心线。遇障时把外段折叠到最后安全进度，避免 MTD 把它们推出障碍远侧。
+    /// </summary>
+    internal bool EnsureTerrainSafeSeed(ITerrainQuery terrain, Vector3 outward)
     {
+        if (!_terrainSeedPending)
+        {
+            return false;
+        }
+        _terrainSeedPending = false;
+
+        Vector3 direction = SafeDirection(outward, Vector3.Up);
         float spawnLength = _parameters.Length * _parameters.SpawnExtension;
+        float minimumProgress = Math.Min(
+            spawnLength,
+            Math.Max(
+                0f,
+                _parameters.RootRadius - _parameters.RootSurfaceOffset + 0.002f));
+        Vector3 start = Anchor.Pos + direction * minimumProgress;
+        Vector3 end = Anchor.Pos + direction * spawnLength;
+        float safeProgress = spawnLength;
+
+        if (terrain.Raycast(start, end, out TerrainHit hit))
+        {
+            float hitProgress = (hit.Point - Anchor.Pos).Dot(direction);
+            if (hitProgress >= minimumProgress - 1e-4f)
+            {
+                safeProgress = Math.Min(
+                    safeProgress,
+                    hitProgress - _parameters.RootRadius - _parameters.GuideSurfaceOffset);
+            }
+        }
+
+        float sampleStep = Math.Max(_parameters.RootRadius * 1.5f, 0.05f);
+        int sampleCount = Math.Max(
+            1,
+            Mathf.CeilToInt((spawnLength - minimumProgress) / sampleStep));
+        for (int i = 1; i <= sampleCount; i++)
+        {
+            float progress = Mathf.Lerp(
+                minimumProgress,
+                spawnLength,
+                i / (float)sampleCount);
+            if (progress > safeProgress + 1e-4f)
+            {
+                break;
+            }
+            if (terrain.SpherePenetration(
+                    Anchor.Pos + direction * progress,
+                    _parameters.RootRadius,
+                    out _,
+                    out _))
+            {
+                safeProgress = Math.Min(
+                    safeProgress,
+                    progress - _parameters.RootRadius - _parameters.GuideSurfaceOffset);
+                break;
+            }
+        }
+
+        safeProgress = Mathf.Clamp(safeProgress, minimumProgress, spawnLength);
         for (int i = 0; i < Segments.Length; i++)
         {
-            float t = (i + 1f) / Segments.Length;
-            Vector3 position = Anchor.Pos + outward * (spawnLength * t);
-            Segments[i].Pos = position;
-            Segments[i].LastPos = position;
+            float desiredProgress = spawnLength * (i + 1f) / Segments.Length;
+            Vector3 position = Anchor.Pos + direction * Math.Min(desiredProgress, safeProgress);
+            TentacleSegmentState segment = Segments[i];
+            segment.Pos = position;
+            segment.LastPos = position;
+            segment.Vel = Vector3.Zero;
+            segment.TerrainContact = false;
+            segment.ContactNormal = direction;
+        }
+
+        // 同一 tick 立即重建导引；不能让安全折叠后的链再吃一次穿障旧直线。
+        _guideAge = _parameters.GuideRefreshTicks;
+        return true;
+    }
+
+    internal void Remount(Vector3 outward)
+    {
+        Vector3 foldedPosition = Anchor.Pos + outward *
+            Math.Max(0f, _parameters.RootRadius - _parameters.RootSurfaceOffset);
+        for (int i = 0; i < Segments.Length; i++)
+        {
+            Segments[i].Pos = foldedPosition;
+            Segments[i].LastPos = foldedPosition;
             Segments[i].Vel = Vector3.Zero;
             Segments[i].TerrainContact = false;
             Segments[i].ContactNormal = outward;
@@ -210,6 +344,7 @@ public sealed class TentacleChain
         _lastBlockedFrom = -1;
         _rebuildTicks = 0;
         _guideBlocked = false;
+        _terrainSeedPending = true;
         BacktrackFrom = -1;
     }
 
@@ -230,6 +365,7 @@ public sealed class TentacleChain
         Vector3 recoilPoint = (Tip.Pos + Anchor.Pos +
             outward * _parameters.WanderCenterDistance) * 0.5f;
         float desiredGuideSpan = Math.Min(effectiveLength, CurrentGuideLength());
+        bool recovering = BacktrackFrom >= 0;
         for (int i = 0; i < Segments.Length; i++)
         {
             TentacleSegmentState segment = Segments[i];
@@ -265,12 +401,21 @@ public sealed class TentacleChain
                 Vector3 previous = i == 0 ? Anchor.Pos : Segments[i - 1].Pos;
                 segment.Vel += Toward(segment.Pos, previous, _parameters.BacktrackSpeed);
             }
-            segment.Vel += outward * (_parameters.OutwardRootForce * (1f - t));
+            if (!recovering)
+            {
+                segment.Vel += outward * (_parameters.OutwardRootForce * (1f - t));
+            }
         }
 
         // 原作的隔一节互推：给绳链一个有机曲率，但不新增刚性连接。
         for (int i = 2; i < Segments.Length; i++)
         {
+            if (recovering)
+            {
+                // 回卷期间安全前缀与后缀仍通过 goal/guide 和相邻节回拉恢复；
+                // 向外根力与隔节互推会沿链传递并把贴障段重新压回碰撞面。
+                continue;
+            }
             Vector3 dir = SafeDirection(Segments[i].Pos - Segments[i - 2].Pos, outward);
             Segments[i].Vel += dir * _parameters.ShapeSeparationForce;
             Segments[i - 2].Vel -= dir * _parameters.ShapeSeparationForce;
@@ -285,6 +430,41 @@ public sealed class TentacleChain
         for (int i = 1; i < Segments.Length; i++)
         {
             CorrectStretch(Segments[i - 1].Pos, Segments[i], linkLength, Segments[i - 1]);
+        }
+    }
+
+    private void ConstrainRopeBackward(float effectiveLength)
+    {
+        float linkLength = effectiveLength / Segments.Length;
+        for (int i = Segments.Length - 2; i >= 0; i--)
+        {
+            TentacleSegmentState current = Segments[i];
+            Vector3 delta = current.Pos - Segments[i + 1].Pos;
+            float distance = delta.Length();
+            if (distance <= linkLength || distance <= 1e-6f)
+            {
+                continue;
+            }
+
+            Vector3 correction = delta / distance * (distance - linkLength);
+            current.Pos -= correction;
+            current.Vel -= correction;
+        }
+
+        TentacleSegmentState first = Segments[0];
+        float firstDistance = first.Pos.DistanceTo(Anchor.Pos);
+        if (firstDistance <= linkLength || firstDistance <= 1e-6f)
+        {
+            return;
+        }
+
+        float scale = linkLength / firstDistance;
+        foreach (TentacleSegmentState segment in Segments)
+        {
+            Vector3 scaled = Anchor.Pos + (segment.Pos - Anchor.Pos) * scale;
+            Vector3 correction = scaled - segment.Pos;
+            segment.Pos = scaled;
+            segment.Vel += correction;
         }
     }
 
@@ -314,6 +494,21 @@ public sealed class TentacleChain
             previous.Pos += correction;
             previous.Vel += correction;
         }
+    }
+
+    private void ConstrainTipToRoot(float maximumReach)
+    {
+        maximumReach = Math.Max(0f, maximumReach);
+        Vector3 fromRoot = Tip.Pos - Anchor.Pos;
+        float distance = fromRoot.Length();
+        if (distance <= maximumReach || distance <= 1e-6f)
+        {
+            return;
+        }
+
+        Vector3 correction = fromRoot / distance * (distance - maximumReach);
+        Tip.Pos -= correction;
+        Tip.Vel -= correction;
     }
 
     private void ApplySelfAvoidance(Vector3 outward, Vector3 tangent)
@@ -477,6 +672,7 @@ public sealed class TentacleChain
         _routingQueries = 0;
         Vector3 start = Anchor.Pos + outward *
             (_parameters.RootRadius + _parameters.GuideSurfaceOffset);
+        Vector3 targetDirection = SafeDirection(goal - start, outward);
         if (!TryRouteSegmentClear(
                 terrain,
                 start,
@@ -486,6 +682,9 @@ public sealed class TentacleChain
                 out bool directClear,
                 out TerrainHit firstHit))
         {
+            // 预算耗尽不是“沿用旧路线”的许可证。退回零长度安全前缀，下一次刷新
+            // 再尝试展开；这样远目标和复杂局部障碍都不会把导引冻结成旧 carrot。
+            SetBlockedGuide(start, start, targetDirection);
             return;
         }
         if (directClear)
@@ -494,7 +693,6 @@ public sealed class TentacleChain
             SetGuide(start, goal);
             return;
         }
-        Vector3 targetDirection = SafeDirection(goal - start, outward);
         if (firstHit.Normal.LengthSquared() <= 1e-10f)
         {
             SetBlockedGuide(start, firstHit.Point, targetDirection);
@@ -795,6 +993,18 @@ public sealed class TentacleChain
             total += _guidePoints[i - 1].DistanceTo(_guidePoints[i]);
         }
         return total;
+    }
+
+    private Vector3 ClampGoalToReach(Vector3 goal)
+    {
+        Vector3 offset = goal - Anchor.Pos;
+        float lengthSquared = offset.LengthSquared();
+        float maximum = _parameters.Length;
+        if (lengthSquared <= maximum * maximum || lengthSquared <= 1e-10f)
+        {
+            return goal;
+        }
+        return Anchor.Pos + offset * (maximum / Mathf.Sqrt(lengthSquared));
     }
 
     private void SetStraightGuide(Vector3 goal) => SetGuide(Anchor.Pos, goal);

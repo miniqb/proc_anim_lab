@@ -1148,12 +1148,15 @@ public partial class TentaclePlantSandboxWorld : Node3D
         }
         return route switch
         {
-            // 初生手位于 outward≈2.675m；遮挡板从 2.8m 开始，目标放在其后，
+            // 首个安全 tick 会尝试向开放空间铺展；遮挡板从 2.8m 开始，目标放在其后，
             // 避免“手出生在墙后、tick 1 被动触碰”的假失败。
             "occluded" => LocalPoint(4.20f, 0.10f, 0.08f),
-            // 把演示猎物放在各预设约 65% 的工作半径处：既能展示长距离锁向
-            // 扑击与回收，又不会让 short 越出自身攻击球。
-            _ => LocalPoint(_preset.Length * 0.65f, 0.90f, 0.45f),
+            // 把演示猎物放在各预设约 65% 的工作半径、同一离轴角度处。
+            // 切向量也按长度缩放，避免 short 因绝对 0.9/0.45m 偏移承担更大的攻击角。
+            _ => LocalPoint(
+                _preset.Length * 0.65f,
+                0.90f * (_preset.Length / 7.5f),
+                0.45f * (_preset.Length / 7.5f)),
         };
     }
 

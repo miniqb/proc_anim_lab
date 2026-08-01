@@ -7,7 +7,7 @@ namespace ProcAnim.Core.TentaclePlantSmoke;
 
 internal static class Program
 {
-    private const ulong ExpectedHash = 0xC52B232F336F453CUL;
+    private const ulong ExpectedHash = 0x06F0D3E1B3D2B044UL;
     private static readonly Vector3 NoGravity = Vector3.Zero;
 
     private static int Main()
@@ -18,9 +18,14 @@ internal static class Program
         Check("FACTORY", CheckFactoryAndValidation, failures);
         Check("MOUNTS", CheckThreeDimensionalMounts, failures);
         Check("ATTACK", CheckAttackTimelineAndForceOrder, failures);
+        Check("STRIKE-GEOMETRY", CheckStrikeGeometry, failures);
         Check("ENVELOPE", CheckTargetVolumeAttackEnvelope, failures);
         Check("GRASP", CheckGraspAndHostContract, failures);
+        Check("CARRY-LOOP", CheckClosedHostCarryLoop, failures);
+        Check("CAPTURE-LOS", CheckCaptureLineOfSight, failures);
         Check("ROUTING", CheckRoutingBacktrackAndQueries, failures);
+        Check("FAR-GUIDE", CheckFarTargetGuideContinuity, failures);
+        Check("SPAWN-CLEARANCE", CheckSpawnAndRemountClearance, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
 
         DeterminismResult a = RunDeterminism();
@@ -161,15 +166,25 @@ internal static class Program
             invalid.RetractedLengthFraction = 0.01f;
             invalid.Validate();
         });
+        bool throwsNonFiniteTarget = Throws<ArgumentException>(() =>
+            new TentaclePlantTargetSnapshot(
+                1UL,
+                new Vector3(float.NaN, 0f, 0f),
+                Vector3.Zero,
+                0.1f,
+                1f,
+                true,
+                true));
 
         bool ok = ids && originalEvidence && variants && topology && frame && snapshot &&
                   throwsUnknown && throwsZeroNormal && throwsNarrowGuide &&
-                  throwsBuriedSpawn && throwsBuriedRetract;
+                  throwsBuriedSpawn && throwsBuriedRetract && throwsNonFiniteTarget;
         return (
             ok,
             $"ids={ids} original={originalEvidence} variants={variants} topology={topology} " +
             $"frame={frame} snapshot={snapshot} failFast=" +
-            $"{throwsUnknown}/{throwsZeroNormal}/{throwsNarrowGuide}/{throwsBuriedSpawn}/{throwsBuriedRetract}");
+            $"{throwsUnknown}/{throwsZeroNormal}/{throwsNarrowGuide}/{throwsBuriedSpawn}/" +
+            $"{throwsBuriedRetract}/{throwsNonFiniteTarget}");
     }
 
     private static (bool, string) CheckThreeDimensionalMounts()
@@ -434,6 +449,83 @@ internal static class Program
             $"gates={outOfRange.AttackCharge:F3}/{occluded.AttackCharge:F3}");
     }
 
+    private static (bool, string) CheckStrikeGeometry()
+    {
+        var terrain = new OpenTerrain();
+        bool finite = true;
+        bool handTipSynced = true;
+        bool velocityBounded = true;
+        bool allAttacked = true;
+        float maxLinkRatio = 0f;
+        float maxReachRatio = 0f;
+        float maxTipStepRatio = 0f;
+
+        foreach (TentaclePlantParams parameters in TentaclePlantFactory.AllPresets())
+        {
+            TentaclePlantController plant = NewPlant(parameters, 0xA770UL);
+            long tick = 0;
+            Tick(plant, terrain, ref tick); // consume terrain-safe birth seeding
+            Vector3 previousTip = plant.Chain.Tip.Pos;
+            Vector3 targetPosition = plant.Root.Pos +
+                                     plant.Outward * (plant.Params.Length * 0.78f) +
+                                     plant.Tangent * 0.15f;
+            int duration = plant.Params.ChargeTicks + plant.Params.LungeTicks + 5;
+            for (int i = 0; i < duration; i++)
+            {
+                plant.Target = NewTarget(
+                    0xA771UL,
+                    targetPosition,
+                    Vector3.Zero,
+                    visible: true,
+                    grabbable: false);
+                Tick(plant, terrain, ref tick);
+
+                finite &= IsFinite(plant);
+                handTipSynced &= plant.Hand.Pos.DistanceTo(plant.Chain.Tip.Pos) <= 1e-5f;
+                velocityBounded &= plant.Hand.Vel.Length() <=
+                                   plant.Params.SegmentVelocityCap + 1e-4f;
+                velocityBounded &= plant.Chain.Tip.Vel.Length() <=
+                                   plant.Params.SegmentVelocityCap + 1e-4f;
+                maxTipStepRatio = Math.Max(
+                    maxTipStepRatio,
+                    previousTip.DistanceTo(plant.Chain.Tip.Pos) /
+                    plant.Params.SegmentVelocityCap);
+                previousTip = plant.Chain.Tip.Pos;
+
+                float effectiveLength = plant.Params.Length * Mathf.Lerp(
+                    plant.Params.RetractedLengthFraction,
+                    1f,
+                    plant.Extension);
+                float linkLength = effectiveLength / plant.Segments.Count;
+                Vector3 previous = plant.Root.Pos;
+                foreach (TentacleSegmentState segment in plant.Segments)
+                {
+                    maxLinkRatio = Math.Max(
+                        maxLinkRatio,
+                        previous.DistanceTo(segment.Pos) / linkLength);
+                    previous = segment.Pos;
+                }
+                maxReachRatio = Math.Max(
+                    maxReachRatio,
+                    plant.Chain.Tip.Pos.DistanceTo(plant.Root.Pos) /
+                    plant.Params.Length);
+            }
+            allAttacked &= plant.AttackSerial == 1;
+        }
+
+        bool ok = finite && handTipSynced && velocityBounded && allAttacked &&
+                  maxLinkRatio <= 1.25f &&
+                  // PullOnly 是有限迭代软约束；5% 只容纳正常柔顺性，仍会把旧 2x
+                  // 扑击伸长稳定打红。
+                  maxReachRatio <= 1.05f &&
+                  maxTipStepRatio <= 1.05f;
+        return (
+            ok,
+            $"finite={finite} synced={handTipSynced} velocity={velocityBounded} " +
+            $"attacked={allAttacked} maxLink={maxLinkRatio:F3}x " +
+            $"maxReach={maxReachRatio:F3}x maxTipStep={maxTipStepRatio:F3}xCap");
+    }
+
     private static (bool, string) CheckTargetVolumeAttackEnvelope()
     {
         const float radius = 0.16f;
@@ -624,9 +716,7 @@ internal static class Program
                         plant.TargetStatus == TentaclePlantTargetStatus.Held &&
                         plant.Phase == TentaclePlantPhase.Holding &&
                         plant.PhaseTick == 0;
-        bool firstRetractTick = Near(
-            plant.Extension,
-            1f - 1f / plant.Params.RetractTicks);
+        bool captureKeepsFullExtension = Near(plant.Extension, 1f);
         bool holdingPhaseAge = true;
 
         int consumeTick = -1;
@@ -634,7 +724,7 @@ internal static class Program
         int ticksSinceCapture = 0;
         int firstZeroTick = -1;
         bool positiveBeforeTick80 = true;
-        bool farAtZero = false;
+        bool withinConsumeAtZero = false;
         for (int i = 1; i <= plant.Params.RetractTicks + plant.Params.ConsumeForceTicks + 5; i++)
         {
             Vector3 heldPosition = plant.Hand.Pos;
@@ -649,15 +739,15 @@ internal static class Program
             ticksSinceCapture = i;
             holdingPhaseAge &= plant.Phase == TentaclePlantPhase.Holding &&
                                plant.PhaseTick == i;
-            if (i < plant.Params.RetractTicks - 1)
+            if (i < plant.Params.RetractTicks)
             {
                 positiveBeforeTick80 &= plant.Extension > 0f;
             }
             if (firstZeroTick < 0 && Near(plant.Extension, 0f))
             {
                 firstZeroTick = i;
-                farAtZero = heldPosition.DistanceTo(plant.Root.Pos) >
-                            plant.Params.ConsumeDistance;
+                withinConsumeAtZero = plant.Hand.Pos.DistanceTo(plant.Root.Pos) <=
+                                      plant.Params.ConsumeDistance + 1e-4f;
             }
             if (plant.TargetEffect.ConsumeRequested)
             {
@@ -665,14 +755,15 @@ internal static class Program
                 consumeTick = consumeTick < 0 ? i : consumeTick;
             }
         }
-        int expectedZeroTick = plant.Params.RetractTicks - 1;
-        int expectedConsumeTick = expectedZeroTick +
-                                  plant.Params.ConsumeForceTicks - 1;
-        bool retract = firstRetractTick &&
+        int expectedZeroTick = plant.Params.RetractTicks;
+        int latestConsumeTick = expectedZeroTick +
+                                plant.Params.ConsumeForceTicks - 1;
+        bool retract = captureKeepsFullExtension &&
                        positiveBeforeTick80 &&
                        firstZeroTick == expectedZeroTick &&
-                       farAtZero &&
-                       consumeTick == expectedConsumeTick &&
+                       withinConsumeAtZero &&
+                       consumeTick >= expectedZeroTick &&
+                       consumeTick <= latestConsumeTick &&
                        consumeEvents == 1;
 
         plant.ReleaseHeldTarget();
@@ -708,21 +799,26 @@ internal static class Program
             visible: false,
             grabbable: true);
         Tick(plant, terrain, ref tick);
-        plant.Target = NewTarget(
-            id,
-            plant.Hand.Pos,
-            plant.Hand.Vel,
-            visible: false,
-            grabbable: true,
-            radius: 0.20f);
-        Tick(plant, terrain, ref tick);
-        bool recapturedAfterSeparation = plant.HeldTargetId == id &&
+        bool recapturedAfterSeparation = false;
+        for (int i = 0; i < 6 && !recapturedAfterSeparation; i++)
+        {
+            plant.Target = NewTarget(
+                id,
+                plant.Hand.Pos,
+                plant.Hand.Vel,
+                visible: false,
+                grabbable: true,
+                radius: 0.20f);
+            Tick(plant, terrain, ref tick);
+            recapturedAfterSeparation = plant.HeldTargetId == id &&
                                         plant.TargetEffect.CaptureStarted;
+        }
 
         TentaclePlantController missing = NewPlant(
             TentaclePlantFactory.Original(),
             78UL);
         long missingTick = 0;
+        Tick(missing, terrain, ref missingTick);
         missing.Target = NewTarget(
             55UL,
             missing.Hand.Pos,
@@ -741,6 +837,7 @@ internal static class Program
             TentaclePlantFactory.Original(),
             79UL);
         long changedTick = 0;
+        Tick(changed, terrain, ref changedTick);
         changed.Target = NewTarget(
             66UL,
             changed.Hand.Pos,
@@ -822,21 +919,257 @@ internal static class Program
         Tick(heavyTarget, terrain, ref heavyTick);
         float lightPull = lightTarget.TargetEffect.PositionCorrection.Length();
         float heavyPull = heavyTarget.TargetEffect.PositionCorrection.Length();
-        bool massWeighted = lightPull > heavyPull * 10f;
+        float lightVelocityPull = lightTarget.TargetEffect.VelocityDelta.Dot(
+            lightTarget.TargetEffect.PositionCorrection.Normalized());
+        float heavyVelocityPull = heavyTarget.TargetEffect.VelocityDelta.Dot(
+            heavyTarget.TargetEffect.PositionCorrection.Normalized());
+        bool rigidPosition = Math.Abs(lightPull - heavyPull) <= 0.01f;
+        bool massWeighted = lightVelocityPull > heavyVelocityPull + 0.05f;
 
         bool ok = captured && retract && holdingPhaseAge &&
                   releaseEvent && suppressed &&
                   recapturedAfterSeparation && missingRelease && changedRelease &&
-                  highSpeedRejected && massWeighted;
+                  highSpeedRejected && rigidPosition && massWeighted;
         return (
             ok,
             $"captured={captured} retract={retract} phaseAge={holdingPhaseAge} " +
             $"zeroTick={firstZeroTick} " +
-            $"consumeTick={consumeTick}/{expectedConsumeTick} " +
+            $"consumeTick={consumeTick}<={latestConsumeTick} " +
             $"consumeEvents={consumeEvents} release={releaseEvent} suppressed={suppressed} " +
             $"recaptured={recapturedAfterSeparation} missing={missingRelease} changed={changedRelease} " +
-            $"fastRejected={highSpeedRejected} massPull={lightPull:F5}/{heavyPull:F5} " +
+            $"fastRejected={highSpeedRejected} rigidPull={lightPull:F5}/{heavyPull:F5} " +
+            $"massVelocity={lightVelocityPull:F5}/{heavyVelocityPull:F5} " +
             $"loop={ticksSinceCapture}");
+    }
+
+    private static (bool, string) CheckClosedHostCarryLoop()
+    {
+        float[] masses = { 0.25f, 1f, 4f, 10f };
+        var terrain = new OpenTerrain();
+        bool allCaptured = true;
+        bool allConsumed = true;
+        bool finite = true;
+        float maxPreEffectGap = 0f;
+        float maxPostEffectGap = 0f;
+        float maxTargetSpeed = 0f;
+        float maxConsumeDistance = 0f;
+        float maxInternalSpeed = 0f;
+        float maxLinkRatio = 0f;
+        float maxTetherExcess = 0f;
+        int latestConsume = 0;
+        int peakQueries = 0;
+        bool handTipSynced = true;
+        var massDetails = new List<string>();
+
+        for (int massIndex = 0; massIndex < masses.Length; massIndex++)
+        {
+            float mass = masses[massIndex];
+            TentaclePlantController plant = NewPlant(
+                TentaclePlantFactory.Original(),
+                0xCA770UL + (ulong)massIndex);
+            long tick = 0;
+            Tick(plant, terrain, ref tick);
+
+            ulong id = 0xCA880UL + (ulong)massIndex;
+            Vector3 targetPosition = plant.Hand.Pos;
+            Vector3 targetVelocity = plant.Hand.Vel;
+            bool captured = false;
+            bool consumed = false;
+            int consumeTick = -1;
+            float massMaxPreGap = 0f;
+            float massMaxPostGap = 0f;
+            float massMaxSpeed = 0f;
+            int budget = plant.Params.RetractTicks +
+                         plant.Params.ConsumeForceTicks + 25;
+            for (int i = 0; i < budget; i++)
+            {
+                // 宿主先积分自己的权威实体，再把同一 tick 的纯值快照交给内核。
+                targetPosition += targetVelocity;
+                plant.Target = NewTarget(
+                    id,
+                    targetPosition,
+                    targetVelocity,
+                    visible: false,
+                    grabbable: true,
+                    radius: 0.20f,
+                    mass: mass);
+                Tick(plant, terrain, ref tick);
+
+                handTipSynced &= plant.Hand.Pos.DistanceTo(plant.Chain.Tip.Pos) <= 1e-5f;
+                float maximumReach = plant.Params.Length * 2f * plant.Extension;
+                maxTetherExcess = Math.Max(
+                    maxTetherExcess,
+                    plant.Hand.Pos.DistanceTo(plant.Root.Pos) - maximumReach);
+                maxInternalSpeed = Math.Max(
+                    maxInternalSpeed,
+                    Math.Max(plant.Hand.Vel.Length(), plant.Chain.Tip.Vel.Length()));
+                peakQueries = Math.Max(peakQueries, plant.PeakQueryCount);
+                float effectiveLength = plant.Params.Length * Mathf.Lerp(
+                    plant.Params.RetractedLengthFraction,
+                    1f,
+                    plant.Extension);
+                float linkLength = effectiveLength / plant.Segments.Count;
+                Vector3 previous = plant.Root.Pos;
+                foreach (TentacleSegmentState segment in plant.Segments)
+                {
+                    maxInternalSpeed = Math.Max(maxInternalSpeed, segment.Vel.Length());
+                    maxLinkRatio = Math.Max(
+                        maxLinkRatio,
+                        previous.DistanceTo(segment.Pos) / linkLength);
+                    previous = segment.Pos;
+                }
+
+                TentaclePlantTargetEffect effect = plant.TargetEffect;
+                captured |= effect.CaptureStarted;
+                float preEffectGap = targetPosition.DistanceTo(plant.Hand.Pos);
+                if (effect.TargetId == id && effect.Held)
+                {
+                    targetPosition += effect.PositionCorrection;
+                    targetVelocity += effect.VelocityDelta;
+                }
+
+                finite &= IsFinite(plant) &&
+                          Finite(targetPosition) &&
+                          Finite(targetVelocity) &&
+                          Finite(effect.PositionCorrection) &&
+                          Finite(effect.VelocityDelta);
+                float postEffectGap = targetPosition.DistanceTo(plant.Hand.Pos);
+                maxPreEffectGap = Math.Max(maxPreEffectGap, preEffectGap);
+                maxPostEffectGap = Math.Max(maxPostEffectGap, postEffectGap);
+                maxTargetSpeed = Math.Max(maxTargetSpeed, targetVelocity.Length());
+                massMaxPreGap = Math.Max(massMaxPreGap, preEffectGap);
+                massMaxPostGap = Math.Max(massMaxPostGap, postEffectGap);
+                massMaxSpeed = Math.Max(massMaxSpeed, targetVelocity.Length());
+                if (effect.ConsumeRequested)
+                {
+                    consumed = true;
+                    consumeTick = i + 1;
+                    maxConsumeDistance = Math.Max(
+                        maxConsumeDistance,
+                        targetPosition.DistanceTo(plant.Root.Pos));
+                    break;
+                }
+            }
+
+            allCaptured &= captured;
+            allConsumed &= consumed;
+            latestConsume = Math.Max(latestConsume, consumeTick);
+            massDetails.Add(
+                $"m{mass:G}:{massMaxPreGap:F3}>{massMaxPostGap:F5}m/" +
+                $"{massMaxSpeed:F3}v/t{consumeTick}");
+        }
+
+        TentaclePlantParams original = TentaclePlantFactory.Original();
+        float perTickJointBudget = original.SegmentVelocityCap + 0.20f + 0.01f;
+        bool bounded = maxPreEffectGap <= perTickJointBudget &&
+                       maxPostEffectGap <= 1e-4f &&
+                       maxTargetSpeed <= perTickJointBudget &&
+                       maxConsumeDistance <= original.ConsumeDistance + 1e-4f &&
+                       maxInternalSpeed <= original.SegmentVelocityCap + 1e-4f &&
+                       maxLinkRatio <= 1.25f &&
+                       maxTetherExcess <= 1e-4f &&
+                       handTipSynced &&
+                       peakQueries <= 96;
+        bool ok = allCaptured && allConsumed && finite && bounded;
+        return (
+            ok,
+            $"captured={allCaptured} consumed={allConsumed} finite={finite} " +
+            $"gap={maxPreEffectGap:F4}>{maxPostEffectGap:F6}m " +
+            $"maxSpeed={maxTargetSpeed:F4}m/tick " +
+            $"internal={maxInternalSpeed:F4}m/tick link={maxLinkRatio:F3}x " +
+            $"tetherExcess={maxTetherExcess:F6}m " +
+            $"synced={handTipSynced} queries={peakQueries} " +
+            $"consumeDistance={maxConsumeDistance:F4}m latestTick={latestConsume} " +
+            $"[{string.Join(",", massDetails)}]");
+    }
+
+    private static (bool, string) CheckCaptureLineOfSight()
+    {
+        var open = new OpenTerrain();
+        TentaclePlantController blocked = NewPlant(
+            TentaclePlantFactory.Original(),
+            0x105UL);
+        TentaclePlantController control = NewPlant(
+            TentaclePlantFactory.Original(),
+            0x105UL);
+        long blockedTick = 0;
+        long controlTick = 0;
+        Vector3 attackTarget = blocked.Root.Pos + blocked.Outward * 5.0f;
+        int primeTicks = blocked.Params.ChargeTicks + blocked.Params.LungeTicks;
+        for (int i = 0; i < primeTicks; i++)
+        {
+            TentaclePlantTargetSnapshot target = NewTarget(
+                0x106UL,
+                attackTarget,
+                Vector3.Zero,
+                visible: true,
+                grabbable: false);
+            blocked.Target = target;
+            control.Target = target;
+            Tick(blocked, open, ref blockedTick);
+            Tick(control, open, ref controlTick);
+        }
+
+        bool windowPrimed = blocked.CanGrab > 0f &&
+                            control.CanGrab > 0f &&
+                            SameKinematics(blocked, control);
+        const float targetRadius = 0.10f;
+        float nearX = blocked.Hand.Pos.X + 0.04f;
+        float farX = nearX + 0.15f;
+        var thinWall = new BoxTerrain(
+            new Box(
+                new Vector3(nearX, -20f, -20f),
+                new Vector3(farX, 20f, 20f),
+                0x107UL));
+        Vector3 passiveTarget = new(
+            farX + targetRadius + 0.01f,
+            blocked.Hand.Pos.Y,
+            blocked.Hand.Pos.Z);
+        TentaclePlantTargetSnapshot candidate = NewTarget(
+            0x108UL,
+            passiveTarget,
+            blocked.Hand.Vel,
+            visible: false,
+            grabbable: true,
+            radius: targetRadius);
+        blocked.Target = candidate;
+        control.Target = candidate;
+        Tick(blocked, thinWall, ref blockedTick);
+        Tick(control, open, ref controlTick);
+        bool blockedRejected = blocked.HeldTargetId is null &&
+                               !blocked.TargetEffect.CaptureStarted;
+        bool openCaptured = control.HeldTargetId == candidate.StableId &&
+                            control.TargetEffect.CaptureStarted;
+
+        TentaclePlantController tolerance = NewPlant(
+            TentaclePlantFactory.Original(),
+            0x109UL);
+        Vector3 volumeTarget = tolerance.Root.Pos + tolerance.Outward * 5f;
+        var toleranceWall = new BoxTerrain(
+            new Box(
+                new Vector3(-20f, 4.85f, -20f),
+                new Vector3(20f, 4.90f, 20f),
+                0x10AUL));
+        tolerance.Target = NewTarget(
+            0x10BUL,
+            volumeTarget,
+            Vector3.Zero,
+            visible: true,
+            grabbable: false,
+            radius: targetRadius);
+        long toleranceTick = 0;
+        Tick(tolerance, toleranceWall, ref toleranceTick);
+        bool targetRadiusOnly = tolerance.TargetStatus ==
+                                TentaclePlantTargetStatus.Occluded &&
+                                Near(tolerance.AttackCharge, 0f);
+
+        bool budget = blocked.TickQueryCount <= 96;
+        bool ok = windowPrimed && blockedRejected && openCaptured &&
+                  targetRadiusOnly && budget;
+        return (
+            ok,
+            $"window={windowPrimed} blocked={blockedRejected} open={openCaptured} " +
+            $"targetRadiusOnly={targetRadiusOnly} queries={blocked.TickQueryCount}");
     }
 
     private static (bool, string) CheckRoutingBacktrackAndQueries()
@@ -892,6 +1225,9 @@ internal static class Program
             TentaclePlantFactory.Original(),
             113UL);
         long backtrackTick = 0;
+        blocker.Enabled = false;
+        Tick(backtrack, blocker, ref backtrackTick);
+        blocker.Enabled = true;
         int triggerTick = -1;
         bool early = false;
         for (int i = 1; i <= backtrack.Params.BlockedSuffixTicks; i++)
@@ -1024,6 +1360,239 @@ internal static class Program
             $"bendLateral:{narrowBestBendLateral:F3}/pen:{narrowMaxPenetration:F6} " +
             $"queries8/16=" +
             $"{query8.PeakQueryCount}/{query16.PeakQueryCount}");
+    }
+
+    private static (bool, string) CheckFarTargetGuideContinuity()
+    {
+        float[] distances = { 15.1f, 15.2f, 25f };
+        var plants = new TentaclePlantController[distances.Length];
+        var ticks = new long[distances.Length];
+        var minimum = new float[distances.Length];
+        var maximum = new float[distances.Length];
+        Array.Fill(minimum, float.MaxValue);
+        Array.Fill(maximum, float.MinValue);
+        var terrain = new OpenTerrain();
+        bool finite = true;
+        int peakQueries = 0;
+        float maxDivergence = 0f;
+
+        for (int i = 0; i < plants.Length; i++)
+        {
+            plants[i] = NewPlant(TentaclePlantFactory.Original(), 0xFA12UL);
+        }
+
+        for (int frame = 0; frame < 240; frame++)
+        {
+            for (int i = 0; i < plants.Length; i++)
+            {
+                TentaclePlantController plant = plants[i];
+                Vector3 direction = (plant.Tangent + plant.Outward * 0.2f).Normalized();
+                plant.Target = NewTarget(
+                    0xFA13UL,
+                    plant.Root.Pos + direction * distances[i],
+                    Vector3.Zero,
+                    visible: false,
+                    grabbable: false);
+                Tick(plant, terrain, ref ticks[i]);
+                float lateral = (plant.Chain.Tip.Pos - plant.Root.Pos).Dot(plant.Tangent);
+                minimum[i] = Math.Min(minimum[i], lateral);
+                maximum[i] = Math.Max(maximum[i], lateral);
+                finite &= IsFinite(plant);
+                peakQueries = Math.Max(peakQueries, plant.PeakQueryCount);
+            }
+
+            Vector3 reference = plants[0].Chain.Tip.Pos - plants[0].Root.Pos;
+            for (int i = 1; i < plants.Length; i++)
+            {
+                Vector3 candidate = plants[i].Chain.Tip.Pos - plants[i].Root.Pos;
+                maxDivergence = Math.Max(
+                    maxDivergence,
+                    reference.DistanceTo(candidate));
+            }
+        }
+
+        float minSpan = float.MaxValue;
+        float maxSpan = 0f;
+        foreach (int index in new[] { 0, 1, 2 })
+        {
+            float span = maximum[index] - minimum[index];
+            minSpan = Math.Min(minSpan, span);
+            maxSpan = Math.Max(maxSpan, span);
+        }
+        bool continuous = minSpan >= plants[0].Params.Length * 0.75f &&
+                          minSpan >= maxSpan * 0.95f &&
+                          maxDivergence <= 0.01f;
+
+        TentaclePlantParams exhaustedParams = TentaclePlantFactory.Original();
+        exhaustedParams.Name = "tentacle-plant/test-budget-exhausted";
+        exhaustedParams.RoutingQueryBudget = 1;
+        TentaclePlantController exhausted = NewPlant(exhaustedParams, 0xFA14UL);
+        long exhaustedTick = 0;
+        for (int i = 0; i < 240; i++)
+        {
+            exhausted.Target = NewTarget(
+                0xFA15UL,
+                exhausted.Root.Pos + exhausted.Tangent * 25f,
+                Vector3.Zero,
+                visible: false,
+                grabbable: false);
+            Tick(exhausted, terrain, ref exhaustedTick);
+            finite &= IsFinite(exhausted);
+        }
+        float exhaustedReach = exhausted.Chain.Tip.Pos.DistanceTo(exhausted.Root.Pos);
+        bool conservativeFallback = exhaustedReach <= 1.50f;
+
+        bool ok = finite && continuous && conservativeFallback && peakQueries <= 96;
+        return (
+            ok,
+            $"finite={finite} span={minimum[0]:F3}..{maximum[0]:F3}/" +
+            $"{minimum[1]:F3}..{maximum[1]:F3}/" +
+            $"{minimum[2]:F3}..{maximum[2]:F3} " +
+            $"min/max={minSpan:F3}/{maxSpan:F3} divergence={maxDivergence:F5} " +
+            $"budgetFallback={conservativeFallback}/{exhaustedReach:F3}m " +
+            $"peakQueries={peakQueries}");
+    }
+
+    private static (bool, string) CheckSpawnAndRemountClearance()
+    {
+        const float slabNear = 2.12f;
+        const float slabFar = 2.37f;
+        (Vector3 Outward, Vector3 Tangent)[] frames =
+        {
+            (Vector3.Up, Vector3.Right),
+            (Vector3.Right, Vector3.Back),
+            (Vector3.Down, Vector3.Left),
+        };
+        TentaclePlantParams[] presets =
+        {
+            TentaclePlantFactory.Original(),
+            TentaclePlantFactory.Hunter(),
+        };
+
+        var openTerrain = new OpenTerrain();
+        var openMount = new TentaclePlantMount(
+            Vector3.Zero,
+            Vector3.Up,
+            Vector3.Right,
+            0x51A8UL);
+        TentaclePlantController openPlant = TentaclePlantFactory.CreateController(
+            openMount,
+            TentaclePlantFactory.Original(),
+            0x51A9UL);
+        long openTick = 0;
+        Tick(openPlant, openTerrain, ref openTick);
+        float expectedSpawn = openPlant.Params.Length * openPlant.Params.SpawnExtension;
+        Vector3 openOffset = openPlant.Chain.Tip.Pos - openPlant.Root.Pos;
+        float openForward = openOffset.Dot(openPlant.Outward);
+        bool openExpanded = Math.Abs(openForward - expectedSpawn) <= 1e-4f &&
+                            (openOffset - openPlant.Outward * openForward).Length() <= 1e-4f;
+
+        var rotatedMount = new TentaclePlantMount(
+            new Vector3(1f, 2f, 3f),
+            Vector3.Right,
+            Vector3.Up,
+            0x51AAUL);
+        openPlant.Remount(rotatedMount);
+        Tick(openPlant, openTerrain, ref openTick);
+        Vector3 rotatedOffset = openPlant.Chain.Tip.Pos - openPlant.Root.Pos;
+        float rotatedForward = rotatedOffset.Dot(openPlant.Outward);
+        openExpanded &= openPlant.Outward == Vector3.Right &&
+                        Math.Abs(rotatedForward - expectedSpawn) <= 1e-4f &&
+                        (rotatedOffset - openPlant.Outward * rotatedForward).Length() <= 1e-4f;
+
+        bool immediateFolded = true;
+        bool finite = true;
+        bool noFarSide = true;
+        bool noCrossing = true;
+        bool clear = true;
+        float maxPenetration = 0f;
+        int maxBacktrackRun = 0;
+        int peakQueries = 0;
+
+        foreach (TentaclePlantParams parameters in presets)
+        {
+            foreach ((Vector3 outward, Vector3 tangent) in frames)
+            {
+                var mount = new TentaclePlantMount(
+                    Vector3.Zero,
+                    outward,
+                    tangent,
+                    0x51ABUL);
+                var terrain = new BoxTerrain(
+                    SlabForOutward(outward, slabNear, slabFar, 0x51ACUL));
+                TentaclePlantController plant = TentaclePlantFactory.CreateController(
+                    mount,
+                    parameters,
+                    0x51ADUL);
+                long tick = 0;
+                int backtrackRun = 0;
+
+                for (int phase = 0; phase < 2; phase++)
+                {
+                    if (phase == 1)
+                    {
+                        mount = new TentaclePlantMount(
+                            tangent * 0.5f,
+                            outward,
+                            tangent,
+                            0x51AEUL);
+                        plant.Remount(mount);
+                        backtrackRun = 0;
+                    }
+
+                    Vector3 folded = mount.Point + outward * plant.Params.RootRadius;
+                    immediateFolded &= plant.Hand.Pos.DistanceTo(folded) <= 1e-5f &&
+                                       plant.Hand.Pos == plant.Hand.LastPos &&
+                                       plant.Hand.Vel == Vector3.Zero;
+                    foreach (TentacleSegmentState segment in plant.Segments)
+                    {
+                        immediateFolded &= segment.Pos.DistanceTo(folded) <= 1e-5f &&
+                                           segment.Pos == segment.LastPos &&
+                                           segment.Vel == Vector3.Zero;
+                    }
+
+                    for (int frame = 0; frame < 2000; frame++)
+                    {
+                        Tick(plant, terrain, ref tick);
+                        finite &= IsFinite(plant);
+                        peakQueries = Math.Max(peakQueries, plant.PeakQueryCount);
+                        backtrackRun = plant.BacktrackFrom >= 0
+                            ? backtrackRun + 1
+                            : 0;
+                        maxBacktrackRun = Math.Max(maxBacktrackRun, backtrackRun);
+
+                        Vector3 previous = mount.Point + outward * plant.Params.RootRadius;
+                        foreach (TentacleSegmentState segment in plant.Segments)
+                        {
+                            float forward = (segment.Pos - mount.Point).Dot(outward);
+                            noFarSide &= forward <= slabFar + segment.Radius + 1e-4f;
+                            float penetration = terrain.PenetrationDepth(
+                                segment.Pos,
+                                segment.Radius);
+                            maxPenetration = Math.Max(maxPenetration, penetration);
+                            clear &= penetration <= 0.002f;
+                            if (terrain.Raycast(previous, segment.Pos, out TerrainHit hit))
+                            {
+                                float endpointTolerance = segment.Radius + 0.002f;
+                                noCrossing &= hit.Point.DistanceSquaredTo(segment.Pos) <=
+                                              endpointTolerance * endpointTolerance;
+                            }
+                            previous = segment.Pos;
+                        }
+                    }
+                }
+            }
+        }
+
+        bool recovered = maxBacktrackRun <= 60;
+        bool ok = openExpanded && immediateFolded && finite && noFarSide &&
+                  noCrossing && clear && recovered && peakQueries <= 96;
+        return (
+            ok,
+            $"openExpanded={openExpanded} folded={immediateFolded} " +
+            $"finite={finite} farSide={!noFarSide} " +
+            $"crossing={!noCrossing} clear={clear} maxPen={maxPenetration:F6}m " +
+            $"backtrackRun={maxBacktrackRun} peakQueries={peakQueries}");
     }
 
     private static (bool, string) CheckLifecycle()
@@ -1255,6 +1824,36 @@ internal static class Program
                 1UL),
             parameters,
             seed);
+
+    private static Box SlabForOutward(
+        Vector3 outward,
+        float near,
+        float far,
+        ulong id)
+    {
+        if (outward.Dot(Vector3.Up) > 0.99f)
+        {
+            return new Box(
+                new Vector3(-20f, near, -20f),
+                new Vector3(20f, far, 20f),
+                id);
+        }
+        if (outward.Dot(Vector3.Down) > 0.99f)
+        {
+            return new Box(
+                new Vector3(-20f, -far, -20f),
+                new Vector3(20f, -near, 20f),
+                id);
+        }
+        if (outward.Dot(Vector3.Right) > 0.99f)
+        {
+            return new Box(
+                new Vector3(near, -20f, -20f),
+                new Vector3(far, 20f, 20f),
+                id);
+        }
+        throw new ArgumentException("Smoke slab only supports the three tested mount axes.");
+    }
 
     private static TentaclePlantTargetSnapshot NewTarget(
         ulong id,

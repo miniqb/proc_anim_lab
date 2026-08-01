@@ -25,6 +25,7 @@ public sealed class BreedSelectorUI
         row.AddChild(new Label { Text = "Breed:" });
 
         _dropdown = new OptionButton();
+        SandboxUiFocus.MakePointerOnly(_dropdown);
         foreach (string name in breedNames)
         {
             _dropdown.AddItem(name);

@@ -58,10 +58,34 @@ public readonly struct TentaclePlantTargetSnapshot
         Mass = mass;
         HostVisible = hostVisible;
         HostGrabbable = hostGrabbable;
+        Validate();
     }
 
     internal TentaclePlantTargetSnapshot Shifted(Vector3 delta) =>
         new(StableId, Position + delta, VelocityPerTick, Radius, Mass, HostVisible, HostGrabbable);
+
+    internal void Validate()
+    {
+        if (!Finite(Position) || !Finite(VelocityPerTick))
+        {
+            throw new ArgumentException("Target position and velocity must be finite.");
+        }
+        if (!float.IsFinite(Radius) || Radius < 0f)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Radius), Radius,
+                "Target radius must be finite and non-negative.");
+        }
+        if (!float.IsFinite(Mass) || Mass < 0f)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Mass), Mass,
+                "Target mass must be finite and non-negative.");
+        }
+    }
+
+    private static bool Finite(Vector3 value) =>
+        float.IsFinite(value.X) &&
+        float.IsFinite(value.Y) &&
+        float.IsFinite(value.Z);
 }
 
 /// <summary>
@@ -138,7 +162,18 @@ public sealed class TentaclePlantController
     public readonly TentacleChain Chain;
 
     public IReadOnlyList<TentacleSegmentState> Segments => Chain.Segments;
-    public TentaclePlantTargetSnapshot? Target { get; set; }
+    public TentaclePlantTargetSnapshot? Target
+    {
+        get => _target;
+        set
+        {
+            if (value is { } snapshot)
+            {
+                snapshot.Validate();
+            }
+            _target = value;
+        }
+    }
     public TentaclePlantTargetEffect TargetEffect { get; private set; }
     public TentaclePlantPhase Phase { get; private set; } = TentaclePlantPhase.Wandering;
     public int PhaseTick { get; private set; }
@@ -158,6 +193,7 @@ public sealed class TentaclePlantController
     private readonly TentaclePlantParams _parameters;
     private readonly ulong _initialSeed;
     private readonly CountingTerrainQuery _countingTerrain = new();
+    private TentaclePlantTargetSnapshot? _target;
     private ulong _randomState;
     private Vector3 _attackDirection;
     private int _chargeUnits;
@@ -215,9 +251,23 @@ public sealed class TentaclePlantController
             _countingTerrain,
             ctx.TickIndex);
 
+        Vector3 handSeedOffset = Hand.Pos - Chain.Tip.Pos;
+        Vector3 handLastSeedOffset = Hand.LastPos - Chain.Tip.LastPos;
+        if (Chain.EnsureTerrainSafeSeed(_countingTerrain, Outward))
+        {
+            // 宿主可能在首 tick 前施加确定性微扰；安全展开只替换出生基线，
+            // 不应把合法的切向初态信息静默抹掉。
+            Hand.Pos = Chain.Tip.Pos + handSeedOffset;
+            Hand.LastPos = Chain.Tip.LastPos + handLastSeedOffset;
+            Hand.Vel = Chain.Tip.Vel;
+        }
+
         Body.GravityScale = 0f;
         Body.Tick(countedContext);
 
+        float physicsExtension = HeldTargetId is not null
+            ? RetractionExtension(_retractTicksElapsed + 1)
+            : Extension;
         Vector3 goal = HeldTargetId is not null && Target is { } held
             ? held.Position
             : Target is { } target
@@ -228,7 +278,7 @@ public sealed class TentaclePlantController
             goal,
             Outward,
             Tangent,
-            Extension);
+            physicsExtension);
 
         bool visibleAttackTarget = EvaluateAttackTarget(_countingTerrain);
         ActAttack(visibleAttackTarget);
@@ -238,16 +288,16 @@ public sealed class TentaclePlantController
         Chain.InjectShapeForces(
             goal,
             Outward,
-            Extension,
+            physicsExtension,
             WindupAmount(),
             strikeImpulse);
         Hand.Vel += strikeImpulse;
-        CoupleHandAndTip(_countingTerrain);
+        CoupleHandAndTip(_countingTerrain, physicsExtension);
         AnchorRoot();
 
         if (!releasedThisTick && HeldTargetId is null && Target is { } candidate)
         {
-            TryCapture(candidate);
+            TryCapture(_countingTerrain, candidate);
         }
         if (HeldTargetId is not null && Target is { } heldTarget &&
             heldTarget.StableId == HeldTargetId.Value)
@@ -297,8 +347,7 @@ public sealed class TentaclePlantController
         Vector3 rootPos = canonical.Point + Outward * _parameters.RootSurfaceOffset;
         Root.Pos = Root.LastPos = rootPos;
         Root.Vel = Vector3.Zero;
-        Vector3 handPos = rootPos + Outward *
-            (_parameters.Length * _parameters.SpawnExtension);
+        Vector3 handPos = canonical.Point + Outward * _parameters.RootRadius;
         Hand.Pos = Hand.LastPos = handPos;
         Hand.Vel = Vector3.Zero;
         Chain.Remount(Outward);
@@ -463,7 +512,7 @@ public sealed class TentaclePlantController
         {
             return true;
         }
-        float tolerance = Math.Max(target.Radius, _parameters.GuideClearanceRadius);
+        float tolerance = Math.Max(0f, target.Radius);
         return hit.Point.DistanceSquaredTo(target.Position) <= tolerance * tolerance;
     }
 
@@ -557,7 +606,9 @@ public sealed class TentaclePlantController
         return Mathf.InverseLerp(_parameters.WindupStart, 1f, AttackCharge);
     }
 
-    private void TryCapture(in TentaclePlantTargetSnapshot target)
+    private void TryCapture(
+        ITerrainQuery terrain,
+        in TentaclePlantTargetSnapshot target)
     {
         if (!target.HostGrabbable || _captureSuppressedId == target.StableId)
         {
@@ -588,6 +639,12 @@ public sealed class TentaclePlantController
         {
             return;
         }
+        // 抓取扫掠允许攻击球比物理 tip 更大，但不能把这段额外半径当成穿墙许可。
+        // 只有手端到目标球的真实地形视线成立时才建立宿主抓持关系。
+        if (!CanSee(terrain, Hand.Pos, target))
+        {
+            return;
+        }
 
         HeldTargetId = target.StableId;
         TargetStatus = TentaclePlantTargetStatus.Held;
@@ -612,25 +669,36 @@ public sealed class TentaclePlantController
 
     private void ActHolding(in TentaclePlantTargetSnapshot target)
     {
-        _retractTicksElapsed = Math.Min(
-            _parameters.RetractTicks,
-            _retractTicksElapsed + 1);
-        Extension = 1f -
-                    _retractTicksElapsed / (float)_parameters.RetractTicks;
+        // 捕获建立在本 tick 耦合之后，先保持完整长度；以后每个 Held tick
+        // Chain 使用同一档预计算 Extension 解算，随后在这里提交公开标量。
+        if (!TargetEffect.CaptureStarted)
+        {
+            _retractTicksElapsed = Math.Min(
+                _parameters.RetractTicks,
+                _retractTicksElapsed + 1);
+            Extension = RetractionExtension(_retractTicksElapsed);
+        }
 
         Vector3 error = Hand.Pos - target.Position;
         float targetMass = Math.Max(0.01f, target.Mass);
         float totalMass = targetMass + _parameters.CarryHandMass;
         float targetShare = _parameters.CarryHandMass / totalMass;
         float handShare = targetMass / totalMass;
-        Vector3 positionCorrection = error * targetShare;
+        Vector3 weightedTargetCorrection = error * targetShare;
+        // Held 是刚性手端关系：链的扎根投影可能拒绝 Hand 应承担的质量份额，
+        // 因而最终位置误差必须完整交回宿主，不能让重目标与手端逐 tick 分离。
+        Vector3 positionCorrection = error;
         Vector3 handCorrection = -error * handShare;
+        Vector3 handVelocityBeforeCorrection = Hand.Vel;
         Hand.Vel += handCorrection;
         Chain.Tip.Vel += handCorrection;
+        Hand.Vel = Hand.Vel.LimitLength(_parameters.SegmentVelocityCap);
+        Chain.Tip.Vel = Chain.Tip.Vel.LimitLength(_parameters.SegmentVelocityCap);
 
         Vector3 velocityDelta =
-            (Hand.Vel - target.VelocityPerTick) * _parameters.CarryVelocityGain +
-            positionCorrection;
+            (handVelocityBeforeCorrection - target.VelocityPerTick) *
+            _parameters.CarryVelocityGain +
+            weightedTargetCorrection;
         velocityDelta += (Root.Pos - target.Position).LimitLength(1f) *
             (_parameters.CarryRootPull * (1f - Extension));
 
@@ -639,7 +707,9 @@ public sealed class TentaclePlantController
         {
             _consumeTicks++;
             if (!_consumeSent &&
-                (target.Position.DistanceTo(Root.Pos) <= _parameters.ConsumeDistance ||
+                // PositionCorrection 会把宿主目标落到 Hand.Pos；吞入门必须检查
+                // 这个同 tick 最终位置，不能先看旧快照再把目标从洞口拉出去。
+                (Hand.Pos.DistanceTo(Root.Pos) <= _parameters.ConsumeDistance ||
                  _consumeTicks >= _parameters.ConsumeForceTicks))
             {
                 consume = true;
@@ -661,6 +731,10 @@ public sealed class TentaclePlantController
             positionCorrection,
             velocityDelta);
     }
+
+    private float RetractionExtension(int elapsedTicks) =>
+        1f - Math.Min(_parameters.RetractTicks, elapsedTicks) /
+        (float)_parameters.RetractTicks;
 
     private bool ReleaseMissingOrChangedTarget()
     {
@@ -708,14 +782,41 @@ public sealed class TentaclePlantController
         }
     }
 
-    private void CoupleHandAndTip(ITerrainQuery terrain)
+    private void CoupleHandAndTip(ITerrainQuery terrain, float extension)
     {
-        Vector3 delta = Chain.Tip.Pos - Hand.Pos;
-        float totalMass = Hand.Mass + Chain.Tip.Mass;
-        float handShare = Chain.Tip.Mass / totalMass;
-        Vector3 position = Hand.Pos + delta * handShare;
-        Vector3 velocity =
-            (Hand.Vel * Hand.Mass + Chain.Tip.Vel * Chain.Tip.Mass) / totalMass;
+        Vector3 safeTipPosition = Chain.Tip.Pos;
+        if (Chain.BacktrackFrom >= 0)
+        {
+            // 原作回卷时以触手梢为权威，避免 body proxy 把堵塞后缀重新拖向墙内。
+            Hand.Pos = Chain.Tip.Pos;
+            Hand.Vel = Chain.Tip.Vel;
+        }
+        else
+        {
+            Vector3 delta = Chain.Tip.Pos - Hand.Pos;
+            Vector3 halfCorrection = delta * 0.5f;
+            Hand.Pos += halfCorrection;
+            Hand.Vel += halfCorrection;
+            Chain.Tip.Pos -= halfCorrection;
+            Chain.Tip.Vel -= halfCorrection;
+        }
+
+        Vector3 position = Hand.Pos;
+        float maximumReach = _parameters.Length * 2f * Mathf.Clamp(extension, 0f, 1f);
+        Vector3 fromRoot = position - Root.Pos;
+        float rootDistance = fromRoot.Length();
+        if (rootDistance > maximumReach && rootDistance > 1e-6f)
+        {
+            Vector3 tetherCorrection = fromRoot / rootDistance * (rootDistance - maximumReach);
+            position -= tetherCorrection;
+            Hand.Pos -= tetherCorrection;
+            Chain.Tip.Pos -= tetherCorrection;
+            Hand.Vel -= tetherCorrection;
+            Chain.Tip.Vel -= tetherCorrection;
+        }
+
+        Vector3 velocity = (Hand.Vel + Chain.Tip.Vel) * 0.5f;
+        Vector3 velocityBeforeTerrain = velocity;
 
         Vector3 motion = position - Chain.Tip.LastPos;
         float motionLength = motion.Length();
@@ -747,8 +848,14 @@ public sealed class TentaclePlantController
             Chain.Tip.ContactNormal = pushDir;
         }
 
+        Vector3 terrainVelocityDelta = velocity - velocityBeforeTerrain;
+        Hand.Vel += terrainVelocityDelta;
+        Chain.Tip.Vel += terrainVelocityDelta;
         Hand.Pos = Chain.Tip.Pos = position;
-        Hand.Vel = Chain.Tip.Vel = velocity;
+        Hand.Vel = Hand.Vel.LimitLength(_parameters.SegmentVelocityCap);
+        Chain.Tip.Vel = Chain.Tip.Vel.LimitLength(_parameters.SegmentVelocityCap);
+        Chain.ConstrainTipAfterCoupling(terrain, extension, safeTipPosition);
+        Hand.Pos = Chain.Tip.Pos;
     }
 
     private void AnchorRoot()

@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using ProcAnim.Core;
+using ProcAnimLab.Sandbox;
 
 namespace ProcAnimLab.TentaclePlantSandbox;
 
@@ -126,6 +127,7 @@ public sealed class TentaclePlantSandboxHud
         {
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
         };
+        SandboxUiFocus.MakePointerOnly(picker);
         foreach (string item in items)
         {
             picker.AddItem(item);

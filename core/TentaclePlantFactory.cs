@@ -75,8 +75,7 @@ public static class TentaclePlantFactory
         TentaclePlantParams snapshot = parameters.Snapshot();
         TentaclePlantMount canonical = CanonicalizeMount(mount);
         Vector3 rootPos = canonical.Point + canonical.OutwardNormal * snapshot.RootSurfaceOffset;
-        Vector3 handPos = rootPos + canonical.OutwardNormal *
-            (snapshot.Length * snapshot.SpawnExtension);
+        Vector3 handPos = canonical.Point + canonical.OutwardNormal * snapshot.RootRadius;
 
         var root = new BodyChunk(rootPos, snapshot.RootRadius, snapshot.RootMass)
         {
