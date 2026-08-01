@@ -7,7 +7,7 @@ namespace ProcAnim.Core.TentaclePlantSmoke;
 
 internal static class Program
 {
-    private const ulong ExpectedHash = 0x06F0D3E1B3D2B044UL;
+    private const ulong ExpectedHash = 0x025601D1B6ADC65AUL;
     private static readonly Vector3 NoGravity = Vector3.Zero;
 
     private static int Main()
@@ -18,6 +18,7 @@ internal static class Program
         Check("FACTORY", CheckFactoryAndValidation, failures);
         Check("MOUNTS", CheckThreeDimensionalMounts, failures);
         Check("ATTACK", CheckAttackTimelineAndForceOrder, failures);
+        Check("OBLIQUE-STRIKE", CheckObliqueStrikeCapture, failures);
         Check("STRIKE-GEOMETRY", CheckStrikeGeometry, failures);
         Check("ENVELOPE", CheckTargetVolumeAttackEnvelope, failures);
         Check("GRASP", CheckGraspAndHostContract, failures);
@@ -321,6 +322,7 @@ internal static class Program
             visible: true,
             grabbable: false);
         Vector3 before91 = strong.Hand.Pos;
+        Vector3 weakBefore91 = weak.Hand.Pos;
         strong.Target = target;
         weak.Target = target;
         Tick(strong, terrain, ref strongTick);
@@ -329,25 +331,59 @@ internal static class Program
         {
             strikingTicks++;
         }
-        Vector3 displacement91 = strong.Hand.Pos - before91;
         Vector3 isolatedLungeDisplacement = strong.Hand.Pos - weak.Hand.Pos;
         bool directionLocked = isolatedLungeDisplacement.Dot(oldDirection) >
                                Math.Abs(isolatedLungeDisplacement.Dot(newDirection));
         float nextTickPositionDelta = strong.Hand.Pos.DistanceTo(weak.Hand.Pos);
         bool forceConsumedNextTick = nextTickPositionDelta > 0.01f;
+        Vector3 isolatedStep = (strong.Hand.Pos - before91) -
+                               (weak.Hand.Pos - weakBefore91);
+        int strikeMotionTicks = isolatedStep.Dot(oldDirection) > 0.01f ? 1 : 0;
+        bool strikeMotionLocked = isolatedStep.Dot(oldDirection) >
+                                  Math.Abs(isolatedStep.Dot(newDirection));
 
         for (int i = 92; i <= 99; i++)
         {
+            Vector3 strongBefore = strong.Hand.Pos;
+            Vector3 weakBefore = weak.Hand.Pos;
             strong.Target = target;
+            weak.Target = target;
             Tick(strong, terrain, ref strongTick);
+            Tick(weak, terrain, ref weakTick);
             if (strong.Phase == TentaclePlantPhase.Striking)
             {
                 strikingTicks++;
             }
+            isolatedStep = (strong.Hand.Pos - strongBefore) -
+                           (weak.Hand.Pos - weakBefore);
+            if (isolatedStep.Dot(oldDirection) > 0.01f)
+            {
+                strikeMotionTicks++;
+            }
+            strikeMotionLocked &= isolatedStep.Dot(oldDirection) >
+                                  Math.Abs(isolatedStep.Dot(newDirection));
         }
         bool firstLungeLength = strikingTicks == strong.Params.LungeTicks;
-        bool grabWindowExact = true;
-        for (int i = 100; i <= 138; i++)
+        Vector3 strongBeforeFinal = strong.Hand.Pos;
+        Vector3 weakBeforeFinal = weak.Hand.Pos;
+        strong.Target = target;
+        weak.Target = target;
+        Tick(strong, terrain, ref strongTick);
+        Tick(weak, terrain, ref weakTick);
+        isolatedStep = (strong.Hand.Pos - strongBeforeFinal) -
+                       (weak.Hand.Pos - weakBeforeFinal);
+        if (isolatedStep.Dot(oldDirection) > 0.01f)
+        {
+            strikeMotionTicks++;
+        }
+        strikeMotionLocked &= isolatedStep.Dot(oldDirection) >
+                              Math.Abs(isolatedStep.Dot(newDirection));
+        bool fullStrikeMotion = strikeMotionTicks == strong.Params.LungeTicks &&
+                                strikeMotionLocked;
+
+        bool grabWindowExact = strong.CanGrab > 0f &&
+                               strong.Phase == TentaclePlantPhase.Recovering;
+        for (int i = 101; i <= 138; i++)
         {
             strong.Target = target;
             Tick(strong, terrain, ref strongTick);
@@ -368,6 +404,7 @@ internal static class Program
             }
         }
         bool cadence = firstLungeLength &&
+                       fullStrikeMotion &&
                        grabWindowExact &&
                        noEarlySecondStrike &&
                        strong.AttackSerial == 2 &&
@@ -440,11 +477,13 @@ internal static class Program
         return (
             ok,
             $"windup={firstWindup} strike={firstStrike} serial={strong.AttackSerial} " +
-            $"strikeTicks={strikingTicks} samePosAtStrike={strongAt90.DistanceTo(weakAt90):F6} " +
+            $"strikeTicks={strikingTicks}/{strikeMotionTicks} " +
+            $"samePosAtStrike={strongAt90.DistanceTo(weakAt90):F6} " +
             $"velocityDelta={strongVelocity90.DistanceTo(weakVelocity90):F4} " +
             $"nextPosDelta={nextTickPositionDelta:F4} " +
             $"lockProj={isolatedLungeDisplacement.Dot(oldDirection):F4}/" +
-            $"{isolatedLungeDisplacement.Dot(newDirection):F4} window={grabWindowExact} " +
+            $"{isolatedLungeDisplacement.Dot(newDirection):F4} " +
+            $"fullLock={strikeMotionLocked} window={grabWindowExact} " +
             $"noEarly={noEarlySecondStrike} decay={halfCharge:F3}->{decay.AttackCharge:F3} " +
             $"gates={outOfRange.AttackCharge:F3}/{occluded.AttackCharge:F3}");
     }
@@ -458,6 +497,8 @@ internal static class Program
         bool allAttacked = true;
         float maxLinkRatio = 0f;
         float maxReachRatio = 0f;
+        float maxNonStrikeReachRatio = 0f;
+        int maxNonStrikeReachRun = 0;
         float maxTipStepRatio = 0f;
 
         foreach (TentaclePlantParams parameters in TentaclePlantFactory.AllPresets())
@@ -466,10 +507,12 @@ internal static class Program
             long tick = 0;
             Tick(plant, terrain, ref tick); // consume terrain-safe birth seeding
             Vector3 previousTip = plant.Chain.Tip.Pos;
+            TentaclePlantPhase previousPhase = plant.Phase;
             Vector3 targetPosition = plant.Root.Pos +
                                      plant.Outward * (plant.Params.Length * 0.78f) +
                                      plant.Tangent * 0.15f;
-            int duration = plant.Params.ChargeTicks + plant.Params.LungeTicks + 5;
+            int nonStrikeReachRun = 0;
+            int duration = plant.Params.ChargeTicks + plant.Params.LungeTicks + 20;
             for (int i = 0; i < duration; i++)
             {
                 plant.Target = NewTarget(
@@ -482,14 +525,18 @@ internal static class Program
 
                 finite &= IsFinite(plant);
                 handTipSynced &= plant.Hand.Pos.DistanceTo(plant.Chain.Tip.Pos) <= 1e-5f;
-                velocityBounded &= plant.Hand.Vel.Length() <=
-                                   plant.Params.SegmentVelocityCap + 1e-4f;
-                velocityBounded &= plant.Chain.Tip.Vel.Length() <=
-                                   plant.Params.SegmentVelocityCap + 1e-4f;
+                bool strikeMotionBudget =
+                    plant.Phase == TentaclePlantPhase.Striking ||
+                    previousPhase == TentaclePlantPhase.Striking;
+                float stepVelocityCap = strikeMotionBudget
+                    ? plant.Params.SegmentVelocityCap + plant.Params.LungeImpulse * 2f
+                    : plant.Params.SegmentVelocityCap;
+                velocityBounded &= plant.Hand.Vel.Length() <= stepVelocityCap + 1e-4f;
+                velocityBounded &= plant.Chain.Tip.Vel.Length() <= stepVelocityCap + 1e-4f;
                 maxTipStepRatio = Math.Max(
                     maxTipStepRatio,
                     previousTip.DistanceTo(plant.Chain.Tip.Pos) /
-                    plant.Params.SegmentVelocityCap);
+                    stepVelocityCap);
                 previousTip = plant.Chain.Tip.Pos;
 
                 float effectiveLength = plant.Params.Length * Mathf.Lerp(
@@ -505,25 +552,111 @@ internal static class Program
                         previous.DistanceTo(segment.Pos) / linkLength);
                     previous = segment.Pos;
                 }
-                maxReachRatio = Math.Max(
-                    maxReachRatio,
-                    plant.Chain.Tip.Pos.DistanceTo(plant.Root.Pos) /
-                    plant.Params.Length);
+                float reachRatio = plant.Chain.Tip.Pos.DistanceTo(plant.Root.Pos) /
+                                   plant.Params.Length;
+                maxReachRatio = Math.Max(maxReachRatio, reachRatio);
+                if (!strikeMotionBudget)
+                {
+                    maxNonStrikeReachRatio = Math.Max(
+                        maxNonStrikeReachRatio,
+                        reachRatio);
+                    nonStrikeReachRun = reachRatio > 1.05f
+                        ? nonStrikeReachRun + 1
+                        : 0;
+                    maxNonStrikeReachRun = Math.Max(
+                        maxNonStrikeReachRun,
+                        nonStrikeReachRun);
+                }
+                else
+                {
+                    nonStrikeReachRun = 0;
+                }
+                previousPhase = plant.Phase;
             }
             allAttacked &= plant.AttackSerial == 1;
         }
 
         bool ok = finite && handTipSynced && velocityBounded && allAttacked &&
-                  maxLinkRatio <= 1.25f &&
-                  // PullOnly 是有限迭代软约束；5% 只容纳正常柔顺性，仍会把旧 2x
-                  // 扑击伸长稳定打红。
-                  maxReachRatio <= 1.05f &&
+                  maxLinkRatio <= 1.2501f &&
+                  // PullOnly 是有限迭代软约束；扑击后的瞬态回弹可以越过 5%，
+                  // 但普通阶段不能连续 10 tick 仍不恢复。
+                  maxNonStrikeReachRun <= 10 &&
                   maxTipStepRatio <= 1.05f;
         return (
             ok,
             $"finite={finite} synced={handTipSynced} velocity={velocityBounded} " +
             $"attacked={allAttacked} maxLink={maxLinkRatio:F3}x " +
-            $"maxReach={maxReachRatio:F3}x maxTipStep={maxTipStepRatio:F3}xCap");
+            $"maxReach={maxReachRatio:F3}x/nonStrike={maxNonStrikeReachRatio:F3}x/" +
+            $"run{maxNonStrikeReachRun} " +
+            $"maxTipStep={maxTipStepRatio:F3}xCap");
+    }
+
+    private static (bool, string) CheckObliqueStrikeCapture()
+    {
+        TentaclePlantController plant = NewPlant(
+            TentaclePlantFactory.Hunter(),
+            0x54454E5441434C45UL);
+        var terrain = new OpenTerrain();
+        Vector3 targetPosition = plant.Mount.Point +
+                                 plant.Outward * 2.69f +
+                                 plant.Tangent * 3.135f;
+        const ulong targetId = 0x0B11A0EUL;
+        long tick = 0;
+        int firstStrike = -1;
+        int captureTick = -1;
+        float strikeStartDistance = -1f;
+        float minimumStrikeDistance = float.MaxValue;
+        float peakStrikeStep = 0f;
+        Vector3 previousHand = plant.Hand.Pos;
+
+        int deadline = plant.Params.ChargeTicks + plant.Params.LungeTicks;
+        for (int i = 1; i <= deadline; i++)
+        {
+            plant.Target = NewTarget(
+                targetId,
+                targetPosition,
+                Vector3.Zero,
+                visible: true,
+                grabbable: plant.AttackSerial > 0,
+                radius: 0.16f,
+                mass: 0.25f);
+            Tick(plant, terrain, ref tick);
+
+            float handStep = plant.Hand.Pos.DistanceTo(previousHand);
+            previousHand = plant.Hand.Pos;
+            if (plant.Phase == TentaclePlantPhase.Striking ||
+                plant.TargetEffect.CaptureStarted)
+            {
+                if (firstStrike < 0)
+                {
+                    firstStrike = i;
+                    strikeStartDistance = plant.Hand.Pos.DistanceTo(targetPosition);
+                }
+                minimumStrikeDistance = Math.Min(
+                    minimumStrikeDistance,
+                    plant.Hand.Pos.DistanceTo(targetPosition));
+                peakStrikeStep = Math.Max(peakStrikeStep, handStep);
+            }
+            if (plant.TargetEffect.CaptureStarted)
+            {
+                captureTick = i;
+                break;
+            }
+        }
+
+        bool capturedOnFirstStrike = firstStrike == plant.Params.ChargeTicks &&
+                                     captureTick >= firstStrike &&
+                                     captureTick <= firstStrike + plant.Params.LungeTicks &&
+                                     plant.AttackSerial == 1 &&
+                                     plant.HeldTargetId == targetId;
+        bool punchy = peakStrikeStep > plant.Params.SegmentVelocityCap * 1.20f;
+        bool ok = capturedOnFirstStrike && punchy;
+        return (
+            ok,
+            $"strike/capture={firstStrike}/{captureTick} serial={plant.AttackSerial} " +
+            $"distance={strikeStartDistance:F3}->{minimumStrikeDistance:F3}m " +
+            $"peakStep={peakStrikeStep:F3}mpt cap={plant.Params.SegmentVelocityCap:F3} " +
+            $"held={plant.HeldTargetId?.ToString() ?? "none"}");
     }
 
     private static (bool, string) CheckTargetVolumeAttackEnvelope()

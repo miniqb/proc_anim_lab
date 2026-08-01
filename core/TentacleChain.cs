@@ -181,7 +181,14 @@ public sealed class TentacleChain
         float effectiveLength = _parameters.Length *
             Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
         ApplyServoForces(goal, outward, effectiveLength, windupAmount);
-        Tip.Vel += strikeImpulse;
+        for (int i = 0; i < Segments.Length; i++)
+        {
+            // 原作只给 tip/body proxy 注速，2D Tentacle 的约束会把张力传回链身。
+            // 这里沿链渐弱传递同一后置冲量，下一 tick 仍逐段 sweep/MTD；这样
+            // 大攻角扑击无需靠 tick 末移动内段来追随末梢，也不会绕过连续碰撞。
+            float transmission = (i + 1f) / Segments.Length;
+            Segments[i].Vel += strikeImpulse * transmission;
+        }
     }
 
     /// <summary>
@@ -191,12 +198,14 @@ public sealed class TentacleChain
     internal void ConstrainTipAfterCoupling(
         ITerrainQuery terrain,
         float extension,
-        Vector3 safeTipPosition)
+        Vector3 safeTipPosition,
+        float velocityCap,
+        float linkStretchLimit)
     {
         extension = Mathf.Clamp(extension, 0f, 1f);
         float effectiveLength = _parameters.Length *
             Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
-        float linkLength = effectiveLength / Segments.Length;
+        float linkLength = effectiveLength / Segments.Length * linkStretchLimit;
         float maximumTipReach = _parameters.Length * 2f * extension;
         TentacleSegmentState previous = Segments[^2];
         for (int i = 0; i < _parameters.ConstraintIterations; i++)
@@ -228,7 +237,7 @@ public sealed class TentacleChain
             // 缺少地形背书或两个约束未收敛，就回到这份安全位置。
             Tip.Pos = safeTipPosition;
         }
-        Tip.Vel = Tip.Vel.LimitLength(_parameters.SegmentVelocityCap);
+        Tip.Vel = Tip.Vel.LimitLength(velocityCap);
     }
 
     public void Shift(Vector3 delta)

@@ -196,9 +196,13 @@ public sealed class TentaclePlantController
     private TentaclePlantTargetSnapshot? _target;
     private ulong _randomState;
     private Vector3 _attackDirection;
+    private Vector3 _trackedAimPoint;
+    private Vector3 _strikeOrigin;
+    private Vector3 _strikeGoal;
     private int _chargeUnits;
     private int _strikeTicksRemaining;
     private int _strikeTick;
+    private bool _strikeMotionPending;
     private int _grabWindowTicksRemaining;
     private int _retractTicksElapsed;
     private int _consumeTicks;
@@ -226,6 +230,9 @@ public sealed class TentaclePlantController
         ApplyMountFrame(mount);
         WanderGoal = InitialWanderGoal();
         _attackDirection = Outward;
+        _trackedAimPoint = Hand.Pos + Outward * _parameters.Length;
+        _strikeOrigin = Hand.Pos;
+        _strikeGoal = _trackedAimPoint;
     }
 
     /// <summary>
@@ -235,6 +242,11 @@ public sealed class TentaclePlantController
     public void Tick(in TickContext ctx)
     {
         TargetEffect = default;
+        // 形态力在上一 tick 末注入速度，本 tick 的 Body/Chain 才真正积分。
+        // 独立记录这段尾拍，避免公开 Phase 已转 Recovering/Holding 时误套普通
+        // 耦合预算，把完整扑击的最后一次实际位移截掉。
+        bool consumingStrikeMotion = _strikeMotionPending;
+        _strikeMotionPending = false;
         bool releasedThisTick = ReleaseMissingOrChangedTarget();
         UpdateCaptureSuppression();
         if (_pendingReleaseId is { } releasedId)
@@ -270,7 +282,9 @@ public sealed class TentaclePlantController
             : Extension;
         Vector3 goal = HeldTargetId is not null && Target is { } held
             ? held.Position
-            : Target is { } target
+            : consumingStrikeMotion || _strikeTicksRemaining > 0
+                ? _strikeGoal
+                : Target is { } target
                 ? target.Position
                 : WanderGoal;
         Chain.TickPhysics(
@@ -282,17 +296,25 @@ public sealed class TentaclePlantController
 
         bool visibleAttackTarget = EvaluateAttackTarget(_countingTerrain);
         ActAttack(visibleAttackTarget);
-        Vector3 strikeImpulse = Phase == TentaclePlantPhase.Striking
-            ? _attackDirection * _parameters.LungeImpulse
+        bool injectingStrikeMotion = Phase == TentaclePlantPhase.Striking;
+        Vector3 strikeImpulse = injectingStrikeMotion
+            ? StrikeImpulse()
             : Vector3.Zero;
+        Vector3 shapeGoal = injectingStrikeMotion
+            ? _strikeGoal
+            : goal;
         Chain.InjectShapeForces(
-            goal,
+            shapeGoal,
             Outward,
             physicsExtension,
             WindupAmount(),
             strikeImpulse);
         Hand.Vel += strikeImpulse;
-        CoupleHandAndTip(_countingTerrain, physicsExtension);
+        _strikeMotionPending = injectingStrikeMotion;
+        CoupleHandAndTip(
+            _countingTerrain,
+            physicsExtension,
+            consumingStrikeMotion || injectingStrikeMotion);
         AnchorRoot();
 
         if (!releasedThisTick && HeldTargetId is null && Target is { } candidate)
@@ -327,6 +349,9 @@ public sealed class TentaclePlantController
         Body.Shift(delta);
         Chain.Shift(delta);
         WanderGoal += delta;
+        _trackedAimPoint += delta;
+        _strikeOrigin += delta;
+        _strikeGoal += delta;
         if (Target is { } target)
         {
             Target = target.Shifted(delta);
@@ -363,12 +388,16 @@ public sealed class TentaclePlantController
         AttackSerial = 0;
         _strikeTicksRemaining = 0;
         _strikeTick = 0;
+        _strikeMotionPending = false;
         _consumeTicks = 0;
         _consumeSent = false;
         _captureSuppressedId = null;
         _randomState = _initialSeed;
         WanderGoal = InitialWanderGoal();
         _attackDirection = Outward;
+        _trackedAimPoint = Hand.Pos + Outward * _parameters.Length;
+        _strikeOrigin = Hand.Pos;
+        _strikeGoal = _trackedAimPoint;
         Phase = TentaclePlantPhase.Wandering;
         PhaseTick = 0;
         TargetStatus = TentaclePlantTargetStatus.NoTarget;
@@ -448,11 +477,12 @@ public sealed class TentaclePlantController
         visible |= CanSee(terrain, Chain.Segments[count / 4].Pos, target);
         visible |= CanSee(terrain, Chain.Segments[count / 2].Pos, target);
         visible |= CanSee(terrain, Chain.Segments[(count * 3) / 4].Pos, target);
-        if (visible)
+        if (visible && _strikeTicksRemaining == 0)
         {
             float leadTicks = Hand.Pos.DistanceTo(target.Position) *
                 _parameters.PredictionTicksPerMeter;
             Vector3 predicted = target.Position + target.VelocityPerTick * leadTicks;
+            _trackedAimPoint = predicted;
             _attackDirection = SafeDirection(predicted - Hand.Pos, Outward);
         }
         TargetStatus = visible
@@ -564,6 +594,8 @@ public sealed class TentaclePlantController
         {
             _strikeTicksRemaining = _parameters.LungeTicks;
             _strikeTick = 0;
+            _strikeOrigin = Hand.Pos;
+            _strikeGoal = _trackedAimPoint;
             AttackSerial++;
             ActAttack(canCharge);
             return;
@@ -604,6 +636,14 @@ public sealed class TentaclePlantController
             return 0f;
         }
         return Mathf.InverseLerp(_parameters.WindupStart, 1f, AttackCharge);
+    }
+
+    private Vector3 StrikeImpulse()
+    {
+        Vector3 fromOrigin = Hand.Pos - _strikeOrigin;
+        Vector3 lateral = fromOrigin - _attackDirection * fromOrigin.Dot(_attackDirection);
+        Vector3 lineCorrection = (-lateral).LimitLength(_parameters.LungeImpulse);
+        return _attackDirection * _parameters.LungeImpulse + lineCorrection;
     }
 
     private void TryCapture(
@@ -782,7 +822,10 @@ public sealed class TentaclePlantController
         }
     }
 
-    private void CoupleHandAndTip(ITerrainQuery terrain, float extension)
+    private void CoupleHandAndTip(
+        ITerrainQuery terrain,
+        float extension,
+        bool strikeMotionActive)
     {
         Vector3 safeTipPosition = Chain.Tip.Pos;
         if (Chain.BacktrackFrom >= 0)
@@ -852,9 +895,20 @@ public sealed class TentaclePlantController
         Hand.Vel += terrainVelocityDelta;
         Chain.Tip.Vel += terrainVelocityDelta;
         Hand.Pos = Chain.Tip.Pos = position;
-        Hand.Vel = Hand.Vel.LimitLength(_parameters.SegmentVelocityCap);
-        Chain.Tip.Vel = Chain.Tip.Vel.LimitLength(_parameters.SegmentVelocityCap);
-        Chain.ConstrainTipAfterCoupling(terrain, extension, safeTipPosition);
+        // 原作先用常规 chunk cap 积分，随后才注入扑击冲量；因此 Striking
+        // 不能在 tick 末重新套普通段速上限。前向冲量与锁向直线修正各自最多
+        // LungeImpulse，故这里保留一个显式有限的 3D 耦合预算。
+        float coupledVelocityCap = strikeMotionActive
+            ? _parameters.SegmentVelocityCap + _parameters.LungeImpulse * 2f
+            : _parameters.SegmentVelocityCap;
+        Hand.Vel = Hand.Vel.LimitLength(coupledVelocityCap);
+        Chain.Tip.Vel = Chain.Tip.Vel.LimitLength(coupledVelocityCap);
+        Chain.ConstrainTipAfterCoupling(
+            terrain,
+            extension,
+            safeTipPosition,
+            coupledVelocityCap,
+            strikeMotionActive ? 1.25f : 1f);
         Hand.Pos = Chain.Tip.Pos;
     }
 

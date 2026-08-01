@@ -118,9 +118,14 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 且 body hand 受 `idealLength × 2 × extended` 根部硬拴；本项目保留这三点。回收后段的误差会在
 碰撞前用一次 tip→root 反向 PullOnly 投影传回整链，必要时再相对根统一缩短，因此全链约束与
 根部硬拴能同时成立而不增加地形查询。由于 3D `Hand` 是无连接代理，耦合仍发生在主绳约束之后，
-公开 tick 结束前会再次投影末链与根部硬拴、做地形安全回退并重施梢端速度上限。这一道是
-3D 稳定扩展，用于保证突刺/重目标回收不会再把单节拉成数倍或让代理越过静态障碍，不声称原作
-在同一位置有第二次求解。
+公开 tick 结束前会再次投影末链与根部硬拴、做地形安全回退。原作每 tick 先让
+`TentacleChunk` 常规限速并积分，再由 `TentaclePlant` 给 tip 与 body proxy 注入供下一 tick
+消费的扑击速度；下一 tick body proxy 直接消费，链粒子仍会经过常规 chunk cap。本项目保留
+这一区分：链物理仍用 `SegmentVelocityCap`，但 hand/tip 的 tick 末耦合不得提前抹掉待消费冲量，
+因此扑击运动使用 `SegmentVelocityCap + 2 × LungeImpulse` 的有限耦合预算，并只允许末节达到
+1.25 倍柔顺长度。
+这道二次投影是 3D 稳定扩展，用于保证突刺/重目标回收不会再把单节拉成数倍或让代理越过
+静态障碍，不声称原作在同一位置有第二次求解。
 
 `GuidePoints`、`BacktrackFrom` 和查询计数都是核心只读输出。沙盒可以把它们画出来，
 但不得用调试图形反向决定运动。合法埋地只限根部；可见段和手仍受静态地形净空约束。
@@ -173,7 +178,10 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 - `Tracking`：宿主仍提供目标、`CanGrab == 0`，且充能尚未进入 Windup；若目标遮挡或越界，充能会衰减，
   因此该观察阶段本身不承诺当前仍可见或仍在攻击包络内；
 - `Windup`：充能过半后的明显后缩，仍保留目标预测；
-- `Striking`：方向在开始时锁定，按预设的固定 tick 突刺，并开启抓取窗；
+- `Striking`：原作在扑击开始时锁定预测方向；本项目额外冻结该预测点作为 3D guide/servo
+  目标。沿链渐弱传递同一后置冲量，以及修正手端相对锁定攻击直线的横向误差，也都是 3D
+  求解扩展；它们不会在扑击中重新追踪猎物。公开阶段表示冲量注入窗口；最后一拍在下一 tick
+  实际积分时，即使公开阶段已转为 `Recovering` 或 `Holding`，仍沿用锁定目标与扑击耦合预算；
 - `Recovering`：扑击结束而 `CanGrab > 0` 的余窗阶段；可见目标的 `AttackCharge`
   会在此期间并行重新积累。它不改变 `Extension`，只有真正 `Holding` 才按
   `RetractTicks` 回收；
@@ -253,6 +261,7 @@ godot --path . scenes/tentacle_plant_sandbox.tscn
 --plant-mount=floor|wall|ceiling
 --plant-route=idle|hit|miss|occluded
 --plant-target-local=<outward,tangent,bitangent>  # 可选，米；覆盖脚本猎物位置
+--plant-min-strike-speed=<meters/tick> # 可选；确定性 hit 的最低首扑峰值
 --plant-seed=<ulong>
 --plant-determinism=<ticks>
 --plant-tps=<positive integer>       # 专项矩阵使用 40 / 400
@@ -277,8 +286,8 @@ dotnet run --project core/tentacle_plant_smoke
 - 三向安装、游荡域/净空、局部两折点与回卷恢复；开放地形首 tick 必须铺到
   `Length × SpawnExtension`，original/hunter 在三向 0.25m 薄板前的出生/Remount 各跑
   2000 tick，要求全程无远侧段、无中心线穿板且连续回卷不超过 60 tick；
-- 45/90/10/40/80+30 tick 时序、三预设攻击期链节/梢端位移硬门、被动低速捕获、质量牵引及
-  目标失效门；
+- 45/90/10/40/80+30 tick 时序、三预设攻击期链节/梢端位移硬门、大攻角目标首扑命中与最低
+  冲击位移、被动低速捕获、质量牵引及目标失效门；
 - `{0.25, 1, 4, 10}` 质量的真实闭合宿主回路，保证全程 finite、Hand/Tip 同位、内部速度不越过
   `SegmentVelocityCap`、链节不持续超长、`2 × Length × Extension` 根部硬拴零超差，且请求吞入时
   目标已进入 `ConsumeDistance`；0.15m 薄板负例与开放地形正例共同钉住抓取视线；
@@ -289,7 +298,7 @@ dotnet run --project core/tentacle_plant_smoke
 
 Godot 矩阵覆盖 floor / wall / ceiling、idle / hit / miss / occluded、三预设、同 seed
 双跑、idle 与 hit 的 40/400Hz 同 tick 结果、1mm 初态微扰**灵敏度**、真实 collider
-全半径穿透、hunter 长度球边缘扑击/抓取与 `TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
+全半径穿透、hunter 长度球边缘与约 50 度大攻角扑击/抓取，以及 `TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
 Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收中另行运行，不包含在
 拟态草专项脚本内部。
 

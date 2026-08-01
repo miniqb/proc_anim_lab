@@ -70,6 +70,7 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private string _mountName = MountNames[0];
     private string _route = "hit";
     private Vector3? _targetLocalOverride;
+    private float? _minimumStrikeSpeed;
     private float _perturb;
     private ulong? _expectHash;
 
@@ -104,6 +105,9 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private int _peakQueries;
     private long _finalAttackSerial;
     private float _handTravel;
+    private float _firstStrikeStartDistance;
+    private float _firstStrikeMinDistance;
+    private float _firstStrikePeakSpeed;
     private float _maxAttackCharge;
     private float _maxEffectMagnitude;
     private float _captureRootDistance;
@@ -294,6 +298,9 @@ public partial class TentaclePlantSandboxWorld : Node3D
         _peakQueries = 0;
         _finalAttackSerial = 0;
         _handTravel = 0f;
+        _firstStrikeStartDistance = -1f;
+        _firstStrikeMinDistance = float.MaxValue;
+        _firstStrikePeakSpeed = 0f;
         _maxAttackCharge = 0f;
         _maxEffectMagnitude = 0f;
         _captureRootDistance = 0f;
@@ -538,7 +545,20 @@ public partial class TentaclePlantSandboxWorld : Node3D
         }
 
         Vector3 hand = _plant.Hand.Pos;
-        _handTravel += hand.DistanceTo(_lastHand);
+        float handStep = hand.DistanceTo(_lastHand);
+        _handTravel += handStep;
+        if (_plant.AttackSerial == 1 &&
+            (phase == "Striking" || _plant.TargetEffect.CaptureStarted) &&
+            _targetActive)
+        {
+            float targetDistance = hand.DistanceTo(_targetPos);
+            if (_firstStrikeStartDistance < 0f)
+            {
+                _firstStrikeStartDistance = targetDistance;
+            }
+            _firstStrikeMinDistance = Mathf.Min(_firstStrikeMinDistance, targetDistance);
+            _firstStrikePeakSpeed = Mathf.Max(_firstStrikePeakSpeed, handStep);
+        }
         _lastHand = hand;
         _maxAttackCharge = Mathf.Max(_maxAttackCharge, _plant.AttackCharge);
         _maxRootError = Mathf.Max(_maxRootError, _plant.Root.Pos.DistanceTo(_rootAnchor));
@@ -664,6 +684,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
                  $"queries={_maxTickQueries}/{_peakQueries} attackSerial={_finalAttackSerial} " +
                  $"maxCharge={_maxAttackCharge:F4} " +
                  $"firstStrike={_firstStrikeTick} firstRecover={_firstRecoverTick} " +
+                 $"firstStrikeDistance={_firstStrikeStartDistance:F3}->" +
+                 $"{_firstStrikeMinDistance:F3}m peak={_firstStrikePeakSpeed:F3}mpt " +
                  $"firstHolding={_firstHoldingTick} holdingTicks={_holdingTicks} " +
                  $"effects=capture:{_sawCaptureEffect}/held:{_sawHeldEffect}/" +
                  $"release:{_sawReleaseEffect}/consume:{_sawConsumeEffect} " +
@@ -783,6 +805,21 @@ public partial class TentaclePlantSandboxWorld : Node3D
                                  $"heldMax={_maxHeldTargetRootDistance:F3}m/" +
                                  $"{_maxHeldTargetSpeed:F3}mpt, " +
                                  $"extension={_minHeldExtension:F4}, hold={_holdingTicks}）");
+                }
+                bool customHitInvalid = _targetLocalOverride.HasValue &&
+                    (_firstStrikeTick != _preset.ChargeTicks ||
+                     _captureTick < _firstStrikeTick ||
+                     _captureTick > _firstStrikeTick + _preset.LungeTicks ||
+                     _finalAttackSerial != 1);
+                bool strikeTooSlow = _minimumStrikeSpeed is { } minimumSpeed &&
+                                     _firstStrikePeakSpeed < minimumSpeed;
+                if (customHitInvalid || strikeTooSlow)
+                {
+                    failures.Add($"自定义 hit 首扑时序/冲击力不成立（strike/capture/serial=" +
+                                 $"{_firstStrikeTick}/{_captureTick}/{_finalAttackSerial}, " +
+                                 $"peak/min={_firstStrikePeakSpeed:F3}/" +
+                                 $"{_minimumStrikeSpeed?.ToString("F3", CultureInfo.InvariantCulture) ?? "none"}" +
+                                 $"mpt）");
                 }
                 break;
             case "miss":
@@ -1105,6 +1142,17 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     _targetLocalOverride = ParseLocalVector(
                         argument["--plant-target-local=".Length..]);
                 }
+                else if (argument.StartsWith("--plant-min-strike-speed=", StringComparison.Ordinal))
+                {
+                    _minimumStrikeSpeed = float.Parse(
+                        argument["--plant-min-strike-speed=".Length..],
+                        CultureInfo.InvariantCulture);
+                    if (!float.IsFinite(_minimumStrikeSpeed.Value) ||
+                        _minimumStrikeSpeed.Value <= 0f)
+                    {
+                        throw new FormatException("最低扑击速度必须为有限正数");
+                    }
+                }
                 else if (argument.StartsWith("--plant-perturb=", StringComparison.Ordinal))
                 {
                     _perturb = float.Parse(
@@ -1135,6 +1183,12 @@ public partial class TentaclePlantSandboxWorld : Node3D
         if (_expectHash is not null && _determinismTicks <= 0)
         {
             GD.PushError("[TENTACLE-PLANT-CLI] --expect-hash 需要 --determinism");
+            return false;
+        }
+        if (_minimumStrikeSpeed is not null &&
+            (_determinismTicks <= 0 || _route != "hit"))
+        {
+            GD.PushError("[TENTACLE-PLANT-CLI] --plant-min-strike-speed 仅用于确定性 hit 回归");
             return false;
         }
         return true;
