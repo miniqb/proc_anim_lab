@@ -112,6 +112,12 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 写入 nullable `Target`。`HostGrabbable` 只约束捕获，宿主仍可让不可抓目标参与追踪与充能；
 控制器据其余字段做范围、视线、预测、阶段和几何命中判定。
 
+3D 攻击包络是“以物理根为中心的长度球”与“安装面洞外半空间”的交集。判定使用
+`Radius` 表达的猎物球体是否与该包络相交，而不是只检查目标中心：目标中心可比
+`Length` 最多多出自身半径，或比安装面最多退后自身半径；只有整个猎物球都越出长度球、
+或整个球都在安装面后方时才拒绝充能。原作只对 main body chunk 中心做二维距离检查；
+这里是为连续 3D 目标体积补出的边界语义。
+
 每次 `Tick` 都覆盖只读 `TargetEffect`；`TargetId` 指明本次效果所属的稳定目标，其余字段语义为：
 
 - `CaptureStarted`：本 tick 首次几何命中，请宿主建立抓取关系；
@@ -185,7 +191,8 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 
 - 几何：`Body`、`Root`、`Hand`、`Segments` 和各自插值位置；
 - 行为：`Phase`、`AttackCharge`、`CanGrab`、`Extension`、`AttackSerial`、
-  `HeldTargetId`；
+  `HeldTargetId`，以及最近一次 tick 的 `TargetStatus`（可充能、越界、安装面后、遮挡、
+  宿主隐藏、抓持或锁向突刺）；
 - 路径：`WanderGoal`、0–2 个真实折点 `GuidePoints`（根与目标为隐含端点），以及
   `BacktrackFrom`（`-1` 表示无回退，否则为首个需回卷的触手段索引）；
 - 预算：当 tick `TickQueryCount` 与生命周期峰值 `PeakQueryCount`。
@@ -207,6 +214,7 @@ godot --path . scenes/tentacle_plant_sandbox.tscn
 --plant-preset=tentacle-plant/original|tentacle-plant/short|tentacle-plant/hunter
 --plant-mount=floor|wall|ceiling
 --plant-route=idle|hit|miss|occluded
+--plant-target-local=<outward,tangent,bitangent>  # 可选，米；覆盖脚本猎物位置
 --plant-seed=<ulong>
 --plant-determinism=<ticks>
 --plant-tps=<positive integer>       # 专项矩阵使用 40 / 400
@@ -230,12 +238,13 @@ dotnet run --project core/tentacle_plant_smoke
 - 三预设装配、参数快照与未知 ID 快速失败；
 - 三向安装、游荡域/净空、局部两折点与回卷恢复；
 - 45/90/10/40/80+30 tick 时序、被动低速捕获、质量牵引及目标失效门；
+- hunter 在三向安装下的目标球长度/前半空间交界，以及整个目标球越界时的拒绝门；
 - `Shift`、`Remount`、`ReleaseHeldTarget` 的逐字段生命周期；
 - 同 seed 双跑 bit-exact、不同 seed 轨迹差异、8/16 段查询增长、穿透和所有数值 finite。
 
 Godot 矩阵覆盖 floor / wall / ceiling、idle / hit / miss / occluded、三预设、同 seed
 双跑、idle 与 hit 的 40/400Hz 同 tick 结果、1mm 初态微扰**灵敏度**、真实 collider
-全半径穿透与 `TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
+全半径穿透、hunter 长度球边缘扑击/抓取与 `TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
 Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收中另行运行，不包含在
 拟态草专项脚本内部。
 
