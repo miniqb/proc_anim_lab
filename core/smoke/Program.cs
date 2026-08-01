@@ -4,7 +4,16 @@ using System.Globalization;
 using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Text.RegularExpressions;
 using Godot;
+using ProcAnim.Core.Diagnostics;
+using ProcAnim.Core.Host;
+using ProcAnim.Core.Physics;
+using ProcAnim.Core.Species;
+using ProcAnim.Core.Species.Humanoid;
+using ProcAnim.Core.Species.Lizard;
+using ProcAnim.Core.Species.Vulture;
+using ProcAnim.Core.Terrain;
 
 namespace ProcAnim.Core.Smoke;
 
@@ -43,6 +52,7 @@ internal static class Program
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) a = Run();
         (ulong Hash, float Walk, float Grip, float RaysPerTick, bool Nan, float EndDev) b = Run();
         bool boundaryOk = CheckEngineBoundary(out string boundaryMsg);
+        bool modularityOk = CheckSpeciesModularity(out string modularityMsg);
         bool embedOk = CheckEmbedRecovery(out string embedMsg);
         bool shiftOk = CheckShiftContinuity(out string shiftMsg);
         bool launchOk = CheckLaunchRecovery(out string launchMsg);
@@ -71,6 +81,7 @@ internal static class Program
         Console.WriteLine($"[CORE-METRIC] walkDistance={a.Walk:F2}m avgLegsGripping={a.Grip:F2}/4 " +
                           $"raysPerTick={a.RaysPerTick:F1} endDev={a.EndDev:F4}m nan={a.Nan}");
         Console.WriteLine($"[CORE-BOUNDARY] {boundaryMsg}");
+        Console.WriteLine($"[CORE-MODULARITY] {modularityMsg}");
         Console.WriteLine($"[CORE-EMBED] {embedMsg}");
         Console.WriteLine($"[CORE-SHIFT] {shiftMsg}");
         Console.WriteLine($"[CORE-LAUNCH] {launchMsg}");
@@ -120,6 +131,10 @@ internal static class Program
         if (!boundaryOk)
         {
             reasons.Add("内核程序集越出引擎边界");
+        }
+        if (!modularityOk)
+        {
+            reasons.Add("物种后端越出模块边界（跨物种引用不在白名单内）");
         }
         if (!embedOk)
         {
@@ -1596,6 +1611,139 @@ internal static class Program
             ? $"ProcAnim.Core 引擎类型引用 = 允许清单 [{string.Join(", ", allowed)}]，边界干净"
             : $"越界引用: {string.Join(", ", offenders)}";
         return offenders.Count == 0;
+    }
+
+    /// <summary>
+    /// 物种模块边界扫描：<c>core/species/&lt;物种&gt;/</c> 下的文件不得引用另一个物种的命名空间。
+    /// 白名单只有 Humanoid → Lizard（人形腿复用蜥蜴 <c>Limb</c> 的 opt-in
+    /// <c>LookaheadTicks</c> 与 <c>MoveIntentDeadzone</c> 常量，见 core/README.md）。
+    /// 「七个并列后端只共享底座、互不继承」由此从文档承诺变成回归门：新后端偷用别家的腿
+    /// 或控制器，这里立刻红。
+    ///
+    /// 走源码而非 IL：跨物种耦合最常见的形态是编译期常量（<c>MoveIntentDeadzone</c> 就是），
+    /// 它在 IL 里被内联得一干二净，元数据扫描看不见。源码不可达、物种目录不足 7 个、
+    /// 扫描文件数为 0、或存在 global using（会让 per-file using 不再等于依赖图）
+    /// 一律 FAIL——空扫描通过就是假绿。
+    /// </summary>
+    private static bool CheckSpeciesModularity(out string message)
+    {
+        const int ExpectedSpecies = 7;
+        var allowed = new HashSet<string> { "Humanoid>Lizard" };
+
+        if (!TryFindKernelRoot(out string kernelRoot))
+        {
+            message = "定位不到内核源码根（上溯找不到 ProcAnim.Core.csproj），模块边界无法验证";
+            return false;
+        }
+
+        var offenders = new List<string>();
+        var edges = new SortedSet<string>();
+        int scanned = 0;
+
+        // global using / csproj <Using> 会绕过 per-file using，先堵死这条假绿通道。
+        foreach (string file in Directory.GetFiles(kernelRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            foreach (string line in File.ReadAllLines(file))
+            {
+                if (line.TrimStart().StartsWith("global using", StringComparison.Ordinal))
+                {
+                    offenders.Add($"{Path.GetFileName(file)}: global using 绕过 per-file 依赖图");
+                }
+            }
+        }
+        if (File.ReadAllText(Path.Combine(kernelRoot, "ProcAnim.Core.csproj"))
+                .Contains("<Using ", StringComparison.Ordinal))
+        {
+            offenders.Add("ProcAnim.Core.csproj: <Using> 隐式导入绕过 per-file 依赖图");
+        }
+
+        string speciesRoot = Path.Combine(kernelRoot, "species");
+        string[] speciesDirs = Directory.Exists(speciesRoot)
+            ? Directory.GetDirectories(speciesRoot)
+            : Array.Empty<string>();
+
+        foreach (string dir in speciesDirs)
+        {
+            foreach (string file in Directory.GetFiles(dir, "*.cs"))
+            {
+                string[] lines = File.ReadAllLines(file);
+                string own = string.Empty;
+                foreach (string line in lines)
+                {
+                    Match self = Regex.Match(line, @"^namespace\s+ProcAnim\.Core\.Species\.(\w+)\s*;");
+                    if (self.Success)
+                    {
+                        own = self.Groups[1].Value;
+                        break;
+                    }
+                }
+                if (own.Length == 0)
+                {
+                    offenders.Add($"{Path.GetFileName(file)}: 不在 ProcAnim.Core.Species.<物种> 命名空间下");
+                    continue;
+                }
+
+                scanned++;
+                foreach (string line in lines)
+                {
+                    string trimmed = line.TrimStart();
+                    // 本仓注释里满是 ≙ RW 对照的跨物种类名，只有非注释行才算真引用。
+                    if (trimmed.StartsWith("//", StringComparison.Ordinal)
+                        || trimmed.StartsWith("*", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    foreach (Match m in Regex.Matches(line, @"ProcAnim\.Core\.Species\.(\w+)"))
+                    {
+                        string other = m.Groups[1].Value;
+                        if (other == own)
+                        {
+                            continue;
+                        }
+                        edges.Add($"{own}>{other}");
+                        if (!allowed.Contains($"{own}>{other}"))
+                        {
+                            offenders.Add($"{Path.GetFileName(file)}: {own} → {other}");
+                        }
+                    }
+                }
+            }
+        }
+
+        if (speciesDirs.Length < ExpectedSpecies)
+        {
+            offenders.Add($"物种目录只有 {speciesDirs.Length} 个（应 ≥{ExpectedSpecies}），扫描面不完整");
+        }
+        if (scanned == 0)
+        {
+            offenders.Add("零文件被扫描，断言无效");
+        }
+
+        message = offenders.Count == 0
+            ? $"{speciesDirs.Length} 个物种 / {scanned} 文件，跨物种边 [{string.Join(", ", edges)}] " +
+              $"= 白名单 [{string.Join(", ", allowed)}]，模块边界干净"
+            : $"越界引用: {string.Join("; ", offenders)}";
+        return offenders.Count == 0;
+    }
+
+    /// <summary>
+    /// 从内核 dll 所在目录上溯找 <c>ProcAnim.Core.csproj</c>（smoke 输出目录里躺的是内核
+    /// 的拷贝，故起点在 <c>core/&lt;工程&gt;/bin/&lt;配置&gt;/&lt;TFM&gt;/</c>）。
+    /// 回迁后目标仓库带着 smoke 一起走，这条相对关系不变。
+    /// </summary>
+    private static bool TryFindKernelRoot(out string root)
+    {
+        var dir = new DirectoryInfo(Path.GetDirectoryName(typeof(Body).Assembly.Location)!);
+        for (int i = 0; i < 10 && dir != null; i++, dir = dir.Parent)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "ProcAnim.Core.csproj")))
+            {
+                root = dir.FullName;
+                return true;
+            }
+        }
+        root = string.Empty;
+        return false;
     }
 
     // ================= 人形（HumanoidLocomotionController）断言 =================

@@ -1,6 +1,6 @@
 using Godot;
 
-namespace ProcAnim.Core;
+namespace ProcAnim.Core.Terrain;
 
 /// <summary>
 /// ITerrainQuery 的 Godot 实现：包装 PhysicsDirectSpaceState3D 打真实 3D collider

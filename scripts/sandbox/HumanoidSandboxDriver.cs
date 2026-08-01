@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using Godot;
-using ProcAnim.Core;
+using ProcAnim.Core.Physics;
+using ProcAnim.Core.Species;
+using ProcAnim.Core.Species.Humanoid;
+using ProcAnim.Core.Species.Lizard;
+using ProcAnim.Core.Terrain;
 
 namespace ProcAnimLab.Sandbox;
 

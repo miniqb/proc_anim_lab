@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Godot;
-using ProcAnim.Core;
+using ProcAnim.Core.Physics;
+using ProcAnim.Core.Species.Spider;
 
 namespace ProcAnimLab.SpiderSandbox;
 

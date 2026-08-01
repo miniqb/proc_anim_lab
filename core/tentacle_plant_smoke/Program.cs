@@ -2,6 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Godot;
+using ProcAnim.Core.Diagnostics;
+using ProcAnim.Core.Host;
+using ProcAnim.Core.Species.TentaclePlant;
+using ProcAnim.Core.Terrain;
 
 namespace ProcAnim.Core.TentaclePlantSmoke;
 

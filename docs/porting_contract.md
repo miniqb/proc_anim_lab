@@ -19,45 +19,78 @@
 
 ## 1. 模块清单与依赖面
 
-### 1.1 文件清单（`core/`）
+### 1.1 目录分层与命名空间（`core/`）
+
+内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；七个物种后端互为平级、
+只共享底座（唯一例外见下表脚注）。
+
+```
+core/
+├── physics/            ProcAnim.Core.Physics        chunk 物理与碰撞解算
+├── terrain/            ProcAnim.Core.Terrain        唯一接缝（ITerrainQuery + 解析实现）
+├── host/               ProcAnim.Core.Host           宿主每 tick 传入的驱动契约
+├── diagnostics/        ProcAnim.Core.Diagnostics    状态哈希（回归用，不参与运动）
+├── species/            ProcAnim.Core.Species        跨物种装配枢纽（BodyFactory）
+│   ├── lizard/         ProcAnim.Core.Species.Lizard
+│   ├── humanoid/       ProcAnim.Core.Species.Humanoid
+│   ├── spider/         ProcAnim.Core.Species.Spider
+│   ├── centipede/      ProcAnim.Core.Species.Centipede
+│   ├── cicada/         ProcAnim.Core.Species.Cicada
+│   ├── vulture/        ProcAnim.Core.Species.Vulture
+│   └── tentacle_plant/ ProcAnim.Core.Species.TentaclePlant
+├── godot/              ProcAnim.Core.Terrain        引擎适配器（**归宿主程序集**，见 §1.2）
+└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/    无引擎回归工程
+```
+
+两处**有意的目录 ≠ 命名空间**：`godot/` 的适配器实现 `Terrain` 的接口却不属于内核程序集，
+留在顶层是回迁隔离区（拷 `core/` 时它跟着走，但由宿主 csproj 单独编入）；
+`AssemblyInfo.cs` 是程序集属性，无命名空间。
+
+跨物种引用由 `core/smoke` 的 **`[CORE-MODULARITY]` 源码扫描**强制（与 §1.2 的 TypeRef
+引擎边界扫描并列）：`species/<物种>/` 下出现白名单外的另一物种命名空间即回归 FAIL。
+白名单当前只有一条 **Humanoid → Lizard**（人形腿复用 `Limb` 的 opt-in `LookaheadTicks`
+与 `MoveIntentDeadzone` 常量）。扫描走源码而非 IL：编译期常量在 IL 里被内联，
+元数据扫描看不见——`MoveIntentDeadzone` 恰好就是这一类。
+
+### 1.1b 文件清单
 
 | 文件 | 职责 | ≙ RW |
 |------|------|------|
-| `BodyChunk.cs` | 带质量球形粒子，纯数据（Pos/LastPos/Vel/Radius/接触态 + RotationChunk 朝向参照与派生 `Rotation`） | BodyChunk（含 rotationChunk/Rotation） |
-| `ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档）；构造时两端互绑 RotationChunk（后建覆盖）；逐连接释放诊断计数 | BodyChunkConnection / ConnectToPoint |
-| `Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞→卡角时恢复碰撞新增的姿态违反→卡链释放 | GenericBodyPart.Update 帧序 + BodyPart.Reset |
-| `ContactManifold3D.cs` | 单 tick 固定容量接触法线集合；固定迭代投影到非正交墙/地接触可行锥 | 3D 接缝扩展 |
-| `SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
-| `ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
-| `TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
-| `MoveTargetKind.cs` | 并列控制器共用的推进目标来源观测枚举；调试层只读目标数据，不依赖具体物种 | — |
-| `Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
-| `LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
-| `Arm.cs` | 手臂粒子：三模式追猎（Dangle/HuntAbsolute/HuntRelative）+ 臂长钳制（adaptVel/exaggerate 甩动感）+ 腋窝排斥；不回传力 | Limb 基类追猎核心 + ScavengerHand 机械部分 |
-| `HumanoidLocomotionController.cs` | 人形（双足）运动控制器：清醒近地失重 + 站立力偶伺服（摔倒/爬起零状态机）+ 髋高度伺服 + knuckle 撑点俯仰泵 + 手臂优先级链（昏迷→投掷→蓄力→指向→持物→撑地→闲置）+ Conscious/PointTarget/Carrying/Throw API | Scavenger.Act + ScavengerHand.Update 优先级链 |
-| `BreedParams.cs` | 蜥蜴品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
-| `HumanoidParams.cs` | 人形品种参数表（同为纯出生配置；数值 = Scavenger 反编译直接换算） | Scavenger 构造参数 |
-| `BodyFactory.cs` | 通用装配器 + 蜥蜴四预设（`AllBreeds()`）+ 人形三预设（`AllHumanoids()`：scavenger/brute/waif）+ 秃鹫四预设（`AllVultureBreeds()`），三张路由表互不混装 | LizardBreeds / Scavenger 构造 / Vulture 构造 |
-| `CentipedeLeg.cs` | 蜈蚣足端：真实地形抓点 + 确定性行波；抓握调制本节支撑，不刚性反拉身体 | 独立 3D 扩展 |
-| `CentipedeLocomotionController.cs` | 蜈蚣专属控制器：双端表面轨迹、逐节局部支撑、全向贴面与有上限自避 | 独立 3D 扩展 |
-| `CentipedeParams.cs` | 全局运动参数 + 默认体型曲线 + 任意节出生参数与稀疏逐节覆写 | 独立 3D 扩展 |
-| `CentipedeFactory.cs` | 质量加权装配器 + short/long/armored/ribbon 四个稳定 ID 预设 | 独立 3D 扩展 |
-| `SpiderLeg.cs` | 蜘蛛足端粒子：plant-and-trail、全方向 FindGrip、稳定 pole 两段 IK 膝点 | BigSpider/Spider 足端与图形层 IK 分层 |
-| `SpiderLocomotionController.cs` | 蜘蛛专属运动控制器：多锚点抓地汇总、支撑低通、归一化推进、线性链拖尾 | 独立 3D 涌现实现 |
-| `SpiderBreedParams.cs` | 有序线性身体链 + 显式腿对锚点配置 | BigSpider 拓扑的可配置扩展 |
-| `SpiderFactory.cs` | 小型/大型正式预设 + 三节多锚点测试预设 | BigSpider 两节八腿拓扑 |
-| `CicadaLocomotionController.cs` | 蝉专属控制器：双 chunk 差分升力、悬停、显式停驻、起飞与 Charge | Cicada.Update / Act |
-| `CicadaParams.cs` | 蝉出生参数（尺寸、飞行动力、翼/触须表现尺度） | Cicada 个体差异的确定性子集 |
-| `CicadaFactory.cs` | 双 chunk 身体装配 + light/dark 两个预设 | Cicada 构造 |
-| `CicadaWingState.cs` / `CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
-| `TentacleChain.cs` | 独立多节触手原语：段长/柔性解算、局部导引折线、静态地形避让与回退 | Tentacle / TentacleChunk / TentacleProps |
-| `TentaclePlantController.cs` | 锚定式拟态草控制器：确定性三维游荡、目标充能、Windup、突刺、抓取与回收 | TentaclePlant.Update |
-| `TentaclePlantParams.cs` / `TentaclePlantFactory.cs` | 拟态草出生参数、安装框架、目标/效果纯值类型，以及 original/short/hunter 三个稳定预设 | TentaclePlant 构造与种内扩展 |
-| `VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
-| `VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
-| `VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
-| `DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
-| `PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
+| `physics/BodyChunk.cs` | 带质量球形粒子，纯数据（Pos/LastPos/Vel/Radius/接触态 + RotationChunk 朝向参照与派生 `Rotation`） | BodyChunk（含 rotationChunk/Rotation） |
+| `physics/ChunkConnection.cs` | 距离连接：软弹簧 + 硬约束（Rigid/PullOnly/PushOnly + SoftOnly 姿态弹簧档）；构造时两端互绑 RotationChunk（后建覆盖）；逐连接释放诊断计数 | BodyChunkConnection / ConnectToPoint |
+| `physics/Body.cs` | chunk 容器与 tick 顺序：受力→积分→约束松弛→地形碰撞→卡角时恢复碰撞新增的姿态违反→卡链释放 | GenericBodyPart.Update 帧序 + BodyPart.Reset |
+| `physics/ContactManifold3D.cs` | 单 tick 固定容量接触法线集合；固定迭代投影到非正交墙/地接触可行锥 | 3D 接缝扩展 |
+| `physics/SphereTerrain.cs` | 球 vs 地形命中解算（无反弹+切向摩擦），Body/Limb 共用 | PushOutOfTerrain 语义 |
+| `terrain/ITerrainQuery.cs` | **唯一接缝**：射线 + 球体穿透（MTD）两原语 + TerrainHit（零法线 = HitFromInside） | —（Godot 移植层） |
+| `host/TickContext.cs` | 每 tick 环境包（重力/地形/tick 序号），传值、内核不持引擎对象 | — |
+| `host/MoveTargetKind.cs` | 并列控制器共用的推进目标来源观测枚举；调试层只读目标数据，不依赖具体物种 | — |
+| `species/lizard/Limb.cs` | 腿粒子：单点追目标 IK + plant-and-trail + FindGrip 射线落点 + 闲置休息位 | BodyPart/Limb/LizardLimb |
+| `species/lizard/LizardLocomotionController.cs` | 蜥蜴专属运动控制器：重力开关、支撑系、意图重定向、推进力、翻越三件套 | Lizard 移动块 |
+| `species/humanoid/Arm.cs` | 手臂粒子：三模式追猎（Dangle/HuntAbsolute/HuntRelative）+ 臂长钳制（adaptVel/exaggerate 甩动感）+ 腋窝排斥；不回传力 | Limb 基类追猎核心 + ScavengerHand 机械部分 |
+| `species/humanoid/HumanoidLocomotionController.cs` | 人形（双足）运动控制器：清醒近地失重 + 站立力偶伺服（摔倒/爬起零状态机）+ 髋高度伺服 + knuckle 撑点俯仰泵 + 手臂优先级链（昏迷→投掷→蓄力→指向→持物→撑地→闲置）+ Conscious/PointTarget/Carrying/Throw API | Scavenger.Act + ScavengerHand.Update 优先级链 |
+| `species/lizard/BreedParams.cs` | 蜥蜴品种参数表（纯出生配置，运行时零回读） | LizardBreedParams 运动子集 |
+| `species/humanoid/HumanoidParams.cs` | 人形品种参数表（同为纯出生配置；数值 = Scavenger 反编译直接换算） | Scavenger 构造参数 |
+| `species/BodyFactory.cs` | 通用装配器 + 蜥蜴四预设（`AllBreeds()`）+ 人形三预设（`AllHumanoids()`：scavenger/brute/waif）+ 秃鹫四预设（`AllVultureBreeds()`），三张路由表互不混装 | LizardBreeds / Scavenger 构造 / Vulture 构造 |
+| `species/centipede/CentipedeLeg.cs` | 蜈蚣足端：真实地形抓点 + 确定性行波；抓握调制本节支撑，不刚性反拉身体 | 独立 3D 扩展 |
+| `species/centipede/CentipedeLocomotionController.cs` | 蜈蚣专属控制器：双端表面轨迹、逐节局部支撑、全向贴面与有上限自避 | 独立 3D 扩展 |
+| `species/centipede/CentipedeParams.cs` | 全局运动参数 + 默认体型曲线 + 任意节出生参数与稀疏逐节覆写 | 独立 3D 扩展 |
+| `species/centipede/CentipedeFactory.cs` | 质量加权装配器 + short/long/armored/ribbon 四个稳定 ID 预设 | 独立 3D 扩展 |
+| `species/spider/SpiderLeg.cs` | 蜘蛛足端粒子：plant-and-trail、全方向 FindGrip、稳定 pole 两段 IK 膝点 | BigSpider/Spider 足端与图形层 IK 分层 |
+| `species/spider/SpiderLocomotionController.cs` | 蜘蛛专属运动控制器：多锚点抓地汇总、支撑低通、归一化推进、线性链拖尾 | 独立 3D 涌现实现 |
+| `species/spider/SpiderBreedParams.cs` | 有序线性身体链 + 显式腿对锚点配置 | BigSpider 拓扑的可配置扩展 |
+| `species/spider/SpiderFactory.cs` | 小型/大型正式预设 + 三节多锚点测试预设 | BigSpider 两节八腿拓扑 |
+| `species/cicada/CicadaLocomotionController.cs` | 蝉专属控制器：双 chunk 差分升力、悬停、显式停驻、起飞与 Charge | Cicada.Update / Act |
+| `species/cicada/CicadaParams.cs` | 蝉出生参数（尺寸、飞行动力、翼/触须表现尺度） | Cicada 个体差异的确定性子集 |
+| `species/cicada/CicadaFactory.cs` | 双 chunk 身体装配 + light/dark 两个预设 | Cicada 构造 |
+| `species/cicada/CicadaWingState.cs` / `species/cicada/CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
+| `species/tentacle_plant/TentacleChain.cs` | 独立多节触手原语：段长/柔性解算、局部导引折线、静态地形避让与回退 | Tentacle / TentacleChunk / TentacleProps |
+| `species/tentacle_plant/TentaclePlantController.cs` | 锚定式拟态草控制器：确定性三维游荡、目标充能、Windup、突刺、抓取与回收 | TentaclePlant.Update |
+| `species/tentacle_plant/TentaclePlantParams.cs` / `species/tentacle_plant/TentaclePlantFactory.cs` | 拟态草出生参数、安装框架、目标/效果纯值类型，以及 original/short/hunter 三个稳定预设 | TentaclePlant 构造与种内扩展 |
+| `species/vulture/VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
+| `species/vulture/VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
+| `species/vulture/VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
+| `diagnostics/DeterminismHasher.cs` | FNV-1a 64 状态哈希折叠（沙盒探针与无引擎回归共用） | — |
+| `terrain/PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
 | `smoke/` | 蜥蜴 / 蜈蚣 / 秃鹫 / 人形的无引擎冒烟回归 console 工程（§7.2） | — |
 | `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK 与生命周期无引擎回归 | — |
@@ -78,6 +111,9 @@
   确定性哈希会因此作废。
 - `core/godot/RaycastTerrainQuery.cs` 是唯一需要引擎运行时的文件，**故意不在内核程序集里**
   （core csproj 排除 `godot/**`，宿主程序集自行编入）。
+- 内核**不使用 `global using` 或 csproj `<Using>` 隐式导入**：每个文件的 using 块就是它的
+  真实依赖面，读文件头即可知道它跨了哪几层。`[CORE-MODULARITY]` 扫描把这条也纳入断言
+  （出现任一即 FAIL）——否则隐式导入会让 per-file using 不再等于依赖图，模块边界扫描变成假绿。
 
 ### 1.3 内核明确不做（≙ CLAUDE.md 非目标）
 

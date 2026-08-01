@@ -6,6 +6,45 @@
 `Godot.*` 引用即回归 FAIL），脱离引擎可运行（`smoke/` 即证明）。完整边界契约见
 [`docs/porting_contract.md`](../docs/porting_contract.md)。
 
+## 目录分层
+
+内核按**依赖方向**分层，命名空间跟随目录：上层可依赖下层，反向不行。
+
+```
+core/
+├── physics/            ProcAnim.Core.Physics        BodyChunk / ChunkConnection / Body
+│                                                    ContactManifold3D / SphereTerrain
+├── terrain/            ProcAnim.Core.Terrain        ITerrainQuery(+TerrainHit) / PlaneTerrainQuery
+├── host/               ProcAnim.Core.Host           TickContext / MoveTargetKind
+├── diagnostics/        ProcAnim.Core.Diagnostics    DeterminismHasher
+├── species/            ProcAnim.Core.Species        BodyFactory（跨物种装配枢纽）
+│   ├── lizard/  humanoid/  spider/  centipede/  cicada/  vulture/  tentacle_plant/
+│                        ProcAnim.Core.Species.<物种>
+├── godot/              ProcAnim.Core.Terrain        引擎适配器（归宿主程序集，见下）
+├── AssemblyInfo.cs                                  程序集属性（无命名空间）
+└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/     无引擎回归工程
+```
+
+**七个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
+唯一的跨物种边是 **Humanoid → Lizard**：人形腿复用蜥蜴 `Limb` 的 opt-in `LookaheadTicks`
+前瞻释放循环与 `MoveIntentDeadzone` 常量（其余物种各自声明自己的 deadzone，不共享）。
+这条边和「没有别的边」都由 `smoke/` 的 `[CORE-MODULARITY]` 扫描钉死：
+`species/<物种>/` 下出现白名单外的另一物种命名空间即回归 FAIL。
+
+扫描走**源码**而非 IL，因为跨物种耦合最常见的形态是编译期常量（`MoveIntentDeadzone`
+就是），它在 IL 里被内联得一干二净，元数据扫描看不见。同一断言另外堵死 `global using`
+与 csproj `<Using>` 隐式导入——内核**不使用**它们，每个文件的 using 块就是它的真实依赖面，
+读文件头即可知道它跨了哪几层；有了隐式导入，per-file using 就不再等于依赖图，
+这道扫描会变成假绿。
+
+两处**有意的目录 ≠ 命名空间**：`godot/` 的适配器实现 `Terrain` 的接口却不属于内核程序集
+（core csproj 排除 `godot/**`，宿主程序集单独编入），留在顶层是回迁隔离区；
+`AssemblyInfo.cs` 只承载程序集属性。
+
+`species/BodyFactory.cs` 装配 lizard + humanoid + vulture 三个物种，是当前唯一的不对称点
+（另四个物种各有自己的 `XFactory`）。它坐在 `ProcAnim.Core.Species` 而非任何物种目录里，
+就是为了让这个不对称显式可见；按物种拆开是独立的后续工作。
+
 ## 文件
 
 - 共享内核：`BodyChunk` / `ChunkConnection` / `Body`（chunk 物理）、`SphereTerrain`
@@ -124,7 +163,7 @@ dotnet run --project core/smoke     # 退出码 0=PASS：双跑 bit-exact + 哈�
                                     # + 蜈蚣装配/显式头尾切换/课程/固定头下阶梯/自避/查询增长
                                     # + 蜈蚣脚跨薄墙恢复（扫掠/低速 MTD/停驶抓点/同侧对照）
                                     # + long 双端窄墙前向翻越、远侧抓足与停驶收敛
-                                    # + 边界扫描
+                                    # + 引擎边界（TypeRef）与模块边界（跨物种命名空间）双扫描
 dotnet run --project core/spider_smoke
                                     # 小/大独立哈希 + 通用拓扑 + 两段 IK + 完整生命周期
                                     # + 可达环/反折恢复 + 抓点背书/超时 + 180°/天花板重抓

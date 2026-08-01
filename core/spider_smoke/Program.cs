@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using Godot;
-using ProcAnim.Core;
+using ProcAnim.Core.Diagnostics;
+using ProcAnim.Core.Host;
+using ProcAnim.Core.Physics;
+using ProcAnim.Core.Species.Spider;
+using ProcAnim.Core.Terrain;
 
 namespace ProcAnim.Core.SpiderSmoke;
 

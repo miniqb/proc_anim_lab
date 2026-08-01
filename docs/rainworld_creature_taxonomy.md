@@ -1,6 +1,6 @@
 # 雨世界生物分类学（反编译实证）
 
-> **用途**：给 `proc_anim_lab` 一张"原作到底有多少种身体架构"的地图。本项目的蜥蜴品种表（[`BreedParams`](../core/BreedParams.cs)）只覆盖蜥蜴一支的形态空间，其余并列后端各有自己的参数表（`SpiderBreedParams`/`CentipedeParams`/`CicadaParams`/`VultureBreedParams`/`HumanoidParams`/`TentaclePlantParams`，互不混表）；这份文档回答"再往下扩会撞到哪些已有先例"。
+> **用途**：给 `proc_anim_lab` 一张"原作到底有多少种身体架构"的地图。本项目的蜥蜴品种表（[`BreedParams`](../core/species/lizard/BreedParams.cs)）只覆盖蜥蜴一支的形态空间，其余并列后端各有自己的参数表（`SpiderBreedParams`/`CentipedeParams`/`CicadaParams`/`VultureBreedParams`/`HumanoidParams`/`TentaclePlantParams`，互不混表）；这份文档回答"再往下扩会撞到哪些已有先例"。
 >
 > **证据来源**：`~/workspace/others/Managed_extracted/Assembly-CSharp.dll`（用户自有 Rain World 桌面副本，含 Downpour/MSC + **Watcher** DLC）。整程序集反编译后逐类统计：
 > ```bash

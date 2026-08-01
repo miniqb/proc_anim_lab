@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using Godot;
-using ProcAnim.Core;
+using ProcAnim.Core.Physics;
+using ProcAnim.Core.Species.Humanoid;
+using ProcAnim.Core.Species.Lizard;
 
 namespace ProcAnimLab.Sandbox;
 

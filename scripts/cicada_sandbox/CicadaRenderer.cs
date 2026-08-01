@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
-using ProcAnim.Core;
+using ProcAnim.Core.Species.Cicada;
 
 namespace ProcAnimLab.CicadaSandbox;
 

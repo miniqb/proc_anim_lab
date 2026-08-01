@@ -1,7 +1,7 @@
 using System;
 using Godot;
-using ProcAnim.Core;
 using ProcAnimLab.Sandbox;
+using ProcAnim.Core.Species.TentaclePlant;
 
 namespace ProcAnimLab.TentaclePlantSandbox;
 

@@ -1,6 +1,11 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using ProcAnim.Core.Diagnostics;
+using ProcAnim.Core.Host;
+using ProcAnim.Core.Physics;
+using ProcAnim.Core.Species.Centipede;
+using ProcAnim.Core.Terrain;
 
 namespace ProcAnim.Core.Smoke;
 
