@@ -10,6 +10,7 @@
 | [rainworld_creature_taxonomy.md](rainworld_creature_taxonomy.md) | **反编译实证**：雨世界 92 个物种 / 54 个 `Creature` 实现类的分类地图。三条正交分类轴（物种枚举 / 模板继承 / 实现类树）、`Creature` / `BodyPart` 继承树与独立 `Tentacle` 段链、按构造函数统计的**七大身体架构**（珠链+腿 / 单点+图形腿 / 全连接珠团 / 长链条 / 飞行 / 固定 / 水生）、模板参数抽样表，以及对本项目多节脊柱和独立触手扩展的结论。 |
 | [cicada_controller.md](cicada_controller.md) | **Cicada 3D 后端**：双 chunk 差分飞行、稳定 3D 姿态、显式停驻、起飞/Charge、四翼四触须的宿主接口与专项回归。 |
 | [tentacle_plant_controller.md](tentacle_plant_controller.md) | **拟态草 3D 后端**：直接反编译 TentaclePlant/Tentacle 并以 PoleMimic、GarbageWorm 对照；记录锚定式身体、独立触手段链、确定性三维游荡、蓄势—突刺—回收、纯值目标/效果接缝、三种安装朝向与专项回归。 |
+| [deer_controller.md](deer_controller.md) | **Deer 3D 后端**：直接反编译 Deer / DeerTentacle / Tentacle；记录高站姿、头顶大轻鹿角物理代理、粗重叠躯干、动态 reach 的独立多节腿、重力常开下的连续支撑/推进/迈步，以及 3D 外撇、有向 bend pole、三预设 180° 换向真实弓向、地形接缝、宿主生命周期、白盒沙盒与专项回归。 |
 | [known_issue_three_chunk_turn_response.md](known_issue_three_chunk_turn_response.md) | **历史问题（已随 RearBrace 轮消失，保留复现与指标）**：`heavy`/`hexapod` 行进中切换胡萝卜时中段局部轴领先头段。含确定性复现、当时与当前的量化对照、当前回归边界。 |
 
 > **没有独立文档的三个并列后端**：蜘蛛（`SpiderLocomotionController`）、秃鹫

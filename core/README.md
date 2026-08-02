@@ -18,14 +18,14 @@ core/
 ├── host/               ProcAnim.Core.Host           TickContext / MoveTargetKind
 ├── diagnostics/        ProcAnim.Core.Diagnostics    DeterminismHasher
 ├── species/            ProcAnim.Core.Species        BodyFactory（跨物种装配枢纽）
-│   ├── lizard/  humanoid/  spider/  centipede/  cicada/  vulture/  tentacle_plant/
+│   ├── lizard/  humanoid/  spider/  centipede/  cicada/  vulture/  tentacle_plant/  deer/
 │                        ProcAnim.Core.Species.<物种>
 ├── godot/              ProcAnim.Core.Terrain        引擎适配器（归宿主程序集，见下）
 ├── AssemblyInfo.cs                                  程序集属性（无命名空间）
-└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/     无引擎回归工程
+└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/  无引擎回归工程
 ```
 
-**七个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
+**八个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
 唯一的跨物种边是 **Humanoid → Lizard**：人形腿复用蜥蜴 `Limb` 的 opt-in `LookaheadTicks`
 前瞻释放循环与 `MoveIntentDeadzone` 常量（其余物种各自声明自己的 deadzone，不共享）。
 这条边和「没有别的边」都由 `smoke/` 的 `[CORE-MODULARITY]` 扫描钉死：
@@ -42,7 +42,7 @@ core/
 `AssemblyInfo.cs` 只承载程序集属性。
 
 `species/BodyFactory.cs` 装配 lizard + humanoid + vulture 三个物种，是当前唯一的不对称点
-（另四个物种各有自己的 `XFactory`）。它坐在 `ProcAnim.Core.Species` 而非任何物种目录里，
+（另五个物种各有自己的 `XFactory`）。它坐在 `ProcAnim.Core.Species` 而非任何物种目录里，
 就是为了让这个不对称显式可见；按物种拆开是独立的后续工作。
 
 ## 文件
@@ -78,6 +78,12 @@ core/
   `TentaclePlantController`（锚定式三维游荡、目标蓄势、突刺、抓取回收）+
   `TentaclePlantParams` / `TentaclePlantFactory`（original/short/hunter 三个稳定预设）；
   完整契约见 [`docs/tentacle_plant_controller.md`](../docs/tentacle_plant_controller.md)
+- 鹿后端：`DeerLeg`（独立积分、约束、碰撞、持久有向 bend pole 与摆动内段双通道弯曲的多节腿链）+
+  `DeerLocomotionController`（重力恒开；按四腿连续支撑量分配升力与推进，并连续处理
+  plant-and-trail、犹豫、延迟休息资格、动态 reach、头/鹿角独立姿态轴和 COM 防倾覆）+
+  `DeerParams` / `DeerFactory`
+  （`deer/original|compact|strider` 三个稳定 ID）；完整取证、3D 取舍与验证契约见
+  [`docs/deer_controller.md`](../docs/deer_controller.md)
 - 秃鹫后端：`VultureWing`（段链翅膀：Flap 相位行波 / Grab 射线抓附，对身体零回传）+
   `VultureFlightController`（重力常开 + 拍翅相位同步 sin² 升力脉冲注入后脊柱；
   起飞/悬停/降落由 MoveTarget 几何与翅膀模式组合涌现，无 locomotion 状态机）+
@@ -90,7 +96,9 @@ core/
   `smoke/`（蜥蜴/人形/蜈蚣/秃鹫无引擎冒烟）、
   `spider_smoke/`（蜘蛛拓扑、弯腿几何、生命周期、急转左右槽及站距平衡恢复与确定性）、
   `cicada_smoke/`（蝉专项无引擎冒烟）、
-  `tentacle_plant_smoke/`（拟态草装配、三维游荡、攻击时序、命中/扑空、生命周期与确定性）
+  `tentacle_plant_smoke/`（拟态草装配、三维游荡、攻击时序、命中/扑空、生命周期与确定性）、
+  `deer_smoke/`（鹿拓扑、多节腿、常开重力支撑、完整步态、三预设 180° 换向弓向、
+  精确 frame 运输消融、地形、生命周期与确定性）
 
 `BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
 `Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端，
@@ -99,13 +107,15 @@ core/
 `SpiderLeg` + `SpiderLocomotionController` + `SpiderBreedParams` 是蜘蛛式运动后端，
 `CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端，
 `TentacleChain` + `TentaclePlantController` + `TentaclePlantParams` 是拟态草伏击后端，
-`VultureWing` + `VultureFlightController` + `VultureBreedParams` 是秃鹫式飞行后端。
-七者是共享层之上的并列控制器，
+`VultureWing` + `VultureFlightController` + `VultureBreedParams` 是秃鹫式飞行后端，
+`DeerLeg` + `DeerLocomotionController` + `DeerParams` 是鹿式多节腿后端。
+八者是共享层之上的并列控制器，
 不互相继承；后续物种也应沿这个边界增加后端，不把 locomotion 模式堆进一个万能类。
-蜈蚣、蝉与拟态草的完整契约分别见
+蜈蚣、蝉、拟态草与鹿的完整契约分别见
 [`docs/centipede_controller.md`](../docs/centipede_controller.md) 和
 [`docs/cicada_controller.md`](../docs/cicada_controller.md)、
-[`docs/tentacle_plant_controller.md`](../docs/tentacle_plant_controller.md)。
+[`docs/tentacle_plant_controller.md`](../docs/tentacle_plant_controller.md) 和
+[`docs/deer_controller.md`](../docs/deer_controller.md)。
 
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 
@@ -174,9 +184,14 @@ dotnet run --project core/cicada_smoke
 dotnet run --project core/tentacle_plant_smoke
                                     # 三预设装配 + 三向安装 + idle/hit/miss/occluded
                                     # + 攻击阶段时序 + Shift/Remount/释放目标 + 双跑确定性
+dotnet run --project core/deer_smoke
+                                    # 三预设装配 + 多节腿/常开重力支撑 + 完整步态/滞回/犹豫
+                                    # + 高站姿/身体净空/头角不侵入/动态休息 reach
+                                    # + 休息延迟前不误放脚、收腿全过程同对不双空
+                                    # + 斜坡/台阶 + MoveTarget/生命周期 + 八项消融与双跑确定性
 ```
 
 哈希和配置数量以各 smoke / matrix 脚本的当前输出与钉死常量为唯一真相源；文档不复制
 可能漂移的快照。改共享内核后先跑全部无引擎 smoke，再跑仓库根的
 `./tools/run_matrix.sh`、`./tools/run_spider_matrix.sh`、`./tools/run_cicada_matrix.sh` 和
-`./tools/run_tentacle_plant_matrix.sh`，保证既有后端基线不漂移。
+`./tools/run_tentacle_plant_matrix.sh`、`./tools/run_deer_matrix.sh`，保证既有后端基线不漂移。

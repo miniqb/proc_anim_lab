@@ -1,0 +1,263 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/deer_sandbox/DeerSandboxWorld.cs" id="1_world"]
+
+[sub_resource type="BoxShape3D" id="shape_floor"]
+size = Vector3(80, 0.4, 60)
+
+[sub_resource type="BoxMesh" id="mesh_floor"]
+size = Vector3(80, 0.4, 60)
+
+[sub_resource type="StandardMaterial3D" id="mat_floor"]
+albedo_color = Color(0.18, 0.21, 0.22, 1)
+roughness = 0.94
+
+[sub_resource type="BoxShape3D" id="shape_ramp"]
+size = Vector3(16, 0.5, 14)
+
+[sub_resource type="BoxMesh" id="mesh_ramp"]
+size = Vector3(16, 0.5, 14)
+
+[sub_resource type="StandardMaterial3D" id="mat_ramp"]
+albedo_color = Color(0.26, 0.34, 0.27, 1)
+roughness = 0.86
+
+[sub_resource type="BoxShape3D" id="shape_slope_platform"]
+size = Vector3(20, 2.8, 14)
+
+[sub_resource type="BoxMesh" id="mesh_slope_platform"]
+size = Vector3(20, 2.8, 14)
+
+[sub_resource type="BoxShape3D" id="shape_step_1"]
+size = Vector3(3, 0.3, 14)
+
+[sub_resource type="BoxMesh" id="mesh_step_1"]
+size = Vector3(3, 0.3, 14)
+
+[sub_resource type="BoxShape3D" id="shape_step_2"]
+size = Vector3(3, 0.6, 14)
+
+[sub_resource type="BoxMesh" id="mesh_step_2"]
+size = Vector3(3, 0.6, 14)
+
+[sub_resource type="BoxShape3D" id="shape_step_3"]
+size = Vector3(3, 0.9, 14)
+
+[sub_resource type="BoxMesh" id="mesh_step_3"]
+size = Vector3(3, 0.9, 14)
+
+[sub_resource type="BoxShape3D" id="shape_step_4"]
+size = Vector3(3, 1.2, 14)
+
+[sub_resource type="BoxMesh" id="mesh_step_4"]
+size = Vector3(3, 1.2, 14)
+
+[sub_resource type="BoxShape3D" id="shape_step_platform"]
+size = Vector3(15, 1.2, 14)
+
+[sub_resource type="BoxMesh" id="mesh_step_platform"]
+size = Vector3(15, 1.2, 14)
+
+[sub_resource type="StandardMaterial3D" id="mat_steps"]
+albedo_color = Color(0.34, 0.30, 0.25, 1)
+roughness = 0.9
+
+[sub_resource type="BoxShape3D" id="shape_end_wall"]
+size = Vector3(0.5, 14, 60)
+
+[sub_resource type="BoxMesh" id="mesh_end_wall"]
+size = Vector3(0.5, 14, 60)
+
+[sub_resource type="StandardMaterial3D" id="mat_wall"]
+albedo_color = Color(0.32, 0.35, 0.38, 1)
+roughness = 0.82
+
+[sub_resource type="BoxShape3D" id="shape_rough_slab"]
+size = Vector3(5, 0.35, 8)
+
+[sub_resource type="BoxMesh" id="mesh_rough_slab"]
+size = Vector3(5, 0.35, 8)
+
+[sub_resource type="StandardMaterial3D" id="mat_rough"]
+albedo_color = Color(0.29, 0.25, 0.34, 1)
+roughness = 0.92
+
+[sub_resource type="Environment" id="environment"]
+background_mode = 1
+background_color = Color(0.035, 0.045, 0.055, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.60, 0.68, 0.76, 1)
+ambient_light_energy = 0.58
+tonemap_mode = 2
+
+[node name="DeerSandboxWorld" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, -0.2, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+shape = SubResource("shape_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+mesh = SubResource("mesh_floor")
+surface_material_override/0 = SubResource("mat_floor")
+
+[node name="Slope" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, 1.2, -18)
+rotation = Vector3(0, 0, 0.15)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Slope"]
+shape = SubResource("shape_ramp")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Slope"]
+mesh = SubResource("mesh_ramp")
+surface_material_override/0 = SubResource("mat_ramp")
+
+[node name="SlopePlatform" type="StaticBody3D" parent="Terrain"]
+position = Vector3(17, 1.4, -18)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/SlopePlatform"]
+shape = SubResource("shape_slope_platform")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/SlopePlatform"]
+mesh = SubResource("mesh_slope_platform")
+surface_material_override/0 = SubResource("mat_ramp")
+
+[node name="Step1" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-5.5, 0.15, 18)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step1"]
+shape = SubResource("shape_step_1")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step1"]
+mesh = SubResource("mesh_step_1")
+surface_material_override/0 = SubResource("mat_steps")
+
+[node name="Step2" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-2.5, 0.3, 18)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step2"]
+shape = SubResource("shape_step_2")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step2"]
+mesh = SubResource("mesh_step_2")
+surface_material_override/0 = SubResource("mat_steps")
+
+[node name="Step3" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0.5, 0.45, 18)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step3"]
+shape = SubResource("shape_step_3")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step3"]
+mesh = SubResource("mesh_step_3")
+surface_material_override/0 = SubResource("mat_steps")
+
+[node name="Step4" type="StaticBody3D" parent="Terrain"]
+position = Vector3(3.5, 0.6, 18)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step4"]
+shape = SubResource("shape_step_4")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step4"]
+mesh = SubResource("mesh_step_4")
+surface_material_override/0 = SubResource("mat_steps")
+
+[node name="StepPlatform" type="StaticBody3D" parent="Terrain"]
+position = Vector3(12.5, 0.6, 18)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/StepPlatform"]
+shape = SubResource("shape_step_platform")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/StepPlatform"]
+mesh = SubResource("mesh_step_platform")
+surface_material_override/0 = SubResource("mat_steps")
+
+[node name="EndWall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(39.5, 7, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/EndWall"]
+shape = SubResource("shape_end_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/EndWall"]
+mesh = SubResource("mesh_end_wall")
+surface_material_override/0 = SubResource("mat_wall")
+
+[node name="RoughSlab1" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-7.5, 0.025, 9)
+rotation = Vector3(0.065, 0, 0.018)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/RoughSlab1"]
+shape = SubResource("shape_rough_slab")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/RoughSlab1"]
+mesh = SubResource("mesh_rough_slab")
+surface_material_override/0 = SubResource("mat_rough")
+
+[node name="RoughSlab2" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-2.6, 0.18, 9)
+rotation = Vector3(-0.08, 0, -0.015)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/RoughSlab2"]
+shape = SubResource("shape_rough_slab")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/RoughSlab2"]
+mesh = SubResource("mesh_rough_slab")
+surface_material_override/0 = SubResource("mat_rough")
+
+[node name="RoughSlab3" type="StaticBody3D" parent="Terrain"]
+position = Vector3(2.3, 0.08, 9)
+rotation = Vector3(0.095, 0, 0.02)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/RoughSlab3"]
+shape = SubResource("shape_rough_slab")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/RoughSlab3"]
+mesh = SubResource("mesh_rough_slab")
+surface_material_override/0 = SubResource("mat_rough")
+
+[node name="RoughSlab4" type="StaticBody3D" parent="Terrain"]
+position = Vector3(7.2, 0.25, 9)
+rotation = Vector3(-0.085, 0, -0.018)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/RoughSlab4"]
+shape = SubResource("shape_rough_slab")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/RoughSlab4"]
+mesh = SubResource("mesh_rough_slab")
+surface_material_override/0 = SubResource("mat_rough")
+
+[node name="RoughSlab5" type="StaticBody3D" parent="Terrain"]
+position = Vector3(12.1, 0.1, 9)
+rotation = Vector3(0.07, 0, 0.014)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/RoughSlab5"]
+shape = SubResource("shape_rough_slab")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/RoughSlab5"]
+mesh = SubResource("mesh_rough_slab")
+surface_material_override/0 = SubResource("mat_rough")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(-12, 9, 16)
+rotation = Vector3(-0.32, -0.72, 0)
+current = true
+fov = 62.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+rotation = Vector3(-0.86, -0.56, -0.24)
+light_color = Color(0.84, 0.91, 1, 1)
+light_energy = 1.2
+shadow_enabled = true
+
+[node name="WarmFill" type="OmniLight3D" parent="."]
+position = Vector3(-5, 7, 8)
+light_color = Color(1, 0.68, 0.42, 1)
+light_energy = 2.2
+omni_range = 18.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("environment")

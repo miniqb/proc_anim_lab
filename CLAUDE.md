@@ -2,13 +2,14 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**TentaclePlant 锚定伏击后端 + M6 Cicada 独立后端 + 既有并列物种控制器（2026-07-31）**——
+> 当前状态：**Deer 多节腿支撑后端 + TentaclePlant 锚定伏击后端 + 既有并列物种控制器（2026-08-01）**——
 > `ProcAnim.Core` 现在包含 Lizard / Humanoid / Spider / Centipede / Cicada / Vulture /
-> TentaclePlant 七个平行的物种控制器。
+> TentaclePlant / Deer 八个平行的物种控制器。
 > 蜈蚣的任意节装配、双端表面轨迹、真实抓足和四个稳定预设，蝉的 3D 飞行、显式三面停驻、Charge、
 > 四翼四触须和 light/dark 预设，以及秃鹫的重力常开升力脉冲飞行、拍翅行波、栖息/起飞涌现和
 > 四个品种预设均已落地并有独立回归；拟态草另以三向锚定、独立段链、伏击抓取回收和三预设
-> 展示固定生物参数空间；M5 内核抽离、回迁契约及 Lizard 外部评审修复保持完成。
+> 展示固定生物参数空间；鹿以粗重叠躯干、轻鹿角和四条独立多节腿验证常开重力下的连续
+> 支撑/迈步路线；M5 内核抽离、回迁契约及 Lizard 外部评审修复保持完成。
 > 「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
@@ -43,6 +44,7 @@
 - **[`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md)** —— **反编译实证**：雨世界生物分类地图（92 物种 / 54 个 `Creature` 实现类）。三条正交分类轴、`Creature`/`BodyPart` 继承树与独立 `Tentacle` 段链、七大身体架构（含每类的 chunk/connection/肢体统计）、模板参数抽样。扩多节脊柱、肢体或固定触手前先查这里的先例。
 - **[`docs/cicada_controller.md`](docs/cicada_controller.md)** —— **M6 产物**。Cicada 双 chunk 飞行、稳定 3D 姿态、显式停驻、Charge、附肢表现、宿主接口与专项回归。
 - **[`docs/tentacle_plant_controller.md`](docs/tentacle_plant_controller.md)** —— **并列拟态草后端**。基于当前 DLL 的 TentaclePlant/Tentacle 直接取证：锚定安装、独立多节触手、三维确定性游荡、蓄势—突刺—回收、纯值目标/效果接缝、三向安装沙盒与专项回归。
+- **[`docs/deer_controller.md`](docs/deer_controller.md)** —— **并列 Deer 后端**。直接反编译 Deer / DeerTentacle / Tentacle：粗重叠躯干、轻鹿角、四条独立多节腿、常开重力连续支撑/推进/换步、3D 外撇与 bend pole、宿主生命周期、沙盒和专项回归。
 - [`docs/known_issue_three_chunk_turn_response.md`](docs/known_issue_three_chunk_turn_response.md) —— **历史问题**（已随 RearBrace 轮消失，2026-07-30 重跑确认）：三节脊柱行进中切向时中段领先头段。保留确定性复现、指标定义与前后对照。
 - **蜘蛛 / 秃鹫 / 人形三个并列后端没有独立文档**：契约分别在 [`docs/porting_contract.md`](docs/porting_contract.md) §2.3 / §2.5·§4.1b / §4.2·§5.4，以及本文件 §5 的对应段落。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
@@ -237,6 +239,32 @@
 > 微扰、生命周期、finite/root 固定与查询峰值，哈希和配置数量只认脚本当前输出。
 > 完整依据、API、3D 取舍与已知问题见 `docs/tentacle_plant_controller.md`。
 >
+> **并列鹿后端（Deer，2026-08-01）**：当前 DLL 直接核实 `Deer` / `DeerTentacle` /
+> `Tentacle`，新增 `DeerLeg` / `DeerLocomotionController` / `DeerParams` / `DeerFactory`，
+> 不复用 `Limb` 或 `BreedParams`，共享层零改动。身体是头 + 四节大幅重叠的粗躯干 +
+> 大而轻的鹿角块；四条腿各为独立多节物理链，持久 bend pole 防止 3D 关节面翻转。
+> 重力全程恒开，腿的直立度与相反半平面展开共同形成连续支撑量，再沿身体不均匀分配升力与
+> 推进；plant-and-trail 统一评分、同对互锁、前方无脚犹豫、地形高度预看、连续休息高度和
+> COM 防倾覆均无 locomotion 模式枚举。宿主输入/生命周期为 `MoveDir` / `RunSpeed` /
+> `MoveTarget` + `Shift` / `Teleport` / `Launch`。稳定 ID 为
+> `deer/original|compact|strider`；独立入口是 `scenes/deer_sandbox.tscn`、
+> `core/deer_smoke` 与 `tools/run_deer_matrix.sh`。完整 DLL 数值、3D 差异、固定序与验证边界见
+> `docs/deer_controller.md`。2026-08-02 高站姿/头角复核纠正了把 `300px=7.5m` 初始理想链长
+> 误当运行时最大腿长的旧移植：original 的 hard 最大腿长为 `10m`，质量加权 BodyCenter
+> 行进/全休息目标为 `6/2.64m`，当前 reach 连续缩到 `3.333m`；头位于首躯干前上方，米黄色
+> 大轻鹿角代理位于头上方略向前，不再埋入粗躯干。普通无输入需 160 tick 才取得休息资格，
+> 旧远脚随后按同对互锁逐条重落到缩短工作区；专项门钉住延迟前主动释放为 0、四腿
+> release→replant 为 4/4、收腿全过程同对双悬空为 0。2026-08-02 的反向弯腿修复把
+> `BendPole` 改为随旧 frame 分量连续运输的有向曲率，并在所有约束后只给 Swinging 内段补
+> 有上限的解剖纵向主通道 + 较弱正交外撇通道；主链仍沿候选弦预展开、Attached 自然拖后不变。
+> Original/Compact/Strider 的 180° 反转无引擎与 Godot 真地形门全部通过；关闭 bend 后刚体 180°
+> frame 运输对齐由 +1 精确变 -1，摆动弓向同时确定性红灯。冻结版无引擎哈希
+> `80249FD24361B9C8`（40/400Hz 同值，微扰 `B33E51B04CAF9D99`）；Godot 专项 **18 项**
+> 覆盖三预设、双跑/时基/微扰、斜坡、台阶、墙前停住、90° 转向、三预设各自的 180° 反转、粗糙错高、休息、
+> 击飞、MoveTarget 与三生命周期，全部 GREEN，并对
+> support/pair/hesitation/release/balance/stance/antler/bend 八机制逐项验证预期红灯。冻结数值与 3D 偏离仍以
+> `docs/deer_controller.md` 和脚本当前输出为真相源。
+>
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
 > **SpineFollower 修复（RotationChunk 轮后追加，2026-07；多节脊柱爬墙 V 形折叠 bug）**：`LizardLocomotionController.ApplyLocomotionForce` 原先让链尾 `Hips` 直接追「目标点身后一节」，偏移量取 `SpineLength`（= 脊柱**全长**，头到髋各连接 RestLength 之和）——两节脊柱（Head/Hips 相邻）时这恰好退化成正确语义，三节以上（heavy/hexapod）时中间节完全没有驱动力，两条独立刚性连接在「头到髋直线距离 < 脊柱全长」的欠约束自由度上被动折成 V 形，且抓稳后重力关闭，错误姿态可稳定维持（反编译 `Lizard.cs:2277-2280` 核实根因：RW 原版只用 `bodyChunkConnections[0].distance`——**单节**长度——驱动 `bodyChunks[1]`，链尾 `bodyChunks[2]` 从不被直接追踪，只靠连接约束被动拖行）。修复：新增 `LizardLocomotionController.SpineFollower`（≙ `bodyChunks[1]`，工厂钉定为 `chunks[1]`）与 `HeadLinkLength`（单节长度）承接这个追踪力，`Hips` 恢复纯被动拖行。两节脊柱下 `SpineFollower` 与 `Hips` 是同一 chunk 且 `HeadLinkLength` 数值与原 `SpineLength` 相同——`default`/`sprinter`/`wall`/`stand`/`carrot`/`embed`/`wallside` 七条矩阵配置与 smoke 哈希逐位不变（no-op 有数学证明，非仅回归验证）；`heavy`/`hexapod`（三节脊柱）换新基线：路点数 heavy 6→8、hexapod 8→9（同 2000 tick），官方巡逻路线下头-中-髋夹角由折叠态稳定 ~53° 回升到稳态 ~177°（转弯/翻越瞬态低至 116°~151°，但数百 tick 内自行回直，不再像修复前那样滞留）。
@@ -264,8 +292,8 @@
 >
 > **双足高频蹭步修复（LegGait 轮，用户白盒实测驱动，2026-07）**：症状 = 行走（brute 最显眼）双腿高频低距离往前蹭而非正常迈步。gait 探针量化：步频锁死 5~7 tick/步（brute 每秒 8 步）、步幅仅腿长 0.4~0.7 倍、**释放时脚还在髋前**（brute +0.33）、brute 触地 3 tick 永远达不到 `LegGripDelay=4` 的 Gripping 判定（抓地占比恒 0）。根因 = 蜥蜴 `Limb` 的 oldestGrip 步态错开（「其余腿全抓稳→本腿松开」）在两腿拓扑下退化成「对脚一落地本脚即松」：触地被锁死在对腿落地延迟、与身体速度无关；释放时超前量立即高于重新迈步阈值 → 下 tick 直接再找落点——高频小碎步正反馈。RW `ScavengerLeg` 反编译核实**根本不用成对协调**：独立前瞻点循环（`IdealPos = 髋 + clamp(髋速×10, 腿长)`，锁点离 IdealPos 超腿长才松、松开即重找无摆动期门槛、FindGrip 搜索半径以 IdealPos 为心——锁点允许暂超腿长靠 ConnectToPoint 拖住）。修复 = `Limb.LookaheadTicks` opt-in（默认 0 = 蜥蜴路径逐位不变；人形工厂设 10 ≙ RW 字面量）：flag 路径换前瞻点释放 + 可及判定改以 IdealPos 为心全腿长半径（以锚点为心会拒掉全部前伸落点，waif 曾被压成 4 tick 碎步），跳过 trail/oldestGrip/extraLongStep 三段。**支撑保序 guard**（确定性内核对 RW 环境噪声的显式等价物，先例 = 随机抖动→sin 相位）：对脚踩稳才允许本脚松开 + 腿表 tick 顺序打破同 tick 双到期（先 tick 腿松开清零计数、后 tick 腿持稳半拍）——两脚 FindGrip 目标前后对称，站定时落到同一 x、之后同起同落成跳步（逐 tick 日志证实），guard 反相自锁、无周期漂移；1.75×腿长失效阀防对脚长期找不到点时本脚被拖行钉死。修后：brute **14 tick/0.82m（1.16×腿长）**触地 10 tick 抓地 50%、scavenger 9t/0.62m、waif 7t/0.64m（回到它本来正常的值）；双悬空 0%、单脚支撑期 44~58%、释放点回髋附近（−0.00~+0.06）。行为面：路点 27/27/23/34 持平，smoke 全断言绿。smoke `[CORE-HUMANOID-GAIT]` 真断言钉死步幅/周期/触地/释放位置/抓地占比/零双悬空 + brute Gripping 专项（LookaheadTicks 归零精确复现全套修前数字红灯，门有效性已验证）。六条人形基线 + `HumanoidExpectedHash` 换新；蜥蜴 20 条 + smoke ExpectedHash 逐位不变（flag 默认 0 数学保证 + 矩阵实证）。
 >
-> **内核目录分层（2026-08-01）**：`core/` 从 38 个平铺 .cs（15.3k 行）改为按**依赖方向**分层，命名空间跟随目录：`physics/`（BodyChunk/ChunkConnection/Body/ContactManifold3D/SphereTerrain）、`terrain/`（ITerrainQuery+TerrainHit/PlaneTerrainQuery）、`host/`（TickContext/MoveTargetKind = 宿主每 tick 的驱动契约）、`diagnostics/`（DeterminismHasher）、`species/<七物种>/`，枢纽 `BodyFactory` 坐在 `species/` 根（它装配 lizard+humanoid+vulture 三家，是唯一不对称点——另四物种各有 `XFactory`；按物种拆开是独立后续工作）。两处**有意的目录 ≠ 命名空间**：`core/godot/` 适配器实现 `Terrain` 接口但归宿主程序集编译，留顶层作回迁隔离区；`AssemblyInfo.cs` 只承载程序集属性。移动前后 4 条矩阵 + 4 个 smoke 输出**逐字节 diff 为空**（金标准④；命名空间是编译期概念，不碰浮点）。
-> 收获不只是"目录好看"：per-file using 现在就是依赖图，且**七个物种目录只依赖四层底座，唯一跨物种边是 Humanoid → Lizard**（人形腿复用 `Limb` 的 opt-in `LookaheadTicks` + `MoveIntentDeadzone` 常量；其余物种各自声明自己的 deadzone）。新增 smoke `[CORE-MODULARITY]` 真断言把「七者并列、互不继承」从文档承诺变成回归门：`species/<物种>/` 下出现白名单外的另一物种命名空间即 FAIL。扫描走**源码**而非 IL —— 跨物种耦合最常见的形态就是编译期常量（`MoveIntentDeadzone` 正是），它在 IL 里被内联得一干二净，元数据扫描看不见。同一断言另堵三条假绿通道：`global using`/csproj `<Using>` 隐式导入（会让 per-file using 不再等于依赖图）、物种目录 <7 个（扫描面残缺）、零文件被扫描。门有效性已验证：三类违规各自精确复现红灯，复原即绿。
+> **内核目录分层（2026-08-01）**：`core/` 从 38 个平铺 .cs（15.3k 行）改为按**依赖方向**分层，命名空间跟随目录：`physics/`（BodyChunk/ChunkConnection/Body/ContactManifold3D/SphereTerrain）、`terrain/`（ITerrainQuery+TerrainHit/PlaneTerrainQuery）、`host/`（TickContext/MoveTargetKind = 宿主每 tick 的驱动契约）、`diagnostics/`（DeterminismHasher）、`species/<八物种>/`，枢纽 `BodyFactory` 坐在 `species/` 根（它装配 lizard+humanoid+vulture 三家，是唯一不对称点——另五物种各有 `XFactory`；按物种拆开是独立后续工作）。两处**有意的目录 ≠ 命名空间**：`core/godot/` 适配器实现 `Terrain` 接口但归宿主程序集编译，留顶层作回迁隔离区；`AssemblyInfo.cs` 只承载程序集属性。移动前后 4 条矩阵 + 4 个 smoke 输出**逐字节 diff 为空**（金标准④；命名空间是编译期概念，不碰浮点）。
+> 收获不只是"目录好看"：per-file using 现在就是依赖图，且**八个物种目录只依赖四层底座，唯一跨物种边是 Humanoid → Lizard**（人形腿复用 `Limb` 的 opt-in `LookaheadTicks` + `MoveIntentDeadzone` 常量；其余物种各自声明自己的 deadzone）。smoke `[CORE-MODULARITY]` 会遍历当前全部物种目录，把「八者并列、互不继承」从文档承诺变成回归门：`species/<物种>/` 下出现白名单外的另一物种命名空间即 FAIL。扫描走**源码**而非 IL —— 跨物种耦合最常见的形态就是编译期常量（`MoveIntentDeadzone` 正是），它在 IL 里被内联得一干二净，元数据扫描看不见。同一断言另堵 `global using`/csproj `<Using>` 隐式导入与零文件扫描等假绿通道。门有效性已验证：三类违规各自精确复现红灯，复原即绿。
 >
 > **3D 朝向边界**：`BodyChunk.Rotation` 只是一根 forward 方向，不是完整旋转或局部坐标系。渲染/附着物须结合稳定 up（通常取 `SupportNormal`，必要时沿用上一帧 up）构造 Basis/Quaternion；forward 与 up 近共线时显式选备用 up，避免 roll 突跳。RW 的 2D 单方向向量可唯一确定平面旋转，移植到 3D 后必须补上这层宿主语义。
 >
@@ -319,17 +347,33 @@
 > #   人形（hwalk）：humanoid 27 路点、humanoid-brute 23、humanoid-waif 34。
 > # 当前 45 项 = 20 项 Lizard + 13 项 Centipede + 4 项 Vulture + 8 项 Humanoid，完整矩阵已 GREEN。
 >
-> # ③ 拟态草专项（独立计数，不预写未验证哈希/矩阵总数）：
+> # ③ 既有独立物种专项：Spider 16 + Cicada 9 + TentaclePlant 17 项 Godot 配置：
+> dotnet run --project core/spider_smoke
+> ./tools/run_spider_matrix.sh
+> dotnet run --project core/cicada_smoke
+> ./tools/run_cicada_matrix.sh
 > dotnet run --project core/tentacle_plant_smoke
 > ./tools/run_tentacle_plant_matrix.sh
-> # 覆盖 original/short/hunter、floor/wall/ceiling idle、hit/miss/occluded、
-> # 双跑/40vs400/1mm 微扰、Shift/Remount/ReleaseHeldTarget、finite/root 固定与查询峰值。
+> # Spider 覆盖两预设、完整步态/急转/窄墙/换面；Cicada 覆盖双预设、飞行/三面停驻/
+> # 起飞/Charge；TentaclePlant 覆盖 original/short/hunter、floor/wall/ceiling idle、
+> # hit/miss/occluded、Shift/Remount/ReleaseHeldTarget。三者均含双跑/40vs400/微扰与生命周期。
 >
-> # ④ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
+> # ④ Deer 专项（18 项 Godot 配置 + 8 个预期红灯注入）：
+> dotnet run --project core/deer_smoke
+> ./tools/run_deer_matrix.sh
+> # 覆盖 original/compact/strider、双跑/40vs400/1mm 微扰、常开重力支撑、完整多节腿步态、
+> # 同对互锁（含休息收腿全过程）、休息延迟前不误放脚、滞回、犹豫、弱支撑放脚门、
+> # COM balance、高站姿/身体净空、动态休息 reach、
+> # 头与鹿角姿态、斜坡/台阶、墙前停住、90° 转向、三预设 180° 反转的摆动腿真实弓向、粗糙错高、休息、
+> # MoveTarget 与三生命周期；固定 core hash=80249FD24361B9C8。
+> # 当前全仓五套 Godot 矩阵合计 105 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 + Deer18。
+>
+> # ⑤ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 可执行基线真相源：tools/run_matrix.sh + core/smoke/Program.cs
 > # （ExpectedHash 蜥蜴 / ExpectedVultureHash 秃鹫 / HumanoidExpectedHash 人形）+
 > # core/smoke/CentipedeSmoke.cs；拟态草另见 tools/run_tentacle_plant_matrix.sh +
-> # core/tentacle_plant_smoke/Program.cs。有意改内核时更新对应真相源，别处一律引用不复制。
+> # core/tentacle_plant_smoke/Program.cs；鹿另见 tools/run_deer_matrix.sh +
+> # core/deer_smoke/Program.cs。有意改内核时更新对应真相源，别处一律引用不复制。
 > ```
 
 ## 6. 环境

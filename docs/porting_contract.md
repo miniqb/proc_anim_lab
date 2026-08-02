@@ -14,14 +14,14 @@
    是参考实现，约 120 行——射线 + GetRestInfo 球体穿透 + 掩码/排除 API + 查询对象复用）。
 3. **宿主 tick 里装 0.025s 累加器**驱动选定物种控制器的 `Tick`，渲染读
    `LerpPos(插值分数)`（§3）；回归先跑对应的 `core/smoke` / `core/spider_smoke`
-   / `core/cicada_smoke` / `core/tentacle_plant_smoke`（秒级、无引擎），再照主项目 MotionSmoke 惯例加一条
-   headless 探针（§7）。
+   / `core/cicada_smoke` / `core/tentacle_plant_smoke` / `core/deer_smoke`
+   （秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
 
 ### 1.1 目录分层与命名空间（`core/`）
 
-内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；七个物种后端互为平级、
+内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；八个物种后端互为平级、
 只共享底座（唯一例外见下表脚注）。
 
 ```
@@ -37,9 +37,10 @@ core/
 │   ├── centipede/      ProcAnim.Core.Species.Centipede
 │   ├── cicada/         ProcAnim.Core.Species.Cicada
 │   ├── vulture/        ProcAnim.Core.Species.Vulture
-│   └── tentacle_plant/ ProcAnim.Core.Species.TentaclePlant
+│   ├── tentacle_plant/ ProcAnim.Core.Species.TentaclePlant
+│   └── deer/           ProcAnim.Core.Species.Deer
 ├── godot/              ProcAnim.Core.Terrain        引擎适配器（**归宿主程序集**，见 §1.2）
-└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/    无引擎回归工程
+└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/  无引擎回归工程
 ```
 
 两处**有意的目录 ≠ 命名空间**：`godot/` 的适配器实现 `Terrain` 的接口却不属于内核程序集，
@@ -86,6 +87,9 @@ core/
 | `species/tentacle_plant/TentacleChain.cs` | 独立多节触手原语：段长/柔性解算、局部导引折线、静态地形避让与回退 | Tentacle / TentacleChunk / TentacleProps |
 | `species/tentacle_plant/TentaclePlantController.cs` | 锚定式拟态草控制器：确定性三维游荡、目标充能、Windup、突刺、抓取与回收 | TentaclePlant.Update |
 | `species/tentacle_plant/TentaclePlantParams.cs` / `species/tentacle_plant/TentaclePlantFactory.cs` | 拟态草出生参数、安装框架、目标/效果纯值类型，以及 original/short/hunter 三个稳定预设 | TentaclePlant 构造与种内扩展 |
+| `species/deer/DeerLeg.cs` | 独立多节腿段链：出生初始理想长、随 RestAmount 变化的当前 reach、固定次数距离约束、地形抓点、可及极限拖身、持久有向 bend pole 与摆动内段纵向/正交双通道形态响应 | DeerTentacle / Tentacle |
+| `species/deer/DeerLocomotionController.cs` | 鹿专属控制器：恒重力支撑、非均匀推进、换步互锁、犹豫、连续体高与 COM balance | Deer.Act / Deer.Update |
+| `species/deer/DeerParams.cs` / `species/deer/DeerFactory.cs` | 鹿独立参数表与头、重叠躯干、轻鹿角、四条多节腿装配；original/compact/strider 三个稳定预设 | Deer 构造 + DeerTentacle 构造 |
 | `species/vulture/VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
 | `species/vulture/VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
 | `species/vulture/VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
@@ -96,6 +100,7 @@ core/
 | `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK 与生命周期无引擎回归 | — |
 | `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
 | `tentacle_plant_smoke/` | 拟态草独立无引擎回归（装配、三面游荡、攻击时序、目标效果、生命周期与确定性） | — |
+| `deer_smoke/` | 鹿独立无引擎回归（装配、恒重力支撑、多节腿步态、地形、生命周期、确定性与机制消融） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -345,6 +350,44 @@ TentaclePlantController plant =
   插值历史；`Remount` 是地形不随体移动的重新安装，清攻击/抓取/导引并从新根重建；
   `ReleaseHeldTarget` 显式释放并通过下一次 `Tick` 的 `TargetEffect.Released` 通知宿主。
 
+### 2.7 鹿装配契约（DeerLocomotionController）
+
+```csharp
+DeerParams p = DeerFactory.ByStableId("deer/original");
+DeerLocomotionController deer =
+    DeerFactory.CreateController(spawnFloorPoint, initialForward, p);
+```
+
+- Deer 是新的并列后端，不继承或调用 `LizardLocomotionController`，也不复用 `Limb`、
+  `BreedParams` 或 `BodyFactory`。它只共享 `Body` / `BodyChunk` / `ChunkConnection`、
+  `ITerrainQuery`、`TickContext` 和确定性哈希底座；既有共享积分与其它物种代码不需要改动。
+- `DeerFactory` 提供 `Original/Compact/Strider/AllPresets/TryByStableId/ByStableId/CreateController`；
+  稳定 ID 为 `deer/original|compact|strider`，未知 ID 快速失败，创建时深拷贝并冻结参数快照。
+- 身体拓扑是头 + 大幅重叠的有序躯干链 + 大而轻的鹿角 chunk。头与鹿角互设
+  `RotationChunk`；躯干逐节钉定朝向参照。四条腿锚在靠前躯干节上，每条都是独立的
+  `DeerLegSegmentState[]` 多节物理链，不把蜥蜴单粒子腿改造成通用段链。
+- 头相对首躯干的 3D 目标轴为 `normalize(0.85Up+0.60Forward)`；鹿角物理代理的目标中心为
+  `Head + normalize(Up+0.18Forward)*antlerLink`，因此在头上方略向前，而不是躯干内。
+  original 的 `7.5m` 是出生初始理想链长，hard 最大腿长为 `10m`；当前 reach 按
+  `MaxLength*Lerp(1/3,1,(1-RestAmount)^5)` 连续变化。`6→2.64m` BodyCenter 目标是明确的
+  3D 映射，因为原作 `preferredHeight` 只直接驱动动态腿长，没有同名的身体高度伺服。
+- `DeerLegSlotParams` 逐腿冻结前后外撇和左右外撇；控制器以身体 forward、真实支撑法线 up
+  及其叉乘 right 构造 3D 工作区。控制器的持久 support frame 在换面时平行运输；
+  `DeerLeg` 在当前真实 Root→Tip 法平面内分别构造正交的前后与左右解剖基；旧 pole 在上一
+  frame 的 `Forward/Up/Right` 分量会重建到新 frame，再以踩实/摆动 `0.12/0.22 rad/tick`
+  的确定性上限沿有向圆转向。主链仍沿候选弦预展开以保持台阶可达性；所有约束结束后，仅
+  Swinging 内段获得有上限的 longitudinal 主通道和较弱正交外撇通道速度修正，Attached 不介入。
+- `Body.GravityScale` 始终为 1。确认抓地腿按直立度和左右展开算连续支撑，再把升力与推进
+  以不同权重沿头/躯干分布；失抓不会切换成蜥蜴的关重力路线。四腿统一评分换步、同对互锁、
+  前方无抓点犹豫、候选滞回、超距/遮挡释放、可及极限拖身、连续地板预看与休息降高都在
+  同一套连续机制里完成，没有攻击或 locomotion 模式枚举。
+- `AtMoveTarget` 可立即取得休息资格；普通无输入必须超过 `RestDelayTicks`（正式预设为
+  160/160/200 tick）。取得资格后，远于当前 reach 的旧脚只在四脚确认支撑时逐条重落，
+  不能把动态缩限直接当作四条腿的同 tick 物理失效。
+- 宿主接口与并列移动后端同名同义：`MoveDir` / `RunSpeed` / nullable `MoveTarget`，以及
+  `AtMoveTarget`、`Shift` / `Teleport` / `Launch`。完整 DLL 取证、原作数值、3D 偏离理由、
+  观测面和验证边界见 [`deer_controller.md`](deer_controller.md)。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -377,6 +420,12 @@ TentaclePlantController plant =
 - `TentaclePlantController.Tick` 内部序：`Body.Tick` → `TentacleChain` 路径/物理 →
   感知与攻击标量 → 注入下一 tick 形态力 → `Root`/`Hand`/tip 耦合 → 抓持回收效果。
   宿主不得拆开此序，也不得把目标效果提前到同 tick 反向改写段链。
+- `DeerLocomotionController.Tick` 内部序：直喂目标导出 → 解析休息资格并更新连续体高与
+  各腿当前 reach → 持久 frame 与当前/前方地板预看 → 旧抓点受力前复验 → 从本 tick 合法抓点计算支撑并注入
+  不均匀升力/推进 → COM balance、防折与躯干姿态 → `Body.Tick`（重力恒开）→
+  四条 `DeerLeg` 段链 → 仅在本 tick 已确认支点物理失效时的同对紧急落脚 → 统一评分换步与
+  同对互锁 → 单次发布下一 tick 支撑。宿主不得单独 tick 腿链，也不得在支撑发布和
+  下一 tick 受力之间改写抓点；这样会把支撑低通推进两次或让失效抓点多承力一拍。
 - `VultureFlightController.Tick` 内部序（≙ RW `Vulture.Act`）：解析直喂目标与到达迟滞 →
   拍翅相位/振幅 → 逐翅模式决策（坠落自救 → 降落 → 起飞 → 逐翅自主）→ 身体阻尼/俯仰配平 →
   悬停或巡航推进（或栖息爬行）→ **逐翅升力注入** → 降落制动/起飞助推 → 头部伺服 →
@@ -386,7 +435,7 @@ TentaclePlantController plant =
 ### 3.2 渲染插值
 
 渲染帧读 `chunk.LerpPos(t)` / `limb.LerpPos(t)`；拟态草另读 `Root`、`Hand` 和
-`Segments` 的插值位置。`t` = 物理插值分数 ∈ [0,1)。
+`Segments`，鹿另读每条 `DeerLeg.Segments[i].LerpPos(t)`。`t` = 物理插值分数 ∈ [0,1)。
 Godot 宿主：`t = (float)Engine.GetPhysicsInterpolationFraction()`（沙盒即此）。
 渲染永远比物理「晚」不到一个 tick；**逻辑一律不读渲染帧率**。
 
@@ -430,6 +479,12 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 蜈蚣暴露同名 `Shift`/`Teleport`/`Launch`：`Shift` 连同 `SurfaceTrail`、逐节目标与脚的
 当前/预定抓点整体平移；`Teleport` 另外作废轨迹、抓握、支撑和 `MoveTarget`；`Launch`
 统一叠加全身体速度并交还重力。两类控制器可以共用宿主生命周期事件，但状态不可互换。
+
+鹿同样暴露 `Shift`/`Teleport`/`Launch`：`Shift` 平移 body、所有腿段、当前/候选抓点、
+地板缓存、插值历史和 `MoveTarget`，保留速度、冷却、支撑与步态相位；`Teleport` 另外让四腿
+全松、清支撑/地板/直喂目标记忆，并把 ride height 重置到当前期望高度；`Launch` 给 body 和
+腿段统一冲量、保留 `MoveTarget` 和连续高度，只释放抓点并清支撑/地板历史。三者都不切换
+重力——Deer 的 `GravityScale` 全程仍为 1。
 
 拟态草不用移动生物的 `Teleport/Launch`：`Shift` 只用于世界 rebase 并保留攻击/抓取连续性；
 地形不随体移动的换洞必须调用 `Remount(newMount)`，它会清目标、抓取、攻击和旧导引；
@@ -515,6 +570,24 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   `VultureWing.Mode`/`Segments[i].LerpPos(t)`/`GripPos`/`GripNormal`/`Attached`/`Gripping`。
   全部只读；翅膀段是渲染与抓附的唯一真相，不要另建一套骨架去反推。
 
+### 4.1c 鹿（DeerLocomotionController）的输入与观测差异
+
+- 三旋钮仍是 `MoveDir` / `RunSpeed` / nullable `MoveTarget`，到点半径字段名为
+  `MoveTargetArriveRadius`。方向会投影到当前可站立支撑面；墙面达不到坡角门时只作为阻挡，
+  不会像 Lizard 那样成为抓脚面。`MoveTarget` 必须是宿主射线/导航投影得到的
+  **邻近可达表面点**，不是已抬到鹿身中心高度的点；`CurrentRideHeight` 是沿重力反方向
+  定义的垂直高度，内核会沿 `WorldUp` 抬高后再做 3D 到达判定，最后才把运动投影到支撑切面。
+- 鹿没有 `ApplyGravity` 状态：`Body.GravityScale` 恒为 1。宿主判断站姿应读
+  `PlantedLegCount`、`RawSupport` / `TotalSupport`、`SupportNormal` 和 `CurrentRideHeight`，
+  不能把“抓到任意脚”等同于关闭重力。
+- 调试/AI 可读 `Hesitation`、`DriveScale`、`RestAmount`、`IdleTicks`、`CurrentLegReachScale`、
+  `HasCurrentFloor` / `HasAheadFloor`、
+  `BodyDragImpulse`、`MaxPairAirborneRun`；3D 倾覆边界读质量加权 `BalanceOffset`、真实足端凸包
+  `SupportMargin` / `SupportHalfWidth` / `SupportHalfLength` 和 `LeanDegrees`。这些都是只读连续量，
+  不构成休息、行进或跌倒模式枚举。
+- 每条 `DeerLeg` 公开段链、当前/候选抓点、抓地与冷却、支撑贡献、换步/落地序号、可及比、
+  `BendPole` 和约束误差，供渲染与诊断使用；宿主不得写它们来伪造支撑。
+
 ### 4.2 人形（HumanoidLocomotionController）的输入面差异
 
 三旋钮语义与蜥蜴一致（`MoveDir`/`RunSpeed`/可选 `MoveTarget`，同一 `MoveIntentDeadzone`），
@@ -574,6 +647,9 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 | `TentaclePlantController.Root` / `.Hand` / `.Segments[i]` 的插值位置 | 拟态草根、根粗梢细段链和末端手；`GuidePoints` 作为 0–2 个折点补在根与当前目标之间，`BacktrackFrom` 索引 `Segments` |
 | `TentaclePlantController.Phase` / `.CanGrab` | 拟态草按 Wandering/Tracking/Windup/Striking/Recovering/Holding 配色与攻击窗提示 |
 | `VultureWing.Segments[i].LerpPos(t)` / `.Mode` / `.Attached` | 秃鹫翅膀段链（渲染与抓附的唯一真相）；其余观测量见 §4.1b |
+| `DeerLocomotionController.Head` / `.Trunk[i]` / `.Antler` | 鹿的头、粗重叠躯干链和大轻鹿角物理代理；鹿角目标在头上方略向前，渲染层不可把它当躯干球；半径直接取 chunk 数据 |
+| `DeerLeg.Segments[i].LerpPos(t)` / `.BendPole` | 鹿多节腿的正式几何；从锚点依次连每段，不用单粒子腿或渲染层 IK 代替 |
+| `DeerLeg.AttachedAtTip` / `.Gripping` / `.CandidatePoint` / `.SupportContribution` | 鹿足端踩住、确认、候选与连续支撑调试状态；沙盒据此区分落脚和摆动 |
 
 ### 5.2 AI / 游戏逻辑可读
 
@@ -581,6 +657,8 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 （支撑面法线：平地≈上、爬墙≈墙法线——可判「正在爬墙」）、`StallTicks`（顶死程度）、
 `AtMoveTarget`、`LastMoveTarget` / `LastMoveTargetKind`。蜘蛛另可逐腿读取
 `SpiderLeg.GripNormal` / `HasGrip` / `BendPole` / `KneePos`；弯腿姿态是正式只读输出。
+鹿的同名移动观测外，另按 §4.1c 读取连续支撑、高度、犹豫、足端凸包 balance 与逐腿段链状态；
+鹿没有 `ApplyGravity`，也不把 `DeerLeg` 强转成 `Limb`。
 蜥蜴专属的 `StraightenOutNeeded` / `SpineCornerStuckTicks` /
 `MaxSpineCornerStuckTicks`（姿态恢复需求、局部髋部卡角与本次恢复生命周期峰值；
 Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
@@ -659,13 +737,15 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
    `TerrainSqueeze` 时可缩小，但不得低于 0.025m。运动扫掠延长、Body 的重力/旧法线探针、
    `LizardLocomotionController.UpdateFooting` 的髋部近地宽限探针、`SphereTerrain.Resolve` 与 `SpherePenetration`
    必须统一使用它；正式半径、约束和渲染不变。
-5. **只打「可站立的静态地形」**：不含生物自身、道具、门等动态物。
-   - 本仓库：碰撞掩码层 1（白盒全在层 1）。
-   - 主项目：掩码 = `PhysicsCollisionLayers.ProceduralContactGround`（层 20，1<<19；
-     由 RoomBuilder/LadderBuilder 附着于可行走静态几何）+ **排除宿主自身 RID**
-     + `CollideWithAreas=false`——照抄其 `ContactPlanner` 的既有规范
-     （规格 §9.2：被动只读、只在物理 tick 内）。参考实现已内建对应 API：
-     `CollisionMask` 属性 + `SetExclusions(rids)`。
+5. **只打「与程序化身体发生接触的静态地形」**：不含生物自身、道具、门等动态物，
+   但不能在适配器层预先只留“可站立面”。墙、过陡斜坡和顶面仍须能被射线/MTD 命中，
+   供遮挡、身体/段链碰撞和抓点失效使用；“能否产生支撑”由各物种在命中后按法线判定。
+   - 本仓库：碰撞掩码层 1（白盒的地板、墙、台阶和顶面都在层 1）。
+   - 主项目：基准掩码为 `PhysicsCollisionLayers.ProceduralContactGround`（层 20，1<<19）
+     + **排除宿主自身 RID** + `CollideWithAreas=false`——沿用其 `ContactPlanner`
+     的被动只读/物理 tick 规范。接线时必须确认该层覆盖目标物种需要碰撞的所有
+     静态阻挡；若墙/台阶在另一静态层，就把它并入 `CollisionMask`，不得为 Deer
+     只查导航可站立面。参考实现已内建 `CollisionMask` 属性 + `SetExclusions(rids)`。
    - 查询参数对象**复用实例**（参考实现即此；射线参数/球形参数/球 shape 各一份常驻。
      `IntersectRay/GetRestInfo` 返回的 Dictionary 是引擎 API 固有分配，无非分配变体）。
 6. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。
@@ -738,19 +818,36 @@ dotnet run --project core/cicada_smoke
 #    TargetEffect、Shift/Remount/释放目标、同 seed 双跑/不同 seed 与 8/16 段查询增长。
 dotnet run --project core/tentacle_plant_smoke
 
-# ⑤ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
+# ⑤ 鹿无引擎冒烟：三预设拓扑、恒重力支撑与不均匀力、四条多节腿完整步态、
+#    滞回/超距/遮挡释放/可及极限拖身、同对互锁（含休息收腿全过程）、
+#    RestDelay 前不主动放脚、每次收腿 release→同腿 replant 逐事件闭合、犹豫、体高、COM balance、
+#    斜坡/台阶、三预设 180° 换向真实段链弓向、精确 frame 运输消融、
+#    MoveTarget、Shift/Teleport/Launch、
+#    双跑/40vs400Hz/微扰/状态哈希覆盖，并逐项关闭
+#    support/pair/hesitation/release/balance/stance/antler/bend 验证门自身会红。
+dotnet run --project core/deer_smoke
+
+# ⑥ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
 #    小/大窄墙双侧抱持、墙—墙 L 角、墙→天花板，以及小/大型三向急转恢复。
 ./tools/run_spider_matrix.sh
 
-# ⑥ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
+# ⑦ Cicada Godot 矩阵：双预设、40/400Hz、微扰、三面停驻、起飞、Charge 与撞墙。
+./tools/run_cicada_matrix.sh
+
+# ⑧ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
 #    双跑/40vs400/1mm 微扰与三预设；哈希由脚本当前基线判定。
 ./tools/run_tentacle_plant_matrix.sh
 
-# ⑦ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ⑨ 鹿 Godot 矩阵：三预设、双跑/40vs400/微扰、斜坡、台阶、墙前停住、90° 转向、
+#    三预设各自的 180° 反转、
+#    摆动腿真实弓向、粗糙错高、休息、击飞、MoveTarget 与生命周期；退出码聚合八个预期红灯注入。
+./tools/run_deer_matrix.sh
+
+# ⑩ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ⑧ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑪ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
@@ -807,6 +904,7 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 - Spider：`tools/run_spider_matrix.sh` 与 `core/spider_smoke/Program.cs`；
 - Cicada：`tools/run_cicada_matrix.sh` 与 `core/cicada_smoke/Program.cs`；
 - TentaclePlant：`tools/run_tentacle_plant_matrix.sh` 与 `core/tentacle_plant_smoke/Program.cs`；
+- Deer：`tools/run_deer_matrix.sh` 与 `core/deer_smoke/Program.cs`；
 - Humanoid：`tools/run_matrix.sh`（HASH_HUMANOID_* 六条）与 `core/smoke/Program.cs`
   的 `HumanoidExpectedHash`。
 
@@ -818,7 +916,7 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 主项目无单元测试工程、`tests/` 为空，惯例是 **headless 场景冒烟**（`MotionSmoke` 模式：
 `--headless --scene …` + PASS 标记；其 ClockProbe 已验证过「两次构建 40 步轨迹逐 float 一致」，
 确定性标准同构）。建议：对应物种的 `core/*_smoke` 原样带走（拟态草为
-`core/tentacle_plant_smoke`，纯 .NET、秒级），另加一条
+`core/tentacle_plant_smoke`，鹿为 `core/deer_smoke`，均为纯 .NET 秒级回归），另加一条
 `tech_validation/m10_motion/` 风格的场景探针跑真实地形（等价本仓库 `--determinism` 模式）。
 
 ## 8. 迁移路线与集成姿态（主项目对接面调研结论，2026-07）
@@ -850,11 +948,16 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 
 **姿态 1：规格兼容（默认推荐）——内核当「可替换视觉后端」，身体拴在权威根上。**
 `CharacterBody3D` 照旧走导航/`MoveAndSlide`；内核身体活在世界系、脚踩真实地形，
-但推进意图指向宿主根：`MoveDir = (hostPos + hostVel·k − Head.Pos)` 的方向、
+但推进意图指向宿主根：`MoveDir = (hostPos + hostVel·k − bodyAnchor)` 的方向、
 `RunSpeed` 按距离饱和——身体像 RW 生物追路径点一样**追着权威根拖行**，
-腿/重力开关/爬墙全部照常涌现。追不上/瞬移/跳跃击飞的三档处置见 **§4.1 tether 配方**
+其中 `bodyAnchor` 由所选后端定义（Lizard 用 `Head.Pos`，Deer 用 `BodyCenter`）。各后端自己的
+支撑、重力和地形响应照常涌现；这不意味着 Deer 具有重力开关或爬墙语义。
+追不上/瞬移/跳跃击飞的三档处置见 **§4.1 tether 配方**
 （`Shift`/`Launch` 即为此姿态补的接线 API）。视觉层不建碰撞体（内核本就没有
-collider，天然合规）、不动根（内核只算自己的 chunk 位置）。`MonsterMotionSnapshot` 映射：
+collider，天然合规）、不动根（内核只算自己的 chunk 位置）。
+
+下表先给现有 **Lizard 分支**的 `MonsterMotionSnapshot` 映射；不可把其类名、重力开关或
+`BreedParams` 照抄到 Deer：
 
 | Snapshot 字段 | → 内核 |
 |---|---|
@@ -867,13 +970,29 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 | `VariantSeed` | 出生时微调 `BreedParams`（纯装配期，运行时仍零随机） |
 | `Mode`/`Alertness`/`Health01` | 映射到品种/`RunSpeed` 上限等出生或输入参数 |
 
+**Deer 分支**使用同一 tether 三档，但映射必须按鹿的后端语义实现：
+
+- 常规追踪以 `DeerLocomotionController.BodyCenter` 为 `bodyAnchor`，写
+  `MoveDir = normalize(hostPos + hostVel·k - deer.BodyCenter)` 和饱和后的 `RunSpeed`。
+  若宿主改用 `MoveTarget`，必须先把根/路径样本投影为邻近可达的**地形表面点**，
+  不能直接喂权威根的身体中心高度（§4.1c）。
+- `Grounded=false` 不得改写不存在的 `ApplyGravity`；Deer 的 `GravityScale` 恒为 1，
+  普通走空由抓点失效后的常开重力恢复。主动跳跃/击飞仍必须调
+  `deer.Launch(impulse)`，它会释放腿但不切换重力模式。
+- 根瞬移/复位/换房调 `deer.Teleport(rootDelta)`；只有地形连同世界一起 rebase
+  才调 `deer.Shift(delta)`。`VariantSeed` 若要表达种内差异，只能在出生时微调深拷贝的
+  `DeerParams`，不读或构造 `BreedParams`。
+- 站姿/恢复观测读 `PlantedLegCount`、`TotalSupport`、`SupportNormal`、
+  `CurrentRideHeight` 和 `BalanceOffset`，不从“重力开关”反推 Deer 状态。
+
 > 状态如实说明：本仓库交付到「API 与配方齐备」；tether 循环本体（读根、算三档、写
 > 输入）活在主项目的 snapshot 映射层里，**闭环要在主仓接线后才算验证完成**——
 > 在那之前 M5 的准确状态是「内核抽离完成 + 集成契约就位」，不是「默认集成姿态已闭环」。
 
 **姿态 2：RW 忠实——内核当位置权威，根跟随内核。**
-`MoveDir/RunSpeed` 直接来自 AI，宿主根每帧贴到 `Hips.Pos`（或质心）。
-运动手感 100% 是内核的（爬墙/翻越/摔落全真），但违反规格 §7 现行边界——
+`MoveDir/RunSpeed` 直接来自 AI，宿主根每帧贴到所选后端的权威点：Lizard 为
+`Hips.Pos`（或质心），Deer 为 `BodyCenter`。运动手感 100% 由所选内核决定（Deer 仍是地面
+支撑/跌落，不会因此获得爬墙），但违反规格 §7 现行边界——
 适合作为**新怪物原型**走规格修订（M10.4+ 的决策），不适合塞进现有怪物。
 
 > 建议路径：姿态 1 先落地验证（不动任何现有边界），姿态 2 留给需要「真爬墙怪」的品种。

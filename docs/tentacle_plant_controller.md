@@ -309,7 +309,8 @@ Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收�
 
 - 回迁到 `random-room-runtime` 时，gameplay 根/安装点仍是权威；内核只模拟根外触手，
   不使用移动生物的 tether 配方，也不移动 `CharacterBody3D`。
-- `ITerrainQuery` 仍只查询可站立的静态地形。猎物、道具、伤害、逃脱、死亡和吞入由宿主根据
+- `ITerrainQuery` 查询与段链碰撞、绕障和遮挡相关的静态地形，包含墙与顶面；“可支撑/可安装”
+  由物种和宿主按命中法线判定。猎物、道具、伤害、逃脱、死亡和吞入由宿主根据
   `TentaclePlantTargetEffect` 处理。
 - 当前地形绕障是固定预算的局部导引，不是 3D 导航或全局最短路；复杂凹洞、活动门和会移动的
   遮挡物不在首版保证内。
