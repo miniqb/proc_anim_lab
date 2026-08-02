@@ -590,7 +590,10 @@ public partial class DeerSandboxWorld : Node3D
             _launchTick = _tick;
             _launchContract = CheckLaunchDelta(velocities, impulse)
                 && AllLegsReleased()
-                && _deer.Body.GravityScale == 1f;
+                && _deer.Body.GravityScale == 1f
+                && _deer.IdleTicks == 0
+                && _deer.RestAmount == 0f
+                && Mathf.IsEqualApprox(_deer.CurrentLegReachScale, 1f);
             GD.Print($"[DEER-SCENARIO] launch tick={_tick} contract={_launchContract}");
         }
     }
@@ -644,7 +647,10 @@ public partial class DeerSandboxWorld : Node3D
                 && _deer.MoveTarget is null
                 && !_deer.AtMoveTarget
                 && AllLegsReleased()
-                && _deer.TotalSupport == 0f;
+                && _deer.TotalSupport == 0f
+                && _deer.IdleTicks == 0
+                && _deer.RestAmount == 0f
+                && Mathf.IsEqualApprox(_deer.CurrentLegReachScale, 1f);
             GD.Print($"[DEER-SCENARIO] teleport tick={_tick} contract={_teleportContract}");
         }
 
@@ -667,7 +673,11 @@ public partial class DeerSandboxWorld : Node3D
             _deer.Launch(impulse);
             _launchCalled = true;
             _launchTick = _tick;
-            _launchContract = CheckLaunchDelta(velocities, impulse) && AllLegsReleased();
+            _launchContract = CheckLaunchDelta(velocities, impulse)
+                && AllLegsReleased()
+                && _deer.IdleTicks == 0
+                && _deer.RestAmount == 0f
+                && Mathf.IsEqualApprox(_deer.CurrentLegReachScale, 1f);
             _lifecycleTargetRetained = targetBefore is not null
                 && _deer.MoveTarget == targetBefore;
             GD.Print($"[DEER-SCENARIO] lifecycle-launch tick={_tick} " +

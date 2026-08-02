@@ -264,6 +264,11 @@
 > 击飞、MoveTarget 与三生命周期，全部 GREEN，并对
 > support/pair/hesitation/release/balance/stance/antler/bend 八机制逐项验证预期红灯。冻结数值与 3D 偏离仍以
 > `docs/deer_controller.md` 和脚本当前输出为真相源。
+> 2026-08-02 评审后续把支撑凸包三组临时数组改为出生时定容、每 tick 复用，稳态 256 tick
+> 托管分配为 0B；清除四个无消费者快照字段与两处不可达换步条件。Teleport/Launch 现会从
+> 深休息原子唤醒（RestAmount/IdleTicks 清零、reach 恢复 1、目标站高回活动值；Launch 保留
+> CurrentRideHeight 与 MoveTarget），无输入夹具两者均在 37 tick 内恢复。launch/lifecycle
+> Godot 哈希因此按实跑更新为 `2F0C8FA0609676B6` / `90C2A98FA2211208`，其余 16 项不变。
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
@@ -363,7 +368,7 @@
 > ./tools/run_deer_matrix.sh
 > # 覆盖 original/compact/strider、双跑/40vs400/1mm 微扰、常开重力支撑、完整多节腿步态、
 > # 同对互锁（含休息收腿全过程）、休息延迟前不误放脚、滞回、犹豫、弱支撑放脚门、
-> # COM balance、高站姿/身体净空、动态休息 reach、
+> # COM balance、高站姿/身体净空、动态休息 reach、深休息后 Teleport/Launch 唤醒恢复、稳态零分配、
 > # 头与鹿角姿态、斜坡/台阶、墙前停住、90° 转向、三预设 180° 反转的摆动腿真实弓向、粗糙错高、休息、
 > # MoveTarget 与三生命周期；固定 core hash=80249FD24361B9C8。
 > # 当前全仓五套 Godot 矩阵合计 105 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 + Deer18。

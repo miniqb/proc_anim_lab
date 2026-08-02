@@ -244,7 +244,10 @@ public sealed class DeerParams
     /// <summary>满输入、满抓地与满支撑时的前向速度注入（米/tick）。</summary>
     public float BaseDrive = 0.024f;
 
-    /// <summary>身体沿支撑面推进的速度上限（米/tick）。</summary>
+    /// <summary>
+    /// 推进注入的 headroom 阈值（米/tick）：已有 world-up 速度不参与度量，但 clamp 会缩放
+    /// 整个 drive direction。支撑/高度伺服、重力和碰撞独立施加；它不是最终三维速度硬上限。
+    /// </summary>
     public float MaxMoveSpeed = 0.095f;
 
     /// <summary>推进强度中来自踩实腿数量的混合权重。</summary>

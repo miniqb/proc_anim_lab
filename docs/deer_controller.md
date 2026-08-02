@@ -374,8 +374,8 @@ PhysicsServer、导航或随机数。
 
 | 稳定 ID | 身体与腿的实际形态 | 主要运动差异 |
 |---|---|---|
-| `deer/original` | 按 `1px=0.025m` 取 DLL 头 `r=0.5625/m=3`；四躯干半径 `0.830563/0.745775/0.614812/0.452582m`、质量 `7.502312/6.552679/5.085896/3.268919`；连接长 `0.95/0.6644504/0.59662/0.4918496m`；以 dominance=0.5 的 MMF 鹿角取 `r=1.125/m=0.5`、头角表面重叠 `0.25m`。四腿各 6 段，初始理想长 `7.5m`、hard 最大长 `10m`，段/足半径 `0.125m`；腿段质量 `0.10` 是 3D 新增值。 | 四腿分别使用前后外撇 `(+0.68,+0.58,-0.55,-0.71)` 与左右外撇 `0.74/0.82/0.77/0.69`；BodyCenter 行进→全休息目标 `6→2.64m`，当前 reach `10→3.333m`，地板探测 `10.5m`，普通无输入 160 tick 后才取得休息资格。头轴为 `normalize(0.85Up+0.60Forward)`，鹿角轴为 `normalize(Up+0.18Forward)`。支撑注速上限 `0.055m/tick`、基础推进 `0.024m/tick`、速度上限 `0.095m/tick`；腿追逐/响应 `0.32/0.56`、冷却/确认 `15/3 tick`。 |
-| `deer/compact` | 保持四躯干和 4×6 段拓扑；Original 身体线性尺寸乘 `0.72`、身体质量乘 `0.55`、腿长乘 `0.68`：初始理想长 `5.1m`、hard 最大长 `6.8m`；腿/足半径乘 `0.78`、腿段质量乘 `0.62`。 | BodyCenter `4.32→1.9008m`，当前 reach `6.8→2.2667m`，地板探测 `7.14m`，休息资格延迟 `160 tick`；腿追逐/响应 `0.44/0.72`、冷却/确认 `10/2 tick`、候选改善门 `0.10`；支撑注速上限 `0.060`、支撑低通 `0.46`、基础推进 `0.030`、速度上限 `0.115m/tick`。它是窄地形上的快速完整步态，不对应原作随机个体。 |
+| `deer/original` | 按 `1px=0.025m` 取 DLL 头 `r=0.5625/m=3`；四躯干半径 `0.830563/0.745775/0.614812/0.452582m`、质量 `7.502312/6.552679/5.085896/3.268919`；连接长 `0.95/0.6644504/0.59662/0.4918496m`；以 dominance=0.5 的 MMF 鹿角取 `r=1.125/m=0.5`、头角表面重叠 `0.25m`。四腿各 6 段，初始理想长 `7.5m`、hard 最大长 `10m`，段/足半径 `0.125m`；腿段质量 `0.10` 是 3D 新增值。 | 四腿分别使用前后外撇 `(+0.68,+0.58,-0.55,-0.71)` 与左右外撇 `0.74/0.82/0.77/0.69`；BodyCenter 行进→全休息目标 `6→2.64m`，当前 reach `10→3.333m`，地板探测 `10.5m`，普通无输入 160 tick 后才取得休息资格。头轴为 `normalize(0.85Up+0.60Forward)`，鹿角轴为 `normalize(Up+0.18Forward)`。支撑注速上限 `0.055m/tick`、基础推进 `0.024m/tick`、推进 headroom 阈值 `0.095m/tick`；腿追逐/响应 `0.32/0.56`、冷却/确认 `15/3 tick`。 |
+| `deer/compact` | 保持四躯干和 4×6 段拓扑；Original 身体线性尺寸乘 `0.72`、身体质量乘 `0.55`、腿长乘 `0.68`：初始理想长 `5.1m`、hard 最大长 `6.8m`；腿/足半径乘 `0.78`、腿段质量乘 `0.62`。 | BodyCenter `4.32→1.9008m`，当前 reach `6.8→2.2667m`，地板探测 `7.14m`，休息资格延迟 `160 tick`；腿追逐/响应 `0.44/0.72`、冷却/确认 `10/2 tick`、候选改善门 `0.10`；支撑注速上限 `0.060`、支撑低通 `0.46`、基础推进 `0.030`、推进 headroom 阈值 `0.115m/tick`。它是窄地形上的快速完整步态，不对应原作随机个体。 |
 | `deer/strider` | 保持四躯干拓扑；Original 身体线性尺寸乘 `1.05`、质量乘 `1.10`，腿长乘 `1.25`：初始理想长 `9.375m`、hard 最大长 `12.5m`；腿/足半径乘 `0.90`、腿段质量乘 `0.85`；每腿由 6 段增为 8 段。 | BodyCenter `8.316→3.659m`，当前 reach `12.5→4.1667m`，地板探测 `13.125m`，休息资格延迟 `200 tick`；腿追逐/响应 `0.27/0.48`、冷却/确认 `18/4 tick`、候选改善门 `0.15`；支撑注速上限 `0.060`、支撑低通 `0.34`、基础推进 `0.021`，前探加长并提高 balance recovery。它用长腿和慢支撑转移表达审慎跨越，不只是全身统一放大。 |
 
 三份参数均由工厂/拓扑 smoke 逐项装配验证；运动成绩与哈希见 §11.2，仍以脚本当前成功输出
@@ -531,8 +531,11 @@ probe 暂时打空时保持有限历史并让犹豫增长，但历史必须有�
 验证的贡献进入 `TotalSupport`。
 
 推进先投影到支撑切平面，再由抓地腿比例与总支撑共同缩放，最后按躯干 `DriveWeight` 归一化
-分配并受总速度上限约束。前段权重大于尾段，保留原作前重后轻；失去支撑时仍可有很小的惯性，
-但不能凭 MoveDir 在空中持续加速。
+分配。每个 chunk 的推进 headroom 为
+`MaxMoveSpeed - dot(reject(Vel, worldUp), effectiveMove)`：已有 world-up 速度不参与度量，
+但 clamp 会同时缩放 drive 的水平与沿坡竖直分量；支撑/高度伺服、重力和碰撞则独立施加。
+因此它不是最终三维速度硬上限。前段权重大于尾段，保留原作前重后轻；失去支撑时仍可有
+很小的惯性，但不能凭 MoveDir 在空中持续加速。
 
 ### 8.2 统一换步调度与同对守卫
 
@@ -611,7 +614,7 @@ void Launch(Vector3 velocityPerTick)
 
 - `MoveDir` 是 3D 移动意图方向，`RunSpeed` 是强度；控制器只使用它在合法支撑平面的投影。
 - `MoveTarget` 是宿主射线/导航投影后直喂的**邻近可达地形表面点**，不是内核寻路请求，
-  也不是已抬到鹿身中心高度的点。存在目标时，控制器沿当前支撑法线把它抬高
+  也不是已抬到鹿身中心高度的点。存在目标时，控制器沿重力反方向 `WorldUp` 把它抬高
   `CurrentRideHeight`，再从 `BodyCenter` 导出临时 MoveDir 并做 3D 到达判定；进入
   `MoveTargetArriveRadius` 后报告 `AtMoveTarget=true` 并停止推进。换点、取消或 Teleport
   必须重算/清除到达态，不能保留上一目标导出的方向。
@@ -622,16 +625,25 @@ void Launch(Vector3 velocityPerTick)
 `SupportMargin` / `SupportHalfWidth` / `LeanDegrees`、每腿抓点/候选/支撑/冷却/bend pole，
 以及最后一次移动目标种类与位置。它们供 AI、沙盒和哈希读取，不暴露可绕过固定序的分步写入口。
 
+两个诊断量不能当成更强的物理契约：`DeerLeg.MaxConstraintError` 是最终 MTD 后相对本 tick
+目标段长的最大链边偏差，固定端点、缓变形态长度和无穿透优先都可能形成瞬态值，不宜直接设置
+很紧的 solver-only 门；`MaxPairAirborneRun` 是实例自出生以来的历史高水位，Teleport/Launch
+只清当前 `PairAirborneTicks` 而保留它，且 Launch 弹道会自然计入高水位。判断当前同对状态应读
+`PairAirborneTicks` 或各腿 `AttachedAtTip`。
+
 生命周期语义：
 
 - `Shift(delta)`：世界和地形一起平移。同步平移所有 body 位置/插值历史、腿段、抓点、候选点、
   地板采样和 MoveTarget；保留速度、抓地、冷却、支撑低通、步态年龄、bend pole 方向与到达态。
 - `Teleport(delta)`：地形不动的瞬移。先 Shift，再释放四腿，清抓点/候选/地板历史/支撑/
-  犹豫/姿态恢复位置记忆，把 `CurrentRideHeight` 重置为当前 `DesiredBodyHeight`，并清 MoveTarget
-  与 AtMoveTarget；宿主从新位置重新喂点。不得保留旧地形 collider 的抓点或旧房间高度。
+  犹豫/姿态恢复位置记忆，并把 `IdleTicks/RestAmount` 原子清零、当前 reach 恢复为 1、
+  `DesiredBodyHeight/CurrentRideHeight` 重置为活动站高；同时清 MoveTarget 与 AtMoveTarget，宿主从
+  新位置重新喂点。不得保留旧地形 collider 的抓点、旧房间高度或深休息的短腿工作区。
 - `Launch(velocityPerTick)`：所有 body chunk 加同一速度增量，四腿强制释放，支撑立即归零且
-  重力仍为 1；不篡改宿主冲量，并保留发射瞬间的连续 `CurrentRideHeight`。MoveTarget 是否继续
-  存在仍由宿主决定，与既有地面后端一致；落地后只靠正常找地、换步和高度循环恢复。
+  重力仍为 1；同样清 `IdleTicks/RestAmount/Hesitation`、恢复完整 reach 与活动目标站高，避免
+  深休息后以 1/3 腿长完成整段弹道恢复。不篡改宿主冲量，并保留发射瞬间连续的
+  `CurrentRideHeight`；MoveTarget 仍保留，AtMoveTarget 立即作废并在下一 tick 重算。落地后只靠
+  正常找地、换步和高度循环恢复。
 
 全部可演化状态必须按固定顺序进入 Deer 自己的 `FoldDeterministicState`；Body 的位置/速度仍由
 宿主公共哈希器先折叠，Deer 再补折 Body 的可变摩擦、约束、Skin、卡链阈值与碰撞后恢复开关。
@@ -662,7 +674,7 @@ void Launch(Vector3 velocityPerTick)
 | 身体曲线 | chunk1 最粗重并向后递减 | `deer/original` 逐值换算该曲线；compact/strider 只做统一出生缩放；仅 `new DeerParams()` 自定义模板采用中段峰值 | 稳定 original 作为取证基线，同时保留可编辑模板 |
 | 绝对尺度 | 身体按 px；MMF 构造腿长 `300px`，运行时腿长动态变化 | original 身体按 `1px=0.025m` 换算；正式变体另做显式缩放，3D 地板探测和控制增益重新调教 | 保留可核实形态比例，但不把 AI tile 高度与二维运动增益机械换算 |
 | 升力分布 | 头与前三节躯干的权重约 `1.3000/1.5427/2.0373/2.4619`，尾节无升力 | original 四躯干 `SupportWeight=1.55/2.15/1.75/0.55`，归一化后分配总支撑注速 | 3D 中把升力集中在四个腿根相关粗躯干节并给尾节少量稳定量；不是 DLL 逐值换算 |
-| 推进分布 | 头→尾的绝对权重为 `0.35/0.28/0.21/0.14/0.07` | original 的头+四躯干 `DriveWeight=1.0/0.8/0.6/0.4/0.2`，按正权重平均归一化后再乘 `BaseDrive=0.024m/tick` 并受 `MaxMoveSpeed=0.095m/tick` 限速 | 保留 DLL 的 `5:4:3:2:1` 前重后轻比例，把绝对推进强度抽成可按预设调教的米制全局增益，不机械换算 px/tick |
+| 推进分布 | 头→尾的绝对权重为 `0.35/0.28/0.21/0.14/0.07` | original 的头+四躯干 `DriveWeight=1.0/0.8/0.6/0.4/0.2`，按正权重平均归一化后再乘 `BaseDrive=0.024m/tick`，并以 `MaxMoveSpeed=0.095m/tick` 作为推进 headroom 阈值 | 保留 DLL 的 `5:4:3:2:1` 前重后轻比例，把绝对推进强度抽成可按预设调教的米制全局增益，不机械换算 px/tick |
 | 躯干姿态/防折 | 积分前对躯干1↔3、1↔4 各施 `0.35`；积分后对 `n↔n+2` 恒施 `0.45`，另有头/鹿角姿态常力 | original 躯干 `PostureWeight=1.10/1.35/1.20/0.85`、`PostureStrength=0.12`；隔节距离只在低于两段静息长之和的 `0.58` 时，按侵入量乘 `AntiFoldStrength=0.22` 质量加权撑开 | 3D 粗重叠链只在真折叠时需要防折；距离门+连续增强避免恒定推力把躯干变成硬杆或在稳态注入振荡 |
 | 碰撞回弹 | `airFriction=0.999`、`surfaceFriction=0.4`、`bounce=0.1` | 保留 `AirFriction=0.999` 与 `SurfaceFriction=0.4`；共享 `SphereTerrain` 法向内速清零，无 restitution（等价 `bounce=0`） | 遵守本轮共享层零改动，并避免高重心多节腿在连续 MTD 接触中被单物种反弹反复激起；该偏离属宿主共享碰撞语义，不是 Deer 隐藏参数 |
 | 腿段数量 | 每腿 6 个 TentacleChunk | original/compact 为每腿 6 段，strider 为每腿 8 段 | 保持取证基线，同时让长腿变体有足够弯折分辨率；不得退化为单粒子 |
@@ -720,6 +732,11 @@ void Launch(Vector3 velocityPerTick)
 - 行进高度高于静止休息高度，前方地形高度变化平滑而非单 tick 跳变；
 - 平地、解析斜坡和解析台阶通过；Godot 矩阵另断言粗糙错高面、墙前停住和 90° 转向；
 - Shift 全状态连续、Teleport 作废旧地形状态、Launch 保留注入冲量并能重新落地；
+- 深休息到 `RestAmount≈1`、reach≈`1/3` 后，Teleport/Launch 必须即时唤醒并在无移动输入下
+  以完整 reach、活动站高、两对真实落地和有限支撑恢复；该组合不得复用只看抓地数的宽松 Recover；
+- Launch 前若非空 MoveTarget 已到达，调用后必须保留目标与连续 CurrentRideHeight、立即作废
+  AtMoveTarget，并在后续每 tick 按受力前 BodyCenter 几何重新计算真假；
+- 预热后的完整 Deer tick 热路径不得产生托管堆分配；当前门直接测 256 tick 的线程分配字节；
 - MoveTarget 到达、换点、取消、Shift 和 Teleport 契约完整。
 
 验证门本身也要做消融：命令行分别关闭 support、同对互锁、犹豫、主动换步、balance
@@ -752,11 +769,13 @@ Godot 进程配置通过；每项均以场景退出码和 `[DEER-RESULT] PASS` �
 | reverse-strider | `D6494BFCC50770DE` |
 | rough | `F82576BDBF79DA85` |
 | rest | `6166233D7FBCE179` |
-| launch | `AC2969E3DF6744E2` |
+| launch | `2F0C8FA0609676B6` |
 | target | `95847339455ED62A` |
-| lifecycle | `9B7563D34890D1EE` |
+| lifecycle | `90C2A98FA2211208` |
 
 无引擎固定哈希为 `80249FD24361B9C8`，40/400Hz 相同；微扰为 `B33E51B04CAF9D99`。
+评审后新增的稳态分配门实测 256 tick 为 `0B`；深休息夹具从 `rest=1/reach=0.333` 调用
+Teleport 与 Launch 后均即时回到活动参数，并分别在 37 tick 内连续恢复到活动站高和满支撑。
 同一 smoke 的平地 900 tick 为 `88.512m`、146 次落脚、每腿至少 36 次、同对双悬空 0；compact
 行进/休息 BodyCenter 为 `4.335/1.916m`，球底净空为 `3.501/1.051m`，全休息当前 reach
 `2.267m`、实际最大根足距 `2.063m`。解析斜坡/台阶分别前进 `82.85/124.79m`。

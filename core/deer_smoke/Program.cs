@@ -44,6 +44,7 @@ internal static class Program
         Check("FACTORY", CheckFactory, failures);
         Check("SUPPORT-GEOMETRY", CheckSupportGeometry, failures);
         Check("FORCE-DISTRIBUTION", CheckForceDistribution, failures);
+        Check("ALLOC", CheckSteadyStateAllocations, failures);
 
         DeterminismResult run1 = RunDeterminism(0f, 40);
         DeterminismResult run2 = RunDeterminism(0f, 40);
@@ -109,6 +110,8 @@ internal static class Program
         Check("WEAK-GRIP", CheckWeakGripReleaseGate, failures);
         Check("COURSE", CheckSlopeAndSteps, failures);
         Check("TARGET", CheckMoveTarget, failures);
+        Check("LAUNCH-TARGET", CheckLaunchTargetReevaluation, failures);
+        Check("DEEP-REST-WAKE", CheckDeepRestWake, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
         Check("HASH-FORK", CheckHashStateForks, failures);
         Check("ABLATION", CheckAblations, failures);
@@ -1922,22 +1925,12 @@ internal static class Program
             "SupportSnapshot", BindingFlags.NonPublic)
             ?? throw new MissingMemberException(typeof(DeerLocomotionController).FullName,
                 "SupportSnapshot");
-        Vector3 footCenter = Vector3.Zero;
-        foreach (DeerLeg leg in deer.Legs)
-        {
-            footCenter += leg.GripPoint;
-        }
-        footCenter /= deer.Legs.Count;
         return Activator.CreateInstance(snapshotType, new object[]
         {
             4,
             rawSupport,
             Math.Min(rawSupport / 3f, 1f),
             Vector3.Up * rawSupport,
-            true,
-            true,
-            footCenter,
-            Vector3.Zero,
             Vector3.Zero,
             0f,
             1f,
@@ -2155,6 +2148,216 @@ internal static class Program
             $"{teleportPositionError},cacheReset={teleportCachesReset}] " +
             $"launch={launchCleared}/{launchRecovered}");
     }
+
+    private static (bool, string) CheckLaunchTargetReevaluation()
+    {
+        DeerParams parameters = DeerFactory.Compact();
+        parameters.RestDelayTicks = 1000;
+        DeerRig deer = NewDeer(Vector3.Zero, parameters);
+        var terrain = new PlaneTerrainQuery(0f);
+        Settle(deer, terrain, 180, Vector3.Right, 0.6f);
+        long tick = 180;
+
+        Vector3 target = SurfacePoint(deer);
+        deer.MoveTarget = target;
+        deer.RunSpeed = 1f;
+        deer.Tick(terrain, ++tick);
+        bool arrivedBefore = deer.AtMoveTarget;
+        float rideBefore = deer.Controller.CurrentRideHeight;
+
+        Vector3 impulse = new(0.8f, 0.30f, -0.02f);
+        deer.Launch(impulse);
+        bool immediate = arrivedBefore
+            && deer.MoveTarget is { } retained && Near(retained, target)
+            && NearScalar(deer.Controller.CurrentRideHeight, rideBefore)
+            && !deer.AtMoveTarget;
+
+        bool matchedEveryTick = true;
+        bool targetPreservedEveryTick = true;
+        bool sawTrue = false;
+        bool sawFalse = false;
+        for (int i = 0; i < 6; i++)
+        {
+            Vector3 carrot = target + Vector3.Up * deer.Controller.CurrentRideHeight;
+            bool expected = carrot.DistanceTo(deer.Controller.BodyCenter)
+                <= deer.Controller.MoveTargetArriveRadius;
+            deer.Tick(terrain, ++tick);
+            matchedEveryTick &= deer.AtMoveTarget == expected;
+            targetPreservedEveryTick &= deer.MoveTarget is { } currentTarget
+                && Near(currentTarget, target);
+            sawTrue |= deer.AtMoveTarget;
+            sawFalse |= !deer.AtMoveTarget;
+        }
+
+        return (immediate && matchedEveryTick && targetPreservedEveryTick
+                && sawTrue && sawFalse && IsFinite(deer),
+            $"arrivedBefore={arrivedBefore} immediate={immediate} reeval={matchedEveryTick} " +
+            $"sawTrue/False={sawTrue}/{sawFalse} targetRetained={targetPreservedEveryTick} " +
+            $"ride={rideBefore:F3}->{deer.Controller.CurrentRideHeight:F3} finite={IsFinite(deer)}");
+    }
+
+    private static (bool, string) CheckSteadyStateAllocations()
+    {
+        DeerParams parameters = DeerFactory.Compact();
+        parameters.RestDelayTicks = 2000;
+        DeerRig deer = NewDeer(Vector3.Zero, parameters);
+        var terrain = new PlaneTerrainQuery(0f);
+        long tick = 0;
+        for (int i = 0; i < 320; i++)
+        {
+            deer.MoveDir = Vector3.Right;
+            deer.RunSpeed = 0.65f;
+            deer.Tick(terrain, ++tick);
+        }
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 256; i++)
+        {
+            deer.MoveDir = Vector3.Right;
+            deer.RunSpeed = 0.65f;
+            deer.Tick(terrain, ++tick);
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        return (allocated == 0 && IsFinite(deer),
+            $"steadyTicks=256 allocated={allocated}B finite={IsFinite(deer)}");
+    }
+
+    private readonly record struct DeepRestWakeResult(
+        bool DeepRestReached,
+        int IdleBefore,
+        float RestBefore,
+        float ReachBefore,
+        bool ImmediateWake,
+        bool EventContract,
+        bool Recovered,
+        int RecoveryTick,
+        float FinalRideHeight,
+        float FinalDesiredHeight,
+        float FinalSupport,
+        bool Finite);
+
+    private static (bool, string) CheckDeepRestWake()
+    {
+        DeepRestWakeResult teleport = RunDeepRestWake(launch: false);
+        DeepRestWakeResult launch = RunDeepRestWake(launch: true);
+        bool ok = WakePassed(teleport) && WakePassed(launch);
+        return (ok,
+            $"teleport={FormatWake(teleport)} launch={FormatWake(launch)}");
+    }
+
+    private static DeepRestWakeResult RunDeepRestWake(bool launch)
+    {
+        DeerParams parameters = DeerFactory.Compact();
+        DeerRig deer = NewDeer(Vector3.Zero, parameters);
+        var terrain = new PlaneTerrainQuery(0f);
+        long tick = 0;
+        for (int i = 0; i < 900; i++)
+        {
+            deer.MoveDir = Vector3.Zero;
+            deer.RunSpeed = 0f;
+            deer.Tick(terrain, ++tick);
+        }
+
+        bool pairsBefore = BothPairsAttached(deer);
+        bool deepRestReached = deer.Controller.RestAmount >= 0.99f
+            && deer.Controller.CurrentLegReachScale
+                <= parameters.RestLegReachRatio + 0.01f
+            && pairsBefore && IsFinite(deer);
+        int idleBefore = deer.Controller.IdleTicks;
+        float restBefore = deer.Controller.RestAmount;
+        float reachBefore = deer.Controller.CurrentLegReachScale;
+        float rideBefore = deer.Controller.CurrentRideHeight;
+        Vector3[] velocitiesBefore = deer.Body.Chunks.Select(chunk => chunk.Vel).ToArray();
+        Vector3 impulse = new(0.035f, 0.32f, -0.012f);
+        SetMember(deer.Controller, nameof(DeerLocomotionController.Hesitation), 0.75f);
+
+        bool eventContract;
+        if (launch)
+        {
+            deer.Launch(impulse);
+            eventContract = NearScalar(deer.Controller.CurrentRideHeight, rideBefore)
+                && deer.Legs.All(leg => !leg.AttachedAtTip)
+                && deer.TotalSupport == 0f
+                && deer.Controller.Hesitation == 0f
+                && !deer.Controller.AtMoveTarget;
+            for (int i = 0; i < deer.Body.Chunks.Count; i++)
+            {
+                eventContract &= Near(deer.Body.Chunks[i].Vel, velocitiesBefore[i] + impulse);
+            }
+        }
+        else
+        {
+            deer.Teleport(new Vector3(3f, 1.4f, 0.25f));
+            eventContract = NearScalar(
+                    deer.Controller.CurrentRideHeight, parameters.PreferredBodyHeight)
+                && deer.MoveTarget is null
+                && deer.Legs.All(leg => !leg.AttachedAtTip)
+                && deer.TotalSupport == 0f
+                && deer.Controller.Hesitation == 0f;
+        }
+
+        bool immediateWake = deer.Controller.IdleTicks == 0
+            && deer.Controller.RestAmount == 0f
+            && NearScalar(deer.Controller.CurrentLegReachScale, 1f)
+            && NearScalar(deer.Controller.DesiredBodyHeight, parameters.PreferredBodyHeight)
+            && deer.Legs.All(leg => NearScalar(
+                leg.CurrentReachLimit, leg.MaxLength, 1e-5f));
+
+        int stableTicks = 0;
+        int recoveryTick = 0;
+        // 必须在正式 Compact 再次取得休息资格前完成；放宽测试参数会掩盖慢恢复回归。
+        for (int i = 1; i <= parameters.RestDelayTicks; i++)
+        {
+            deer.MoveDir = Vector3.Zero;
+            deer.RunSpeed = 0f;
+            deer.Tick(terrain, ++tick);
+            bool stable = deer.Controller.RestAmount <= 0.02f
+                && deer.Controller.CurrentLegReachScale >= 0.98f
+                && NearScalar(deer.Controller.DesiredBodyHeight,
+                    parameters.PreferredBodyHeight, 1e-4f)
+                && BothPairsAttached(deer)
+                && deer.TotalSupport >= 0.55f
+                && Math.Abs(deer.Controller.CurrentRideHeight
+                    - deer.Controller.DesiredBodyHeight) <= 0.65f
+                && AverageVelocity(deer).Length() < 0.20f
+                && IsFinite(deer);
+            stableTicks = stable ? stableTicks + 1 : 0;
+            if (stableTicks >= 20)
+            {
+                recoveryTick = i;
+                break;
+            }
+        }
+
+        return new DeepRestWakeResult(
+            deepRestReached,
+            idleBefore,
+            restBefore,
+            reachBefore,
+            immediateWake,
+            eventContract,
+            recoveryTick > 0,
+            recoveryTick,
+            deer.Controller.CurrentRideHeight,
+            deer.Controller.DesiredBodyHeight,
+            deer.TotalSupport,
+            IsFinite(deer));
+    }
+
+    private static bool WakePassed(DeepRestWakeResult result) =>
+        result.DeepRestReached && result.ImmediateWake && result.EventContract
+        && result.Recovered && result.Finite;
+
+    private static string FormatWake(DeepRestWakeResult result) =>
+        $"deep={result.DeepRestReached}[idle={result.IdleBefore},rest={result.RestBefore:F3}," +
+        $"reach={result.ReachBefore:F3}] immediate={result.ImmediateWake} " +
+        $"contract={result.EventContract} recovered={result.Recovered}@{result.RecoveryTick} " +
+        $"ride/desired={result.FinalRideHeight:F3}/{result.FinalDesiredHeight:F3} " +
+        $"support={result.FinalSupport:F3} finite={result.Finite}";
+
+    private static bool BothPairsAttached(DeerRig deer) =>
+        Enumerable.Range(0, 2).All(pair =>
+            deer.Legs.Any(leg => leg.PairIndex == pair && leg.AttachedAtTip));
 
     private static (bool, string) CheckHashStateForks()
     {

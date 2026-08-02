@@ -482,9 +482,10 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 
 鹿同样暴露 `Shift`/`Teleport`/`Launch`：`Shift` 平移 body、所有腿段、当前/候选抓点、
 地板缓存、插值历史和 `MoveTarget`，保留速度、冷却、支撑与步态相位；`Teleport` 另外让四腿
-全松、清支撑/地板/直喂目标记忆，并把 ride height 重置到当前期望高度；`Launch` 给 body 和
-腿段统一冲量、保留 `MoveTarget` 和连续高度，只释放抓点并清支撑/地板历史。三者都不切换
-重力——Deer 的 `GravityScale` 全程仍为 1。
+全松、清支撑/地板/直喂目标记忆，并从深休息原子唤醒到完整 reach 与活动站高；`Launch` 给 body
+和腿段统一冲量、保留 `MoveTarget` 和连续 `CurrentRideHeight`，但同样清休息/犹豫、恢复完整
+reach，并立即作废 `AtMoveTarget` 等下一 tick 重算。三者都不切换重力——Deer 的
+`GravityScale` 全程仍为 1。
 
 拟态草不用移动生物的 `Teleport/Launch`：`Shift` 只用于世界 rebase 并保留攻击/抓取连续性；
 地形不随体移动的换洞必须调用 `Remount(newMount)`，它会清目标、抓取、攻击和旧导引；
@@ -582,11 +583,13 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   不能把“抓到任意脚”等同于关闭重力。
 - 调试/AI 可读 `Hesitation`、`DriveScale`、`RestAmount`、`IdleTicks`、`CurrentLegReachScale`、
   `HasCurrentFloor` / `HasAheadFloor`、
-  `BodyDragImpulse`、`MaxPairAirborneRun`；3D 倾覆边界读质量加权 `BalanceOffset`、真实足端凸包
+  `BodyDragImpulse`、`MaxPairAirborneRun`；后者是含 Launch 弹道的实例历史高水位，当前连续值应读
+  `PairAirborneTicks`。3D 倾覆边界读质量加权 `BalanceOffset`、真实足端凸包
   `SupportMargin` / `SupportHalfWidth` / `SupportHalfLength` 和 `LeanDegrees`。这些都是只读连续量，
   不构成休息、行进或跌倒模式枚举。
 - 每条 `DeerLeg` 公开段链、当前/候选抓点、抓地与冷却、支撑贡献、换步/落地序号、可及比、
-  `BendPole` 和约束误差，供渲染与诊断使用；宿主不得写它们来伪造支撑。
+  `BendPole` 和约束误差，供渲染与诊断使用；`MaxConstraintError` 在最终 MTD 后测量，固定端点、
+  缓变形态长度和无穿透优先均可能贡献，不是纯 solver residual。宿主不得写这些状态来伪造支撑。
 
 ### 4.2 人形（HumanoidLocomotionController）的输入面差异
 
@@ -822,7 +825,8 @@ dotnet run --project core/tentacle_plant_smoke
 #    滞回/超距/遮挡释放/可及极限拖身、同对互锁（含休息收腿全过程）、
 #    RestDelay 前不主动放脚、每次收腿 release→同腿 replant 逐事件闭合、犹豫、体高、COM balance、
 #    斜坡/台阶、三预设 180° 换向真实段链弓向、精确 frame 运输消融、
-#    MoveTarget、Shift/Teleport/Launch、
+#    MoveTarget、Shift/Teleport/Launch（含已到达目标的 Launch 后逐 tick 重算）、
+#    深休息后强生命周期唤醒恢复、稳态 tick 零托管分配、
 #    双跑/40vs400Hz/微扰/状态哈希覆盖，并逐项关闭
 #    support/pair/hesitation/release/balance/stance/antler/bend 验证门自身会红。
 dotnet run --project core/deer_smoke

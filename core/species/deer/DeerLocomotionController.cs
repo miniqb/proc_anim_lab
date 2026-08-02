@@ -19,7 +19,9 @@ public sealed class DeerLocomotionController
     public readonly BodyChunk Head;
     public readonly IReadOnlyList<BodyChunk> Trunk;
     public readonly BodyChunk Antler;
-    public readonly List<DeerLeg> Legs = new();
+    private readonly List<DeerLeg> _legs = new();
+    private readonly IReadOnlyList<DeerLeg> _legsView;
+    public IReadOnlyList<DeerLeg> Legs => _legsView;
 
     public string StableId => _params.StableId;
 
@@ -75,6 +77,10 @@ public sealed class DeerLocomotionController
     public float ToppleOffset { get; private set; }
     public float SupportHalfWidth { get; private set; }
     public float SupportHalfLength { get; private set; }
+    /// <summary>
+    /// 本实例自出生以来，任一腿对连续没有 AttachedAtTip 的历史最长 tick 数。
+    /// PairAirborneTicks 才是当前连续值；Teleport/Launch 清当前值但保留这个诊断高水位。
+    /// </summary>
     public int MaxPairAirborneRun { get; private set; }
     public IReadOnlyList<int> PairAirborneTicks => _pairAirborneTicks;
     public MoveTargetKind LastMoveTargetKind { get; private set; }
@@ -94,11 +100,7 @@ public sealed class DeerLocomotionController
         float Raw,
         float Target,
         Vector3 WeightedNormal,
-        bool HasLeft,
-        bool HasRight,
-        Vector3 FootCenter,
         Vector3 BalanceOffset,
-        Vector3 BalanceCorrection,
         float LateralOffset,
         float HalfWidth,
         float HalfLength,
@@ -128,6 +130,10 @@ public sealed class DeerLocomotionController
     private readonly float[] _supportWeights;
     private readonly float[] _driveWeights;
     private readonly float[] _postureWeights;
+    // 腿拓扑在出生后固定；支撑凸包每 tick 复用实例私有 scratch，避免稳态 GC。
+    private readonly SupportPoint[] _supportPointScratch;
+    private readonly SupportPoint[] _uniqueSupportPointScratch;
+    private readonly SupportPoint[] _supportHullScratch;
     private readonly int[] _pairAirborneTicks = new int[2];
     private Vector3 _forward;
     private Vector3 _up = Vector3.Up;
@@ -151,6 +157,7 @@ public sealed class DeerLocomotionController
         Trunk = trunk;
         Antler = antler;
         _params = parameters;
+        _legsView = _legs.AsReadOnly();
         MoveTargetArriveRadius = parameters.ArriveRadius;
 
         _forward = NormalizeOr(initialForward, Vector3.Forward);
@@ -161,6 +168,10 @@ public sealed class DeerLocomotionController
         _supportWeights = new float[trunk.Count + 1];
         _driveWeights = new float[trunk.Count + 1];
         _postureWeights = new float[trunk.Count + 1];
+        int legCapacity = parameters.LegSlots.Length;
+        _supportPointScratch = new SupportPoint[legCapacity];
+        _uniqueSupportPointScratch = new SupportPoint[legCapacity];
+        _supportHullScratch = new SupportPoint[legCapacity * 2];
         _supportWeights[0] = 1.3f;
         _driveWeights[0] = 1f;
         _postureWeights[0] = 1f;
@@ -173,23 +184,28 @@ public sealed class DeerLocomotionController
         }
     }
 
-    internal void AddLeg(DeerLeg leg) => Legs.Add(leg);
+    internal void AddLeg(DeerLeg leg) => _legs.Add(leg);
 
     internal void LinkLegPairs()
     {
-        for (int i = 0; i < Legs.Count; i++)
+        if (_legs.Count != _supportPointScratch.Length)
+        {
+            throw new InvalidOperationException(
+                $"Deer leg topology changed during assembly: expected {_supportPointScratch.Length}, got {_legs.Count}.");
+        }
+        for (int i = 0; i < _legs.Count; i++)
         {
             DeerLeg mate = null!;
-            for (int j = 0; j < Legs.Count; j++)
+            for (int j = 0; j < _legs.Count; j++)
             {
-                if (i != j && Legs[j].PairIndex == Legs[i].PairIndex)
+                if (i != j && _legs[j].PairIndex == _legs[i].PairIndex)
                 {
-                    mate = Legs[j];
+                    mate = _legs[j];
                     break;
                 }
             }
-            Legs[i].Mate = mate ?? throw new InvalidOperationException(
-                $"Deer leg {i} has no mate in pair {Legs[i].PairIndex}.");
+            _legs[i].Mate = mate ?? throw new InvalidOperationException(
+                $"Deer leg {i} has no mate in pair {_legs[i].PairIndex}.");
         }
     }
 
@@ -221,7 +237,7 @@ public sealed class DeerLocomotionController
         ProbeGround(ctx.Terrain, effectiveMove, worldUp);
 
         float standableDot = Mathf.Cos(Mathf.DegToRad(_params.MaxStandableSlopeDegrees));
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             leg.BeginControllerTick();
             leg.ValidateGripBeforeBody(
@@ -262,7 +278,7 @@ public sealed class DeerLocomotionController
     {
         EnsureFinite(delta, nameof(delta));
         Body.Shift(delta);
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             leg.Shift(delta);
         }
@@ -284,11 +300,14 @@ public sealed class DeerLocomotionController
         }
     }
 
-    /// <summary>地形不随鹿移动的瞬移：平移后腿全松并清除旧地板/直喂目标记忆。</summary>
+    /// <summary>
+    /// 地形不随鹿移动的瞬移：平移后腿全松并清除旧地板/直喂目标记忆；强制退出休息，
+    /// 让新位置从完整腿长和活动站高重新建立支撑。
+    /// </summary>
     public void Teleport(Vector3 delta)
     {
         Shift(delta);
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             leg.ForceRelease(keepCooldown: false);
         }
@@ -309,11 +328,14 @@ public sealed class DeerLocomotionController
         AheadFloorPoint = Vector3.Zero;
         CurrentFloorPoint = Vector3.Zero;
         AheadFloorNormal = _worldUp;
-        CurrentRideHeight = DesiredBodyHeight;
+        WakeFromRest(resetRideHeight: true);
         _hasPreviousCenter = false;
     }
 
-    /// <summary>全身统一冲量；腿立即松开，重力保持开启，随后仍由同一找地/支撑循环恢复。</summary>
+    /// <summary>
+    /// 全身统一冲量；腿立即松开并强制退出休息，重力保持开启，随后仍由同一找地/支撑循环恢复。
+    /// CurrentRideHeight 保留发射瞬间连续值，但腿可达与目标站高立即回到活动值。
+    /// </summary>
     public void Launch(Vector3 velocityPerTick)
     {
         EnsureFinite(velocityPerTick, nameof(velocityPerTick));
@@ -321,12 +343,15 @@ public sealed class DeerLocomotionController
         {
             chunk.Vel += velocityPerTick;
         }
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             leg.AddVelocity(velocityPerTick);
             leg.ForceRelease(keepCooldown: true);
         }
         ResetSupportState();
+        WakeFromRest(resetRideHeight: false);
+        Hesitation = 0f;
+        AtMoveTarget = false;
         LastMoveTargetKind = MoveTargetKind.None;
         _hasSmoothedFloor = false;
         HasAheadFloor = false;
@@ -397,7 +422,7 @@ public sealed class DeerLocomotionController
         {
             hasher.Fold(_pairAirborneTicks[i]);
         }
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             leg.FoldDeterministicState(hasher);
         }
@@ -464,11 +489,23 @@ public sealed class DeerLocomotionController
             * Mathf.Lerp(1f, _params.RestHeightRatio, RestAmount);
     }
 
+    private void WakeFromRest(bool resetRideHeight)
+    {
+        IdleTicks = 0;
+        RestAmount = 0f;
+        DesiredBodyHeight = _params.PreferredBodyHeight;
+        UpdateLegReachLimits();
+        if (resetRideHeight)
+        {
+            CurrentRideHeight = DesiredBodyHeight;
+        }
+    }
+
     private void UpdateLegReachLimits()
     {
         float active = Mathf.Pow(1f - RestAmount, _params.RestLegReachExponent);
         CurrentLegReachScale = Mathf.Lerp(_params.RestLegReachRatio, 1f, active);
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             leg.SetCurrentReachLimit(leg.MaxLength * CurrentLegReachScale);
         }
@@ -489,7 +526,7 @@ public sealed class DeerLocomotionController
 
         bool left = false;
         bool right = false;
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             if (!leg.Gripping)
             {
@@ -581,7 +618,7 @@ public sealed class DeerLocomotionController
         int forcePlanted)
     {
         BodyDragImpulse = 0f;
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             BodyDragImpulse += leg.ApplyBodyDrag(_params.MaxSupportImpulse * 0.28f);
         }
@@ -612,6 +649,8 @@ public sealed class DeerLocomotionController
             // 支撑也乘掉，否则低通支撑永远抵不过同 tick 重力，身体会靠球碰撞趴地滑行。
             chunk.Vel += worldUp * (lift * weight);
         }
+        // 原作 Deer.Act 对鹿角 chunk 固定乘 0.92；本移植保留该固定阻尼，不随躯干的
+        // support 阻尼档插值。
         Antler.Vel *= 0.92f;
 
         float gripPart = Mathf.Pow(forcePlanted / 4f, 0.8f);
@@ -759,7 +798,7 @@ public sealed class DeerLocomotionController
     private void TickLegs(in TickContext ctx, Vector3 effectiveMove, Vector3 worldUp)
     {
         float standableDot = Mathf.Cos(Mathf.DegToRad(_params.MaxStandableSlopeDegrees));
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             Vector3 desiredDirection = leg.ComputeDesiredDirection(
                 _forward, _up, _right, effectiveMove, Mathf.Clamp(RunSpeed, 0f, 1f),
@@ -795,7 +834,7 @@ public sealed class DeerLocomotionController
             DeerLeg? first = null;
             DeerLeg? second = null;
             bool confirmedGripInvalidated = false;
-            foreach (DeerLeg leg in Legs)
+            foreach (DeerLeg leg in _legs)
             {
                 if (leg.PairIndex != pair)
                 {
@@ -845,14 +884,14 @@ public sealed class DeerLocomotionController
         float rightLateralSum = 0f;
         int leftCount = 0;
         int rightCount = 0;
-        var supportPoints = new SupportPoint[Legs.Count];
+        SupportPoint[] supportPoints = _supportPointScratch;
         Vector3 reference = Trunk[Math.Min(1, Trunk.Count - 1)].Pos;
         Vector3 supportUp = NormalizeOr(SupportNormal, worldUp);
         if (supportUp.Dot(worldUp) <= 0f)
         {
             supportUp = worldUp;
         }
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             if (!leg.Gripping)
             {
@@ -916,22 +955,16 @@ public sealed class DeerLocomotionController
         }
         float halfLength = planted > 1 ? (maxForward - minForward) * 0.5f : 0f;
 
-        Vector3 balanceCorrection = Vector3.Zero;
         float margin = 0f;
         bool hasArea = TrySupportPolygonCorrection(
-            supportPoints, planted,
+            supportPoints, _uniqueSupportPointScratch, _supportHullScratch, planted,
             new PlanarPoint(bodyCenter.Dot(_right), bodyCenter.Dot(_forward)),
-            out PlanarPoint correction2, out margin);
-        if (hasArea)
-        {
-            balanceCorrection = _right * correction2.X + _forward * correction2.Y;
-        }
+            out _, out margin);
         float leanDegrees = Mathf.RadToDeg(Mathf.Atan2(
             Mathf.Abs(lateralOffset), Mathf.Max(CurrentRideHeight, Head.Radius)));
         return new SupportSnapshot(
             planted, raw, target, weightedNormal,
-            leftCount > 0, rightCount > 0, footCenter,
-            balanceOffset, balanceCorrection,
+            balanceOffset,
             lateralOffset, halfWidth, halfLength, margin, hasArea, leanDegrees);
     }
 
@@ -970,7 +1003,7 @@ public sealed class DeerLocomotionController
         Vector3 fromReference = leg.GripPoint - reference;
         fromReference -= worldUp * fromReference.Dot(worldUp);
         float best = 0f;
-        foreach (DeerLeg other in Legs)
+        foreach (DeerLeg other in _legs)
         {
             if (other == leg || !other.Gripping)
             {
@@ -1001,7 +1034,7 @@ public sealed class DeerLocomotionController
         }
         Vector3 reference = Trunk[Math.Min(1, Trunk.Count - 1)].Pos;
         bool ahead = false;
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             if (leg.Gripping && (leg.GripPoint - reference).Dot(effectiveMove) > 0f)
             {
@@ -1020,7 +1053,7 @@ public sealed class DeerLocomotionController
     {
         bool hasReachUrgency = false;
         bool hasRestRetraction = false;
-        foreach (DeerLeg leg in Legs)
+        foreach (DeerLeg leg in _legs)
         {
             if (!leg.Gripping)
             {
@@ -1066,9 +1099,7 @@ public sealed class DeerLocomotionController
 
         bool hasReleaseWindow = support.Planted > _params.ReleaseWhenPlantedAbove
             || (hasReachUrgency
-                && support.Planted > _params.ReachGuardReleaseWhenPlantedAbove)
-            || (hasRestRetraction
-                && support.Planted > _params.ReleaseWhenPlantedAbove);
+                && support.Planted > _params.ReachGuardReleaseWhenPlantedAbove);
         if (!EnableStepRelease || (!HasMoveIntent && !hasRestRetraction)
             || !hasReleaseWindow
             || support.Planted <= _params.MinimumPlantedLegs
@@ -1079,7 +1110,8 @@ public sealed class DeerLocomotionController
 
         bool stalled = StallTicks >= _params.StallReleaseTicks;
         DeerLeg? winner = null;
-        foreach (DeerLeg leg in Legs)
+        // 腿表出生后只读且按工厂索引顺序装配；相同评分保留先遇到者，即最低腿索引。
+        foreach (DeerLeg leg in _legs)
         {
             if (!leg.Gripping)
             {
@@ -1103,9 +1135,7 @@ public sealed class DeerLocomotionController
                     continue;
                 }
             }
-            if (winner is null || leg.ReleaseScore > winner.ReleaseScore + 1e-7f
-                || (Mathf.Abs(leg.ReleaseScore - winner.ReleaseScore) <= 1e-7f
-                    && leg.Index < winner.Index))
+            if (winner is null || leg.ReleaseScore > winner.ReleaseScore + 1e-7f)
             {
                 winner = leg;
             }
@@ -1127,7 +1157,7 @@ public sealed class DeerLocomotionController
         for (int pair = 0; pair < _pairAirborneTicks.Length; pair++)
         {
             bool anyPlanted = false;
-            foreach (DeerLeg leg in Legs)
+            foreach (DeerLeg leg in _legs)
             {
                 // AttachedAtTip 已表示足端物理落地；GripConfirmTicks 只是支撑贡献的滞回。
                 // “同对不同时腾空”约束不应把正在确认的已落地足端误报为空中。
@@ -1214,6 +1244,8 @@ public sealed class DeerLocomotionController
     /// </summary>
     private static bool TrySupportPolygonCorrection(
         SupportPoint[] points,
+        SupportPoint[] unique,
+        SupportPoint[] hull,
         int count,
         PlanarPoint projectedCenter,
         out PlanarPoint correction,
@@ -1239,7 +1271,6 @@ public sealed class DeerLocomotionController
             points[j + 1] = value;
         }
 
-        var unique = new SupportPoint[count];
         int uniqueCount = 0;
         for (int i = 0; i < count; i++)
         {
@@ -1255,7 +1286,6 @@ public sealed class DeerLocomotionController
             return false;
         }
 
-        var hull = new SupportPoint[uniqueCount * 2];
         int hullCount = 0;
         for (int i = 0; i < uniqueCount; i++)
         {
@@ -1348,6 +1378,8 @@ public sealed class DeerLocomotionController
         float maximum,
         Vector3 worldUp)
     {
+        // headroom = maximum - dot(reject(Vel, worldUp), direction)：已有 world-up 速度
+        // 不参与度量；clamp 仍缩放整个 drive direction。它不是最终 3D 速度硬上限。
         Vector3 tangent = chunk.Vel - worldUp * chunk.Vel.Dot(worldUp);
         float along = tangent.Dot(direction);
         float add = Mathf.Min(impulse, Mathf.Max(0f, maximum - along));

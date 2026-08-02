@@ -114,6 +114,10 @@ public sealed class DeerLeg
     public float ReachRatio => Anchor.Pos.DistanceTo(Tip.Pos) / MaxLength;
     public bool HeldAtReachLimit => AttachedAtTip && ReachRatio >= BodyDragStartRatio;
     public DeerLegSegmentState Tip => Segments[^1];
+    /// <summary>
+    /// 当前 tick 最终 MTD 后，各链边相对 idealLength / Segments.Length 的最大绝对长度偏差；
+    /// 不跨 tick 累计。固定端点、缓变形态长度与无穿透优先都可能贡献，故它不是纯求解器残差。
+    /// </summary>
     public float MaxConstraintError { get; private set; }
 
     // 只在一个 DeerLocomotionController.Tick 内使用：紧急同对保护必须由本 tick 原有的
