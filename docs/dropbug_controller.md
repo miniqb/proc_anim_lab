@@ -135,6 +135,18 @@ IsGroundNormal 同一条线；HitFromInside 零法线视为有支撑）。悬挂
 collider 消失 → 直接掉落，3D 附加）。静息长度下一 tick 由公式恢复、碰撞重开、
 MTD 单 tick 推出嵌入——smoke/矩阵断言全程无弹飞（maxStep < 0.45m）、无穿透。
 
+**击飞打断（`Launch`，外部评审 P1 修复）**：Launch 清 `HangFactor` 并把
+`HangRegrabDelay` 置为 `HangRegrabDelayTicks`（默认 40 = 1s）；冷却期内贴附、
+爬升辅助与锚面支撑例外全部停摆，重力照常把身体带走，**意图锚保留**。依据 = 原作
+被击打 → `Stun` → `Consious=false` 期间 Update else 分支每 tick 强制
+`inCeilingMode=0` 且 `Act()`（含 SittingInCeiling 重贴附）停摆——"击飞打断悬挂"
+在原作里正是靠 stun 窗口挡住重新吸附；本项目无 stun 概念（伤害归宿主），取固定
+1s 量级（原作 stun 由伤害决定，无固定常数）。修复前无引擎实测：≤0.30 m/tick
+（=12 m/s，对比步行极速 0.13）的击飞全部在下一 tick 被吸附伺服重新拿住、从未离开
+1m 贴附圈；修复后全量级真实脱附落地。`TryAssignHangAnchor` 成功、`ClearHangAnchor`
+与 `Teleport` 都清零冷却（宿主显式重申意图让位）；`Jumping` 保持 false——设 true
+会让击飞误吃 `AttackTarget` 的空中转向（击飞不是攻击）。
+
 **悬挂中**：几乎静止（矩阵实测 100 tick 漂移 0.0000m、峰值速度 0.0225 m/tick）、
 腿收拢到锚面固定点。"更不容易被发现"（VisibilityBonus）是 AI 观测面，归宿主。
 
@@ -208,6 +220,9 @@ MTD 单 tick 推出嵌入——smoke/矩阵断言全程无弹飞（maxStep < 0.4
 10. **逐 tick 可及复核**（见 §7）；**站稳丢失时蓄力放弃**（见 §7）。
 11. **不移植**：水中运动（项目边界）、bounce 0.1（Body 无反弹语义）、抓取/咬合/
     投掷物反应/AI 全部行为树、噪声/可见度系统、SpitOutOfShortCut。
+12. **悬挂重贴附冷却**：原作用"伤害决定时长的 stun 窗口（Consious=false）"挡住击打
+    后的立即重贴附 → 本项目无 stun，`Launch` 设固定 `HangRegrabDelayTicks=40`
+    冷却（见 §5 击飞打断段；外部评审 P1）。
 
 ## 10. 宿主接口
 
@@ -218,11 +233,12 @@ MTD 单 tick 推出嵌入——smoke/矩阵断言全程无弹飞（maxStep < 0.4
 动作 API：`TryAssignHangAnchor(TerrainHit, ITerrainQuery)`（验证 + 建立意图）、
 `ClearHangAnchor()`、`ReleaseHangDive()`、`TryStartPounce()`、`CancelPounce()`、
 `PounceReach(dir)`；生命周期 `Shift`（全量平移含锚/目标/腿/卡住窗口）、
-`Teleport`（清全部暂态）、`Launch`（保留 MoveTarget/AttackTarget 与锚意图，
-打断悬挂/蓄力，≙ Deer 先例）。
+`Teleport`（清全部暂态含重贴附冷却）、`Launch`（保留 MoveTarget/AttackTarget 与
+锚意图，打断悬挂/蓄力并进入 `HangRegrabDelayTicks` 重贴附冷却，≙ Deer 先例 +
+原作 stun 窗口，见 §5）。
 
 观测输出：`Footing`/`FootingCounter`、`HangState`/`HangFactor`/`Hanging`/
-`HangAnchor`/`LastHangRejection`、`PounceCharge`/`ChargingPounce`、`Jumping`/`Diving`/
+`HangAnchor`/`LastHangRejection`/`HangRegrabDelay`、`PounceCharge`/`ChargingPounce`、`Jumping`/`Diving`/
 `AttackCooldown`、`MovingBackwards`、`Sitting`、`StuckSignal`/`StuckShake`、
 `RunCycle`/`TravelDir`/`Legs`（Pos/Planted/StepSerial）、`Forward/Up/Right`、
 事件序号 `PounceLeapSerial`/`PounceAbandonSerial`/`DiveSerial`/`HopSerial`、
@@ -232,29 +248,39 @@ MTD 单 tick 推出嵌入——smoke/矩阵断言全程无弹飞（maxStep < 0.4
 
 ```bash
 dotnet run --project core/dropbug_smoke     # 无引擎专项（秒级）
-./tools/run_dropbug_matrix.sh [输出目录]     # Godot 18 项矩阵（分钟级）
+./tools/run_dropbug_matrix.sh [输出目录]     # Godot 25 项矩阵（分钟级）
 # 交互沙盒：scenes/dropbug_sandbox.tscn（WASD 行走、Shift+右键指定悬挂点、
 # T 设扑击目标、Space 俯冲/蓄力、G 撤锚、C 负重、B 击飞、1/2/3 预设）
 ```
 
-**无引擎 smoke**（20 门全真断言，2026-08-04 固定哈希 `C96B800B5F039447`，
-1mm 微扰 `56A3ADA871066245`）：DET 双跑 bit-exact + 钉死哈希 + 微扰灵敏 + 路线覆盖
-（卡住抖动/弹射/放弃/越障全部进哈希）；装配拓扑/预设/未知 ID 快速失败/出生冻结；
-不对称重力（含消融翻红）；宽限期 9 tick（消融 0）；行走/头领航/失稳注力比 0.514；
-18° 斜坡；越障（消融点火 0）；倒退（消融 0 tick）；悬挂判定七分支（有效/地板/斜面/
-零法线/薄板/低落差/无净空）；悬挂收放（团缩 span 0.195m、静止漂移 0、消融 span
-0.553m + restShrunk=false）；退出与悬挂中 Teleport 不弹飞；俯冲（最近 0.452m、
-冷却 20、消融 1.044m）；蓄力（后坐 0.379m、侧对可及 3.11m 即弃、逃逸放弃、
+**无引擎 smoke**（21 门全真断言，2026-08-04 评审修复轮固定哈希
+`69FEFC63E11262E7`，1mm 微扰 `53BD3EBC4F46ECD5`；FoldState 新增
+`HangRegrabDelay` 折叠导致全部基线换新）：DET 双跑 bit-exact + 钉死哈希 + 微扰灵敏 +
+路线覆盖（卡住抖动/弹射/放弃/越障全部进哈希）；装配拓扑/预设/未知 ID 快速失败/
+出生冻结；不对称重力（含消融翻红）；宽限期 9 tick（消融 0）；行走/头领航/失稳注力比
+0.514；18° 斜坡；越障（消融点火 0）；倒退（消融 0 tick）；悬挂判定七分支（有效/地板/
+斜面/零法线/薄板/低落差/无净空）；悬挂收放（团缩 span 0.195m、静止漂移 0、消融 span
+0.553m + restShrunk=false）；退出与悬挂中 Teleport 不弹飞；**悬挂中击飞
+`[LAUNCH-HANG]`**（0.3 m/tick 击飞后冷却窗内 HangFactor 恒 0、逃逸 1m 圈
+maxDist 3.85m、落地、意图锚保留、重指派清冷却 40→0；冷却归零消融精确复现修复前
+"下一 tick 重贴附 f=0.025、从不逃逸、回满 f=1"——门有效性已验证）；俯冲（最近
+0.457m、冷却 20、消融 1.041m）；蓄力（后坐 0.379m、侧对可及 3.11m 即弃、逃逸放弃、
 消融照跳、负重拒绝）；卡住抖动（jitter 0.139m、消融 0.002m）；负重梯度
 15.73/9.42/3.33m；表现腿（静止零步进、步频随速缩放、击飞 dangle）；生命周期
 （Shift 逐位、Launch 精确注入）；查询预算（行走 avg 7.3 / max 8 rays、3 shapes）；
 全程残余穿透 3.1e-6 m（碰撞关闭的悬挂节与抖动 tick 除外，理由见 §9-3 与内联注释）。
 
-**Godot 矩阵 18 项**（哈希基线钉在脚本顶部，2026-08-04 实跑）：walk 双跑/40vs400Hz/
-1mm 微扰（`8C182AF34288285A`，微扰 `E3061F62EE76DA0C`）+ slope / hop / stuck /
-backward / hang / hang-exit / dive / pounce / pounce-abandon / carry / launch /
-lifecycle + nimble / bulky 变体巡走（`8ACBF43362435CAB` / `2D47FFA890CF6CC1`，
-preset-difference 门），每项含路线级硬断言（[DROPBUG-RESULT] 判定）。
+**Godot 矩阵 25 项**（哈希基线钉在脚本顶部，2026-08-04 评审修复轮实跑）：walk
+双跑/40vs400Hz/1mm 微扰（`7F39EB42FAC652CA`，微扰 `EE23FD7369FC944C`）+ slope /
+hop / stuck / backward / hang / hang-exit / **hang-launch**（悬挂稳定后 Launch：
+冷却窗内不重贴附、逃逸吸附圈、launch 后 21 tick 恢复站稳、意图锚保留）/ dive /
+pounce / pounce-abandon / carry / launch / lifecycle + 变体 **nimble / bulky 各覆盖
+walk + hang + dive + pounce**（外部评审 P2：变体恰好覆写悬挂长度/俯冲冲量/蓄力速率/
+扑击范围，只跑 walk 会漏检——hang 贴附 96/79 tick、dive 最近 0.636/0.756m、
+pounce 起跳 11/19 tick）。pounce 起跳窗口按预设蓄力时长参数化
+（`ceil((1−PounceChargeStart)/PounceChargeRate)` ± 容忍 = original 15 / nimble 12 /
+bulky 20，替换按 original 写死的 12..25——nimble 曾在窗口外，正是 P2 预言的漏检）。
+每项含路线级硬断言（[DROPBUG-RESULT] 判定）+ preset-difference 门。
 
 ## 12. 已知边界与后续工作
 

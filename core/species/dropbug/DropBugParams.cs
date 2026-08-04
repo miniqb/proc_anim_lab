@@ -133,6 +133,12 @@ public sealed class DropBugParams
     /// 目标点已进面内的浅嵌入不敏感；3D 球形碰撞会与吸附伺服在 [目标越面, 0.5) 窗口
     /// 逐 tick 推挤、留 ~1cm 定态残余 → 改 0.05（开始贴附即允许嵌入），收放全程零穿透。</summary>
     public float HangCollisionToggle = 0.05f;
+    /// <summary>Launch 后禁止悬挂重贴附/爬升辅助/锚面支撑的窗口（tick）。≙ 原作被击打
+    /// → Stun → Consious=false 期间 Update else 分支每 tick 强制 inCeilingMode=0 且
+    /// Act()（含 SittingInCeiling 重贴附）停摆——击飞打断悬挂靠的就是这个窗口。本项目
+    /// 无 stun 概念（伤害归宿主），取 1s 量级（原作 stun 由伤害决定无固定常数）。
+    /// 实测无窗口时 ≤0.30 m/tick 的击飞全部被吸附伺服在 1m 圈内吃掉（外部评审 P1）。</summary>
+    public int HangRegrabDelayTicks = 40;
 
     // —— 俯冲（≙ JumpFromCeiling + Jump + jumping 块：冲量 21/16px、先削速 ×0.5、
     //     方向上扬度 LerpMap(-1..1 → 0.7..1.2, 1.1)、空中转向 1.2/0.4px、

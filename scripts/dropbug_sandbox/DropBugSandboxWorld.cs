@@ -28,8 +28,8 @@ public partial class DropBugSandboxWorld : Node3D
     };
     private static readonly string[] Routes =
     {
-        "walk", "slope", "hop", "stuck", "backward", "hang", "hang-exit", "dive",
-        "pounce", "pounce-abandon", "carry", "launch", "lifecycle",
+        "walk", "slope", "hop", "stuck", "backward", "hang", "hang-exit", "hang-launch",
+        "dive", "pounce", "pounce-abandon", "carry", "launch", "lifecycle",
     };
 
     [Export] public float GravityMps2 = 36f;
@@ -110,6 +110,9 @@ public partial class DropBugSandboxWorld : Node3D
     private float _carrySegmentStartX;
     private long _launchTick = -1;
     private long _launchRefootTick = -1;
+    private float _hlFactorInWindow;
+    private bool _hlEscaped;
+    private Vector3 _hlEngagePoint;
     private float _travelAfterRecover;
     private bool _shiftExact;
     private bool _shiftDone;
@@ -331,6 +334,9 @@ public partial class DropBugSandboxWorld : Node3D
             case "hang-exit":
                 DriveHang();
                 break;
+            case "hang-launch":
+                DriveHangLaunch();
+                break;
             case "dive":
                 DriveDive();
                 break;
@@ -401,6 +407,44 @@ public partial class DropBugSandboxWorld : Node3D
         {
             _bug.MoveDir = Vector3.Left;
             _bug.RunSpeed = 1f;
+        }
+    }
+
+    /// <summary>悬挂中被击飞（外部评审 P1 的 Godot 侧覆盖）：贴附稳定后 Launch，
+    /// 断言冷却窗内不重贴附、真实逃逸吸附圈、弹道落地恢复、意图锚保留。</summary>
+    private void DriveHangLaunch()
+    {
+        if (!_anchorAssigned && _tick >= 30)
+        {
+            _anchorAssigned = AssignAnchor(new Vector3(0f, 3f, -6f),
+                new Vector3(0f, 3.6f, -6f));
+        }
+        if (_launchTick < 0 && _sawHanging && _firstHangTick > 0 &&
+            _tick - _firstHangTick >= 60)
+        {
+            _launchTick = _tick;
+            if (_bug.HangAnchor is { } anchor)
+            {
+                _hlEngagePoint = anchor.Point + anchor.Normal * _preset.HangSurfaceInset;
+            }
+            // 0.3 m/tick 斜向下（修复前该量级被吸附伺服整个吃掉，无引擎实测）。
+            _bug.Launch(new Vector3(-0.268f, -0.134f, 0f));
+        }
+        if (_launchTick > 0)
+        {
+            if (_tick - _launchTick <= _preset.HangRegrabDelayTicks)
+            {
+                _hlFactorInWindow = Mathf.Max(_hlFactorInWindow, _bug.HangFactor);
+            }
+            if (_bug.Mid.Pos.DistanceTo(_hlEngagePoint) > _preset.HangEngageDistance)
+            {
+                _hlEscaped = true;
+            }
+            if (_launchRefootTick < 0 && _bug.Footing && _bug.Mid.Pos.Y < 1f &&
+                _tick > _launchTick + 3)
+            {
+                _launchRefootTick = _tick;
+            }
         }
     }
 
@@ -749,6 +793,18 @@ public partial class DropBugSandboxWorld : Node3D
                                  $"restRestored={restRestored}, travel={_travelAfterRecover:F2}）");
                 }
                 break;
+            case "hang-launch":
+                if (!_sawHanging || _launchTick < 0 || _hlFactorInWindow > 0f ||
+                    !_hlEscaped || _bug.HangFactor != 0f ||
+                    _launchRefootTick < 0 || _launchRefootTick > _launchTick + 250 ||
+                    _bug.HangAnchor is null)
+                {
+                    failures.Add($"悬挂中击飞未达标（hang={_sawHanging}@{_firstHangTick}, " +
+                                 $"launch={_launchTick}, fWindow={_hlFactorInWindow:F3}, " +
+                                 $"escaped={_hlEscaped}, refoot={_launchRefootTick}, " +
+                                 $"anchorKept={_bug.HangAnchor is not null}）");
+                }
+                break;
             case "dive":
                 if (!_diveReleased || _diveClosest > 0.8f || _diveFlightTicks <= 4 ||
                     _diveCooldownAtLand < 15 ||
@@ -761,11 +817,18 @@ public partial class DropBugSandboxWorld : Node3D
                 }
                 break;
             case "pounce":
+                // 起跳窗口按预设蓄力时长参数化（外部评审 P2：nimble 1/12 起跳更早，
+                // 固定 12..25 窗口是按 original 1/15 写死的）；±1 容忍驱动与物理 tick
+                // 的相位差，+10 容忍任何滞后。
+                long expectedCharge = Mathf.CeilToInt(
+                    (1f - _preset.PounceChargeStart) / _preset.PounceChargeRate);
+                long leapDelta = _pounceLeapTick - _pounceStartTick;
                 if (_bug.PounceLeapSerial != 1 || _pounceLeapTick < 0 ||
-                    _pounceLeapTick - _pounceStartTick is < 12 or > 25 ||
+                    leapDelta < expectedCharge - 1 || leapDelta > expectedCharge + 10 ||
                     _pounceClosest > 0.6f || _pounceRecoil < 0.01f)
                 {
-                    failures.Add($"蓄力扑击未达标（leap={_pounceLeapTick - _pounceStartTick}, " +
+                    failures.Add($"蓄力扑击未达标（leap={leapDelta}, " +
+                                 $"expected≈{expectedCharge}, " +
                                  $"closest={_pounceClosest:F3}, recoil={_pounceRecoil:F3}）");
                 }
                 break;
@@ -847,7 +910,8 @@ public partial class DropBugSandboxWorld : Node3D
         Vector3 offset = _route switch
         {
             "dive" => new Vector3(2.6f, 1.2f, 3.2f),
-            "hang" or "hang-exit" or "backward" => new Vector3(1.8f, 0.4f, 2.6f),
+            "hang" or "hang-exit" or "hang-launch" or "backward" =>
+                new Vector3(1.8f, 0.4f, 2.6f),
             _ => new Vector3(1.9f, 1.1f, 2.6f),
         };
         _camera.GlobalPosition = center + offset;
@@ -1041,7 +1105,7 @@ public partial class DropBugSandboxWorld : Node3D
         "hop" => new Vector3(0.5f, 0.3f, 0f),
         "stuck" => new Vector3(-4f, 0.3f, 0f),
         "backward" => new Vector3(-3.2f, 0.3f, -6f),
-        "hang" or "hang-exit" => new Vector3(1.2f, 3.15f, -6f),
+        "hang" or "hang-exit" or "hang-launch" => new Vector3(1.2f, 3.15f, -6f),
         "dive" => new Vector3(-7f, 7.72f, 7f),
         "pounce" or "pounce-abandon" => new Vector3(-1.8f, 0.3f, -2f),
         "carry" or "launch" or "lifecycle" => new Vector3(-4f, 0.3f, 4f),
@@ -1051,7 +1115,7 @@ public partial class DropBugSandboxWorld : Node3D
     private static Vector3 ForwardForRoute(string route) => route switch
     {
         "stuck" => Vector3.Left,
-        "backward" or "hang" or "hang-exit" => Vector3.Left,
+        "backward" or "hang" or "hang-exit" or "hang-launch" => Vector3.Left,
         _ => Vector3.Right,
     };
 

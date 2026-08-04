@@ -26,7 +26,7 @@ internal static class Program
     private static string _maxPenetrationContext = "";
 
     // 在完整行为门人工核对后钉定；只有有意改变 DropBug 内核轨迹时才更新。
-    private const ulong ExpectedHash = 0xC96B800B5F039447UL;
+    private const ulong ExpectedHash = 0x69FEFC63E11262E7UL;
 
     private static int Main()
     {
@@ -44,6 +44,7 @@ internal static class Program
         Check("HANG-VALIDATE", CheckHangValidation, failures);
         Check("HANG-ENTER", CheckHangEnter, failures);
         Check("HANG-EXIT", CheckHangExit, failures);
+        Check("LAUNCH-HANG", CheckLaunchHang, failures);
         Check("DIVE", CheckDive, failures);
         Check("POUNCE", CheckPounce, failures);
         Check("STUCK", CheckStuckShake, failures);
@@ -766,6 +767,117 @@ internal static class Program
             $"refoot={refootTick}tick restRestored={restRestored} travel={travel:F2}m " +
             $"teleportCleared={teleportCleared} tpMaxSpeed={tpMaxSpeed:F3} " +
             $"tpRecovered={tpRecovered}");
+    }
+
+    // ================================================================ 悬挂中击飞
+
+    private readonly record struct LaunchHangResult(
+        bool Engaged, float FactorAfterLaunch, float MaxFactorInWindow, float MaxDist,
+        bool Escaped, bool Landed, bool AnchorKept, float EndFactor, bool Finite);
+
+    /// <summary>悬挂 f=1 后击飞（外部评审 P1）。regrabDelay 为 -1 时用预设默认值。</summary>
+    private static LaunchHangResult RunLaunchHang(int regrabDelay)
+    {
+        DropBugParams p = DropBugFactory.Original();
+        if (regrabDelay >= 0)
+        {
+            p.HangRegrabDelayTicks = regrabDelay;
+        }
+        var terrain = LedgeHangRoom();
+        DropBugLocomotionController bug = DropBugFactory.CreateController(
+            new Vector3(1.2f, 3.15f, 0f), Vector3.Left, p);
+        long tick = 0;
+        for (int i = 0; i < 30; i++)
+        {
+            Tick(bug, terrain, ref tick);
+        }
+        AssignCeilingAnchor(bug, terrain, new Vector3(0f, 3.0f, 0f),
+            new Vector3(0f, 3.6f, 0f));
+        for (int i = 0; i < 260 && !bug.Hanging; i++)
+        {
+            Tick(bug, terrain, ref tick);
+        }
+        bool engaged = bug.Hanging;
+        Vector3 engagePoint = bug.HangAnchor is { } a
+            ? a.Point + a.Normal * 0.25f
+            : Vector3.Zero;
+        // 0.3 m/tick 斜向下（修复前无引擎实测：该量级从不离开 1m 吸附圈即被吃掉）。
+        bug.Launch(new Vector3(-0.268f, -0.134f, 0f));
+        float factorAfterLaunch = -1f; // 击飞后第一个 tick 末采样（贴附发生在 tick 内）
+        float maxFactorInWindow = 0f;
+        float maxDist = 0f;
+        bool escaped = false;
+        bool landed = false;
+        int window = Math.Max(1, p.HangRegrabDelayTicks);
+        for (int i = 0; i < 200; i++)
+        {
+            Tick(bug, terrain, ref tick);
+            if (i == 0)
+            {
+                factorAfterLaunch = bug.HangFactor;
+            }
+            if (i < window)
+            {
+                maxFactorInWindow = MathF.Max(maxFactorInWindow, bug.HangFactor);
+            }
+            float dist = bug.Mid.Pos.DistanceTo(engagePoint);
+            maxDist = MathF.Max(maxDist, dist);
+            if (dist > p.HangEngageDistance)
+            {
+                escaped = true;
+            }
+            if (bug.Mid.Pos.Y < 0.6f)
+            {
+                landed = true;
+            }
+        }
+        return new LaunchHangResult(engaged, factorAfterLaunch, maxFactorInWindow,
+            maxDist, escaped, landed, bug.HangAnchor is not null, bug.HangFactor,
+            IsFinite(bug));
+    }
+
+    private static (bool, string) CheckLaunchHang()
+    {
+        LaunchHangResult normal = RunLaunchHang(-1);
+        // 消融（冷却归零 = 修复前行为）：下一 tick 即重贴附、从不逃逸、窗口尾部回满 →
+        // 门翻红，证明冷却真在挡重贴附。
+        LaunchHangResult ablated = RunLaunchHang(0);
+
+        // 宿主显式重申意图让位：击飞后立即重指派锚，冷却必须清零。
+        var terrain = LedgeHangRoom();
+        DropBugLocomotionController re = NewBug(new Vector3(1.2f, 3.15f, 0f),
+            Vector3.Left);
+        long tick = 0;
+        for (int i = 0; i < 30; i++)
+        {
+            Tick(re, terrain, ref tick);
+        }
+        AssignCeilingAnchor(re, terrain, new Vector3(0f, 3.0f, 0f),
+            new Vector3(0f, 3.6f, 0f));
+        for (int i = 0; i < 260 && !re.Hanging; i++)
+        {
+            Tick(re, terrain, ref tick);
+        }
+        re.Launch(new Vector3(-0.05f, 0f, 0f));
+        int delayAfterLaunch = re.HangRegrabDelay;
+        bool reassigned = AssignCeilingAnchor(re, terrain, new Vector3(0f, 3.0f, 0f),
+            new Vector3(0f, 3.6f, 0f));
+        int delayAfterAssign = re.HangRegrabDelay;
+
+        bool ok = normal.Engaged && normal.FactorAfterLaunch == 0f &&
+                  normal.MaxFactorInWindow == 0f && normal.Escaped && normal.Landed &&
+                  normal.AnchorKept && normal.EndFactor == 0f && normal.Finite &&
+                  ablated.Engaged && ablated.FactorAfterLaunch > 0f &&
+                  !ablated.Escaped && ablated.EndFactor >= 0.99f &&
+                  delayAfterLaunch == DropBugFactory.Original().HangRegrabDelayTicks &&
+                  reassigned && delayAfterAssign == 0;
+        return (ok,
+            $"engaged={normal.Engaged} f+1={normal.FactorAfterLaunch:F3} " +
+            $"fWindow={normal.MaxFactorInWindow:F3} maxDist={normal.MaxDist:F2}m " +
+            $"escaped={normal.Escaped} landed={normal.Landed} " +
+            $"anchorKept={normal.AnchorKept} fEnd={normal.EndFactor:F3}；" +
+            $"ablated f+1={ablated.FactorAfterLaunch:F3} escaped={ablated.Escaped} " +
+            $"fEnd={ablated.EndFactor:F3}；delay={delayAfterLaunch}→{delayAfterAssign}");
     }
 
     // ================================================================ 俯冲

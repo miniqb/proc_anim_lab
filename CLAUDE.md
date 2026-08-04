@@ -374,7 +374,9 @@
 > Lerp(0.5, 1, stuck) 且无阻尼（尾巴自然下垂），倒退行走时尾节按前节处理。
 > 悬挂点 3D 判据 = 法线向下 ≥cos45° + 实体厚度探针 0.3m + 法向净空 0.6m + 世界竖直
 > 落差 ≥3m（≙ 空 tile + 上方 2 实心 + 下方空 + floorAltitude ≥6 tile）；贴附半径 1m +
-> 最后 1.25m 爬升辅助，更高的锚由宿主给邻近可达位（不移植原作的天花板攀爬）。地面蓄力
+> 最后 1.25m 爬升辅助，更高的锚由宿主给邻近可达位（不移植原作的天花板攀爬）；Launch
+> 击飞设 40 tick 悬挂重贴附冷却（≙ 原作 stun 窗口内 Consious=false 挡住重贴附；
+> 修复前 ≤0.30 m/tick 的击飞被吸附伺服整个吃掉——2026-08-04 外部评审 P1）。地面蓄力
 > 扑击 charging +1/15（头 +c²、中 −4c px），可及 = LerpMap(dot(扑向,身体轴), −0.1, 0.8,
 > 0, 300px, 0.4)——侧对显著缩短，目标出可及逐 tick 放弃；越障抬升按「前进受阻且头落在
 > 中段后面」的原作字面条件涌现（实测点火于反转朝向）；卡住抖动 = 30 tick 窗口净位移 +
@@ -385,12 +387,17 @@
 > TryAssignHangAnchor/ClearHangAnchor/ReleaseHangDive/TryStartPounce/CancelPounce +
 > Shift/Teleport/Launch。稳定 ID = `dropbug/original|nimble|bulky`（未知 ID 快速失败）。
 > 独立入口 `scenes/dropbug_sandbox.tscn`、`core/dropbug_smoke`、
-> `tools/run_dropbug_matrix.sh`。无引擎 smoke 20 门全真断言、八机制各含消融红灯验证，
-> 900 tick 固定哈希 `C96B800B5F039447`（1mm 微扰 `56A3ADA871066245`）；Godot 矩阵
-> 18 项（walk 双跑/40vs400/微扰 + 坡/越障/卡住/倒退/悬挂收放/俯冲/蓄力/放弃/负重/
-> 击飞/生命周期 + nimble/bulky）全部命中钉定基线（walk `8C182AF34288285A`）；改动前后
-> 全仓既有 12 套回归输出逐字节一致（唯一差异为主 smoke `[CORE-MODULARITY]` 横幅
-> 9→10 物种）。数值表、3D 取舍与偏离清单见 `docs/dropbug_controller.md`。
+> `tools/run_dropbug_matrix.sh`。无引擎 smoke 21 门全真断言、九机制各含消融红灯验证
+> （2026-08-04 评审修复轮新增 [LAUNCH-HANG]：悬挂中击飞冷却窗内不重贴附/逃逸/落地/
+> 锚保留，冷却归零消融精确复现修复前行为），900 tick 固定哈希 `69FEFC63E11262E7`
+> （1mm 微扰 `53BD3EBC4F46ECD5`；FoldState 新增 HangRegrabDelay 折叠致全部基线换新）；
+> Godot 矩阵 25 项（walk 双跑/40vs400/微扰 + 坡/越障/卡住/倒退/悬挂收放/悬挂中击飞/
+> 俯冲/蓄力/放弃/负重/击飞/生命周期 + nimble/bulky 各覆盖 walk+hang+dive+pounce——
+> 评审 P2：变体恰好覆写这些机制的参数，pounce 起跳窗口已按预设蓄力时长参数化）
+> 全部命中钉定基线（walk `7F39EB42FAC652CA`）；DropBug 落地轮改动前后全仓既有
+> 12 套回归输出逐字节一致（唯一差异为主 smoke `[CORE-MODULARITY]` 横幅 9→10 物种），
+> 评审修复轮其余 12 套按各自钉死基线复跑 GREEN。数值表、3D 取舍与偏离清单见
+> `docs/dropbug_controller.md`。
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
@@ -511,24 +518,28 @@
 > # C6AE88A2B807488E/B8F1A06E5BBEBB7C，矩阵峰值查询=1629/4050；其余八个并列后端的既有
 > # 哈希、路点与 smoke 断言逐位不变。
 >
-> # ⑥ DropBug 专项（18 项 Godot 配置；smoke 内含八机制消融红灯验证）：
+> # ⑥ DropBug 专项（25 项 Godot 配置；smoke 内含九机制消融红灯验证）：
 > dotnet run --project core/dropbug_smoke
 > ./tools/run_dropbug_matrix.sh
-> # smoke 20 门全真断言：DET 双跑/固定哈希 C96B800B5F039447/1mm 微扰、装配与未知 ID
+> # smoke 21 门全真断言：DET 双跑/固定哈希 69FEFC63E11262E7/1mm 微扰、装配与未知 ID
 > # 快速失败、前后不对称重力（台缘尾垂增量 + 消融翻红）、失稳宽限 9 tick（消融 0）、
 > # 行走/头领航/失稳注力比、18° 坡、越障点火（消融 0）、倒退接近（消融 0）、悬挂判定
 > # 七分支、悬挂收放（团缩/静止/静息长度/碰撞开关 + morph 消融）、退出与悬挂中
-> # Teleport 不弹飞、俯冲（落点/冷却 + 转向消融脱靶）、蓄力（后坐/侧对可及/逃逸放弃 +
+> # Teleport 不弹飞、悬挂中击飞 LAUNCH-HANG（40 tick 重贴附冷却/逃逸/落地/锚保留 +
+> # 冷却归零消融复现"击飞被吸附伺服吃掉"，2026-08-04 评审 P1）、俯冲（落点/冷却 +
+> # 转向消融脱靶）、蓄力（后坐/侧对可及/逃逸放弃 +
 > # 可及门消融照跳/负重拒绝）、卡住抖动（消融无抖）、负重梯度、表现腿（静止零步进/
 > # 步频随速/击飞 dangle）、生命周期、查询预算（行走 avg 7.3 / max 8 rays）、
 > # 全程残余穿透 2mm 门。矩阵 = walk 双跑/40vs400Hz/微扰 + slope/hop/stuck/backward/
-> # hang/hang-exit/dive/pounce/pounce-abandon/carry/launch/lifecycle + nimble/bulky
-> # 变体，哈希基线钉在脚本顶部（walk=8C182AF34288285A，微扰 E3061F62EE76DA0C，
-> # nimble/bulky=8ACBF43362435CAB/2D47FFA890CF6CC1）。
-> # 当前全仓七套 Godot 矩阵合计 162 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 +
-> # Deer18 + DaddyLongLegs39 + DropBug18；2026-08-04 DropBug 落地轮实跑全部 GREEN，
+> # hang/hang-exit/hang-launch/dive/pounce/pounce-abandon/carry/launch/lifecycle +
+> # nimble/bulky 变体各覆盖 walk/hang/dive/pounce（评审 P2；pounce 起跳窗口按预设
+> # 蓄力时长参数化），哈希基线钉在脚本顶部（walk=7F39EB42FAC652CA，微扰
+> # EE23FD7369FC944C，nimble/bulky=14E3086C9561F50B/6DB83D00D84E9631）。
+> # 当前全仓七套 Godot 矩阵合计 169 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 +
+> # Deer18 + DaddyLongLegs39 + DropBug25；2026-08-04 DropBug 落地轮实跑全部 GREEN，
 > # 既有 12 套回归输出与改动前逐字节一致（唯一差异 = 主 smoke [CORE-MODULARITY]
-> # 横幅 9→10 物种）。
+> # 横幅 9→10 物种）；同日评审修复轮（Launch 悬挂冷却 + 变体覆盖）后 DropBug 全部
+> # 基线重钉（FoldState 新增字段），其余 12 套按各自钉死基线复跑 GREEN。
 >
 > # ⑦ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 可执行基线真相源：tools/run_matrix.sh + core/smoke/Program.cs

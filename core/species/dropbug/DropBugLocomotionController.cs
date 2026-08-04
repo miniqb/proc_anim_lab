@@ -118,6 +118,9 @@ public sealed class DropBugLocomotionController
         : Hanging ? DropBugHangState.Hung
         : HangFactor > 0f ? DropBugHangState.Settling
         : DropBugHangState.Approaching;
+    /// <summary>Launch 后的悬挂重贴附冷却剩余 tick（≙ 原作 stun 窗口，见参数注释）。
+    /// 大于 0 时贴附、爬升辅助与锚面支撑全部停摆，意图锚保留。</summary>
+    public int HangRegrabDelay { get; private set; }
     public float PounceCharge { get; private set; }
     public bool ChargingPounce => PounceCharge > 0f;
     public bool Jumping { get; private set; }
@@ -237,6 +240,7 @@ public sealed class DropBugLocomotionController
         Vector3 tangentV = SafeDirection(n.Cross(tangentU), Vector3.Right);
         _hangAnchor = new DropBugHangAnchor(hit.Point, n, tangentU, tangentV, hit.ColliderId);
         LastHangRejection = DropBugHangRejection.None;
+        HangRegrabDelay = 0; // 宿主显式重申意图 → 冷却让位（≙ AI 重新选点）
         return true;
     }
 
@@ -246,6 +250,7 @@ public sealed class DropBugLocomotionController
     {
         _hangAnchor = null;
         HangFactor = 0f;
+        HangRegrabDelay = 0;
     }
 
     /// <summary>
@@ -352,6 +357,7 @@ public sealed class DropBugLocomotionController
         _arriveBoundTarget = new Vector3(float.MaxValue, 0f, 0f);
         _hangAnchor = null;
         HangFactor = 0f;
+        HangRegrabDelay = 0;
         PounceCharge = 0f;
         Jumping = false;
         Diving = false;
@@ -372,13 +378,16 @@ public sealed class DropBugLocomotionController
     }
 
     /// <summary>击飞：全部身体节注入同一速度增量。打断悬挂进入与蓄力（保留悬挂意图锚与
-    /// MoveTarget/AttackTarget，≙ Deer Launch 保留目标的先例），支撑清零、腿进入 dangle。</summary>
+    /// MoveTarget/AttackTarget，≙ Deer Launch 保留目标的先例），支撑清零、腿进入 dangle。
+    /// 悬挂重贴附进入 HangRegrabDelayTicks 冷却（≙ 原作 stun 窗口）——否则 1m 圈内的
+    /// 击飞下一 tick 就被吸附伺服吃掉（外部评审 P1，无引擎实测 ≤0.30 m/tick 全部被吃）。</summary>
     public void Launch(Vector3 velocityPerTick)
     {
         Head.Vel += velocityPerTick;
         Mid.Vel += velocityPerTick;
         Tail.Vel += velocityPerTick;
         HangFactor = 0f;
+        HangRegrabDelay = _p.HangRegrabDelayTicks;
         if (PounceCharge > 0f)
         {
             PounceCharge = 0f;
@@ -406,6 +415,10 @@ public sealed class DropBugLocomotionController
         if (AttackCooldown > 0)
         {
             AttackCooldown--;
+        }
+        if (HangRegrabDelay > 0)
+        {
+            HangRegrabDelay--;
         }
         // 自撑力只在非静止时注入：原作恒定注入（头 +0.5px / 尾 −1px）带 −0.5px/tick
         // 净轴向动量，静止个体会缓慢滑移；任务语义是「在运动中保持舒展」，静止
@@ -507,8 +520,9 @@ public sealed class DropBugLocomotionController
             return true;
         }
         // 悬挂意图存在且已接近锚点时，锚面也算支撑（≙ RW 天花板 tile 对 DropBug 可达，
-        // 使贴顶爬升期间重力被 Footing 块抵消）。
-        if (_hangAnchor is { } anchor &&
+        // 使贴顶爬升期间重力被 Footing 块抵消）；重贴附冷却期内锚面不作数，
+        // 否则击飞后悬在锚旁的身体仍被抵消重力、弹道被抹平。
+        if (HangRegrabDelay == 0 && _hangAnchor is { } anchor &&
             chunk.Pos.DistanceTo(anchor.Point) < _p.HangApproachDistance * 2f &&
             ctx.Terrain.Raycast(chunk.Pos, chunk.Pos - anchor.Normal * depth, out TerrainHit up) &&
             up.Normal.LengthSquared() > 1e-10f &&
@@ -567,7 +581,8 @@ public sealed class DropBugLocomotionController
         Vector3 engagePoint = anchor.Point + anchor.Normal * _p.HangSurfaceInset;
         float distance = Mid.Pos.DistanceTo(engagePoint);
 
-        if (distance < _p.HangEngageDistance && !Jumping && !Diving)
+        if (distance < _p.HangEngageDistance && !Jumping && !Diving &&
+            HangRegrabDelay == 0)
         {
             HangFactor = Mathf.Min(1f, HangFactor + _p.HangEnterRate);
             float f = HangFactor;
@@ -597,7 +612,7 @@ public sealed class DropBugLocomotionController
         }
 
         // 最后一米的爬升辅助（≙ AI SitInCeiling 行为块：50px 内有视线时 mid.pos += 1px）。
-        if (!Jumping && !Diving &&
+        if (!Jumping && !Diving && HangRegrabDelay == 0 &&
             distance > _p.HangApproachMin && distance < _p.HangApproachDistance &&
             !ctx.Terrain.Raycast(Mid.Pos, engagePoint, out _))
         {
@@ -1119,6 +1134,7 @@ public sealed class DropBugLocomotionController
         hasher.Fold(FootingCounter);
         hasher.Fold(_stuckTicks);
         hasher.Fold(AttackCooldown);
+        hasher.Fold(HangRegrabDelay);
         hasher.Fold(Jumping);
         hasher.Fold(Diving);
         hasher.Fold(MovingBackwards);

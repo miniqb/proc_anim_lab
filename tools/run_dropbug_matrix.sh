@@ -12,21 +12,28 @@ LOG="${OUT}/godot.log"
 SCENE="res://scenes/dropbug_sandbox.tscn"
 
 # —— 哈希基线（2026-08-04 实跑钉定；空 = 本轮不校验绝对值，仅跑行为门）——
-HASH_WALK=8C182AF34288285A
-HASH_SLOPE=94F0E379F89DA988
-HASH_HOP=08ADE1DECF0B2E9A
-HASH_STUCK=89973DDA534BD8EA
-HASH_BACKWARD=E374EC22E6B2442B
-HASH_HANG=9E32321C6CAE901D
-HASH_HANG_EXIT=D86F8C4A87F873D1
-HASH_DIVE=77AED28CE82DF79E
-HASH_POUNCE=97792F496F3440C2
-HASH_POUNCE_ABANDON=DB6DCEF1D998B876
-HASH_CARRY=F4A3719EE869C446
-HASH_LAUNCH=77DC085503F2F0B6
-HASH_LIFECYCLE=1A6C28A2D924A571
-HASH_NIMBLE=8ACBF43362435CAB
-HASH_BULKY=2D47FFA890CF6CC1
+HASH_WALK=7F39EB42FAC652CA
+HASH_SLOPE=44F6B66339B31648
+HASH_HOP=4F78562369462D6A
+HASH_STUCK=0DEB39F77772FC6A
+HASH_BACKWARD=8E0ABA9BE65C6E2B
+HASH_HANG=26043E55D742F57D
+HASH_HANG_EXIT=15076904393D2261
+HASH_DIVE=1C4E4C0A4AADDBCE
+HASH_POUNCE=C23AAC70FC480D82
+HASH_POUNCE_ABANDON=6C2001B35BC97226
+HASH_CARRY=0C90C1D848F54666
+HASH_LAUNCH=63FEE582755F319E
+HASH_LIFECYCLE=625C32F279C10F71
+HASH_NIMBLE=14E3086C9561F50B
+HASH_BULKY=6DB83D00D84E9631
+HASH_HANG_LAUNCH=1DEBF1D6250EEA99
+HASH_HANG_NIMBLE=302954AF5C9C82C3
+HASH_HANG_BULKY=3C5E467F44EDA7A1
+HASH_DIVE_NIMBLE=8CC11C9B3DB064F8
+HASH_DIVE_BULKY=EC5812B897E09DCD
+HASH_POUNCE_NIMBLE=115E7FA20024A77C
+HASH_POUNCE_BULKY=C15E3095EBD61CC0
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -85,6 +92,7 @@ run stuck          original stuck          500 400 "$HASH_STUCK"
 run backward       original backward       400 400 "$HASH_BACKWARD"
 run hang           original hang           400 400 "$HASH_HANG"
 run hang-exit      original hang-exit      600 400 "$HASH_HANG_EXIT"
+run hang-launch    original hang-launch    500 400 "$HASH_HANG_LAUNCH"
 run dive           original dive           500 400 "$HASH_DIVE"
 run pounce         original pounce         400 400 "$HASH_POUNCE"
 run pounce-abandon original pounce-abandon 300 400 "$HASH_POUNCE_ABANDON"
@@ -92,9 +100,16 @@ run carry          original carry          470 400 "$HASH_CARRY"
 run launch         original launch         500 400 "$HASH_LAUNCH"
 run lifecycle      original lifecycle      500 400 "$HASH_LIFECYCLE"
 
-# 变体预设走同一巡走路线；参数差异应产生不同轨迹。
-run nimble nimble walk 1200 400 "$HASH_NIMBLE"
-run bulky  bulky  walk 1200 400 "$HASH_BULKY"
+# 变体预设：巡走 + 各自的悬挂/俯冲/扑击行为门（变体恰好覆写这些机制的参数，
+# 只跑 walk 时回归会漏检——外部评审 P2）。
+run nimble        nimble walk   1200 400 "$HASH_NIMBLE"
+run bulky         bulky  walk   1200 400 "$HASH_BULKY"
+run hang-nimble   nimble hang   400  400 "$HASH_HANG_NIMBLE"
+run hang-bulky    bulky  hang   400  400 "$HASH_HANG_BULKY"
+run dive-nimble   nimble dive   500  400 "$HASH_DIVE_NIMBLE"
+run dive-bulky    bulky  dive   500  400 "$HASH_DIVE_BULKY"
+run pounce-nimble nimble pounce 400  400 "$HASH_POUNCE_NIMBLE"
+run pounce-bulky  bulky  pounce 400  400 "$HASH_POUNCE_BULKY"
 
 if diff <(grep '^\[DROPBUG-DET\]' "$OUT/walk-a.txt") \
         <(grep '^\[DROPBUG-DET\]' "$OUT/walk-b.txt") > /dev/null; then
