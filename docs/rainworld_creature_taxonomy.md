@@ -89,7 +89,7 @@ Tentacle                         ← 独立类，不继承 BodyPart / Limb
 |---|---|---|---|
 | **Lizard** | 3 | 3（含防折叠 push-only） | 4×`LizardLimb`（在 `Lizard` 本体）+ `TailSegment` 链 + `Antennae`（Graphics） |
 | **Scavenger** | 3 | 2 | 2×`ScavengerLeg` + 2×`ScavengerHand` + `TailSegment` |
-| **Deer** | 6 | 5 | 4×`DeerTentacle`——腿是**多节触手**，前两条挂 `bodyChunks[1]`、后两条挂 `bodyChunks[2]` |
+| **Deer** | 6 = 头 1 + 躯干 4 + 鹿角 1 | 5 = 头↔躯干首 + 躯干链 3 + 头↔鹿角 | 4×`DeerTentacle`（各 6 段）——腿是**多节触手**，前两条挂 `bodyChunks[1]`、后两条挂 `bodyChunks[2]` |
 | **BigSpider / SpitterSpider** | 2 | 1 | `Limb` + `GenericBodyPart`（Graphics） |
 | **DropBug** | 3 | 3 | `Limb` |
 | **Rat**（Watcher） | 2 | 1 | `Limb` + `TailSegment` |
@@ -100,7 +100,7 @@ Tentacle                         ← 独立类，不继承 BodyPart / Limb
 | **Snail** | 2 | 2 | `Limb` + `GenericBodyPart` |
 | **Cicada / EggBug / Barnacle** | 2 | 1 | `Limb` |
 
-`Deer`（6 节 + 4 条多节腿）是原作里"长脊柱 + 长腿"的唯一样本，最接近本项目 `heavy` 想去的方向。
+`Deer`（头 + 4 节躯干链 + 鹿角，外挂 4 条 6 段触手腿）是原作里"多节躯干 + 长多节腿"的唯一样本。躯干连接静息长度取 `max(两端半径)×0.8`，节间大幅重叠 = 一条粗软的躯干而非细长脊柱；鹿角是半径 30~70、质量仅 0.5 的大轻球，与头互为 `rotationChunk`。
 
 ### B. 单点身体 + 纯图形腿（腿完全不进物理）
 
