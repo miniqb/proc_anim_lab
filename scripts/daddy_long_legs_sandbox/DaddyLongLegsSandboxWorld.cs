@@ -319,7 +319,16 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             BodyChunk chunk = _controller.Body.Chunks[0];
             chunk.Pos += Vector3.Back * _perturb;
             chunk.LastPos = chunk.Pos;
-            _initialCenter = _controller.BodyCenter;
+            // controller.BodyCenter 是上一次 Tick 的缓存；直接改 Pos 之后必须现算
+            // 质量加权质心，否则重捕获是 no-op，微扰位移会被首 tick 的 travel 吸收。
+            Vector3 weighted = Vector3.Zero;
+            float mass = 0f;
+            foreach (BodyChunk c in _controller.Body.Chunks)
+            {
+                weighted += c.Pos * c.Mass;
+                mass += c.Mass;
+            }
+            _initialCenter = weighted / mass;
             _lastCenter = _initialCenter;
         }
 
@@ -791,13 +800,19 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             Vector3[] bodyPos = SnapshotBodyPositions();
             Vector3[] segmentPos = SnapshotSegmentPositions();
             Vector3 targetBefore = _controller.MoveTarget ?? Vector3.Zero;
-            Vector3 externalBefore = _controller.Tentacles[_externalTentacle]
-                .ExternalTarget?.Position ?? Vector3.Zero;
+            // tick-20 的指派可能失败（_externalTentacle=-1）；与 tick-210 一样防护，
+            // 让契约干净地 FAIL 而不是让索引异常打断整个 tick。
+            bool externalTracked = _externalTentacle >= 0;
+            Vector3 externalBefore = externalTracked
+                ? _controller.Tentacles[_externalTentacle].ExternalTarget?.Position
+                    ?? Vector3.Zero
+                : Vector3.Zero;
             _controller.Shift(delta);
             _debugTargetPos += delta;
             _shiftContract = CheckPositionDelta(bodyPos, segmentPos, delta)
                 && _controller.MoveTarget is Vector3 shifted
                 && Near(shifted - targetBefore, delta)
+                && externalTracked
                 && _controller.Tentacles[_externalTentacle].ExternalTarget is { } external
                 && Near(external.Position - externalBefore, delta);
             GD.Print($"[DADDY-EVENT] shift tick={_tick} contract={_shiftContract}");
@@ -1706,7 +1721,8 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                  $"start{_controller.StartReplantSerial - _tapStartingReplants} " +
                  $"stuck={_maximumStuckCounter}/" +
                  $"{_maximumStuckAmount:F3}/episodes{_maximumStuckEpisodeSerial} " +
-                 $"stepRelease={_maximumStepReleaseSerial} " +
+                 $"stepRelease={_maximumStepReleaseSerial}/" +
+                 $"forced{_controller.StuckForcedStepReleaseSerial} " +
                  $"reverse100={_flatReverseProgress100:F3}/steps{_flatReverseSteps100}/" +
                  $"start{_flatReverseStartReplants100} " +
                  $"searchFail={_maximumSearchFailure} " +
@@ -1887,8 +1903,16 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 ValidateStun(failures);
                 break;
             case "stuck":
+                // 这些配置实测经 detour + 普通换步脱困，强制豁免路径由无引擎 smoke 的
+                // 直构探针钉住；这里分别断言 stuck 真的启动过（量达 0.75 且锁存过
+                // detour episode）与换步循环在整段路线中存活。
+                if (!_stuckActivated)
+                    failures.Add($"stuck amount never reached 0.75 " +
+                                 $"(max={_maximumStuckAmount:F2})");
+                if (_maximumStuckEpisodeSerial == 0)
+                    failures.Add("stuck detour never engaged");
                 if (_maximumStepReleaseSerial == 0)
-                    failures.Add("stuck recovery never forced a locomotion tentacle to replant");
+                    failures.Add("no locomotion replant occurred during the stuck route");
                 if (!_stuckCrossedObstacle)
                     failures.Add($"stuck recovery never crossed the Block far face " +
                                  $"(center={Format(_controller.BodyCenter)})");
@@ -2123,7 +2147,15 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         else
             UpdateCameraFly((float)delta);
 
-        float interpolation = Mathf.Clamp((float)(_tickAccumulator / TickDt), 0f, 1f);
+        // _tickAccumulator 只在 _PhysicsProcess 里变化：tps=40 时每物理帧被精确排空，
+        // 单独用它得到恒 0 的 alpha（渲染永远停在 LastPos、以 40Hz 阶梯运动）。补上
+        // 引擎在当前物理帧内的渲染分数×物理帧长，两级累加才覆盖“物理帧→0.025s 核心
+        // tick”的一般 tps；只影响渲染，不进任何 tick 或哈希。
+        float physicsDelta = 1f / Math.Max(1, Engine.PhysicsTicksPerSecond);
+        float interpolation = Mathf.Clamp(
+            (float)(_tickAccumulator / TickDt
+                + Engine.GetPhysicsInterpolationFraction() * physicsDelta / TickDt),
+            0f, 1f);
         _renderer.Render(interpolation);
         _terrain.Draw(_camera, _controller.BodyCenter,
             _controller.LastMoveTargetKind, _controller.LastMoveTarget);

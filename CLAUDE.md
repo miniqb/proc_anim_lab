@@ -346,6 +346,15 @@
 > 12-body Terror seed 7 的全矩阵峰值为 `1629/4050` units/tick；地形路线最长相邻边/整触手
 > 阻断 episode 均为 10 tick，所有配置终态阻断边为 0、tick-end 穿透为 `0m`。完整 DLL 数值、
 > 3D 偏离理由和逐路线指标见 `docs/daddy_long_legs_controller.md` 与脚本当前输出。
+> 2026-08-04 测试门修复轮（评审 7 缺陷，核心行为零改动、全部哈希基线逐位不变）：
+> terrain-backtrack 消融门去掉 `enabled && X` 恒真式，子判据全部改为只断言开启态行为——消融
+> 红灯来自 audit 真实停摆，开关接线腐烂则成 unexpected PASS（两方向均已实验验证）；实测五个
+> 逃脱 seed 与 Godot stuck 配置全部经 detour+普通换步脱困、从不动用强制豁免，故场景门改为
+> 断言 stuck 启动/换步存活/穿越恢复，"stuck 强制换步例外"改由直构探针 + 新只读诊断
+> `StuckForcedStepReleaseSerial`（不进哈希折叠）钉住，删除豁免的实验精确变红；另修移动高度门
+> 空断言（`minSupport>=0`→`0.35`）、lifecycle tick-50 未防护的 `Tentacles[-1]`、perturb 重捕获
+> 读上次 Tick 缓存质心的 no-op，以及沙盒 40tps 下渲染插值 alpha 恒 0（改为 tick 余数+引擎物理帧
+> 分数两级合成，仅渲染，不进 tick/哈希）。
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >

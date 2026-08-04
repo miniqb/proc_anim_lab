@@ -52,6 +52,12 @@ public sealed class DaddyLongLegsLocomotionController
     public int DutyAssignmentSerial { get; private set; }
     public int DutyReleaseSerial { get; private set; }
     public int StepReleaseSerial { get; private set; }
+    /// <summary>
+    /// 仅统计真正动用了 stuck 强制换步豁免（绕过到达数门或 1g 支撑余量门）的释放。
+    /// 纯派生诊断量：只读取本 tick 已折叠的状态，不回写任何行为，因此有意不进
+    /// FoldDeterministicState——既有哈希基线保持逐位不变。
+    /// </summary>
+    public int StuckForcedStepReleaseSerial { get; private set; }
     public int MovementEpisodeSerial { get; private set; }
     public int StartReplantSerial { get; private set; }
     public bool MoveEpisodeActive => _moveEpisodeActive;
@@ -835,7 +841,8 @@ public sealed class DaddyLongLegsLocomotionController
         int required = Math.Max(
             _parameters.MinimumArrivedTentaclesForStep,
             _tentacles.Length / 2 + 1);
-        if ((!forcedByStuck && ArrivedTentacleCount < required)
+        bool arrivedShortfall = ArrivedTentacleCount < required;
+        if ((!forcedByStuck && arrivedShortfall)
             || (effectiveMove.LengthSquared() <= 1e-10f && !forcedByStuck))
         {
             return;
@@ -877,6 +884,16 @@ public sealed class DaddyLongLegsLocomotionController
             _tentacles[selected].BeginStep();
             _activeReplantIndex = selected;
             StepReleaseSerial++;
+            // 只有这次释放确实依赖 stuck 豁免（到达数不足，或被选腿低于 1g 余量门）
+            // 才算强制换步；stuck 期间恰好满足普通条件的释放不计入。
+            if (forcedByStuck
+                && (arrivedShortfall
+                    || (_parameters.EnableStepSupportReserve
+                        && selectedCancellationAfter
+                            < _parameters.StepReleaseMinimumGravityCancellation)))
+            {
+                StuckForcedStepReleaseSerial++;
+            }
             _stepCooldown = _parameters.StepReleaseCooldownTicks;
         }
     }

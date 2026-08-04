@@ -465,7 +465,10 @@ Anchor 距落点超过 `1.22L`，或本来没有落点时仍按原搜索路径�
 当到达落点的触手超过总数一半且有移动意图，或 stuck>100 时，从全部 `Task=Locomotion`
 触手（不仅是 needed 子集）考虑换步。非 stuck 路径先计算移除候选贡献后的
 `max(rawAfter^0.21, unconditionalSupport) × 1.2`，低于 `1.00` 的候选不进入竞争，再从安全候选中
-选择 `ReleaseScore` 最大的一条；stuck 强制换步不受此门限制。这样不会在移动中反复释放当前最强
+选择 `ReleaseScore` 最大的一条；stuck 强制换步不受此门限制。真正动用豁免（绕过到达数门或
+1g 余量门）的释放由只读诊断 `StuckForcedStepReleaseSerial` 单独计数；它只读取已折叠状态、
+不回写行为，有意不进 `FoldDeterministicState`，供回归区分“stuck 期间恰好满足普通条件的释放”
+与“靠豁免才发生的释放”。这样不会在移动中反复释放当前最强
 支撑腿，也没有提高全局升力。低余量形态可以让已经失去到达状态的触手继续重搜，但不会为了凑
 显式步数而抽走仍在承重的腿。起步和普通换腿还共用唯一在途槽：前一条必须进入
 `Planted+AtGrabDestination` 或被 stun/外部任务/地形恢复打断，才允许下一次释放。
@@ -567,6 +570,10 @@ godot --path . scenes/daddy_long_legs_sandbox.tscn
 ./tools/run_daddy_long_legs_matrix.sh
 ```
 
+沙盒渲染插值自 2026-08-04 起为“核心 tick 累加余数 + 引擎当前物理帧插值分数”两级合成：
+`_tickAccumulator` 只在 `_PhysicsProcess` 变化，tps=40 时每物理帧被精确排空，单独使用会让
+alpha 恒 0（画面固定滞后一 tick、40Hz 阶梯运动）。合成 alpha 只进渲染，不进任何 tick 或哈希。
+
 专项 smoke 与 Godot 矩阵的稳定哈希、配置数量和已验证指标只以脚本当前 PASS 输出为真相源。
 起步门不再用“打印起步速度”代替断言：无引擎 smoke 会分别真断言默认助推关闭；低方向
 支撑只释放一条满足 `.25/.90` 门的触手；新落点进入移动侧；抓稳前没有第二次普通释放；1/4/10/20
@@ -596,6 +603,20 @@ episode 达阈值；失败候选对整个后缀的 `Pos/LastPos/Vel` 零部分�
 自避距离合法；ExternalReach 从阻断起不再 Held/拉扯、随后 exactly-once `Released` 且可重新指派；
 guide obstruction 只清任务不重建；Shift 保留并平移恢复 phase，Teleport/Launch/Stun 清除；合法
 凸角绕行仍保留。关闭 `EnableTerrainBacktrack` 时对应组合门必须退出 1，证明验证门本身有效。
+2026-08-04 测试门修复轮起，该组合门的全部子判据只断言“机制开启时的行为”，不再写
+`enabled && X`：消融红灯必须来自 audit 真实没有运行（serial 不动、recovery 不启动、无查询）；
+若核心的开关接线腐烂，检查会变成 unexpected PASS 被矩阵抓红。两个方向都已实验验证：
+接线腐烂模拟（强制开关恒开）得到 UNEXPECTED-PASS/exit 0，正常消融保持行为性 EXPECTED-FAIL/exit 1。
+
+stuck 相关断言在同一轮修复中改为诚实语义：五个逃脱 seed 与全部 Godot `stuck` 配置实测都经
+detour + 普通换步脱困，从不动用强制豁免，因此场景门只断言 stuck 真实启动（量达阈值、锁存过
+detour episode）、换步循环存活与穿越/恢复；“stuck 强制换步例外”改由无引擎直构探针钉住——
+到达数不足 + 卡住必须经豁免释放并计入只读诊断 `StuckForcedStepReleaseSerial`（纯派生量，有意
+不进哈希折叠，全部既有基线逐位不变），未卡住的同一亏缺必须被拦下，普通释放不得冒充 forced；
+把核心豁免删除的实验会使探针精确变红。同轮还把移动高度门的空断言 `minSupport>=0` 改为
+`>=0.35` 实地板，给 lifecycle 路线 tick-50 的外部触手访问补上与 tick-210 相同的 `>=0` 防护，
+并让 perturb 配置在直接改 `Pos` 后现算质量加权质心（旧代码重读的是上一次 Tick 的缓存，两行
+赋值实为 no-op）。
 
 Godot `wall/corner/outer/ceiling/stuck` 路线继续以真实 Jolt 统计每条边和每条触手阻塞 episode，
 要求连续阻塞不超过“释放滞回 + 完整有限候选集”的证明上限、终态没有阻断边，且查询预算与

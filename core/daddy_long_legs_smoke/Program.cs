@@ -910,7 +910,11 @@ internal static class Program
             atomicTentacle, "AuditTerrainBacktrack",
             new TickContext(Vector3.Zero, atomicWall,
                 atomicParams.TerrainBacktrackReleaseTicks));
-        bool failureWasAtomic = enabled && atomicWall.InjectedFailures == 1
+        // 消融契约：所有子判据只断言“机制开启时的行为”，绝不写 enabled && X——
+        // EnableTerrainBacktrack=false 时红灯必须来自 audit 真正没有运行（无查询、
+        // 无 recovery、serial 不动）；若核心开关接线腐烂，这里会变成 unexpected PASS
+        // 被矩阵抓住，而不是被 harness 布尔挡成假 EXPECTED-FAIL。
+        bool failureWasAtomic = atomicWall.InjectedFailures == 1
             && (atomicTentacle.TerrainRecoveryActive
                 && atomicTentacle.TerrainRecoveryPhase == 1
                 && atomicPosBefore.SequenceEqual(atomicTentacle.Segments
@@ -975,8 +979,7 @@ internal static class Program
                 selfAvoidTentacle, "AuditTerrainBacktrack",
                 new TickContext(Vector3.Zero, selfAvoidWall, tick));
         }
-        bool phaseZeroRejectedOverlap = enabled
-            && selfAvoidTentacle.TerrainRecoveryActive
+        bool phaseZeroRejectedOverlap = selfAvoidTentacle.TerrainRecoveryActive
             && selfAvoidTentacle.TerrainRecoveryPhase == 1
             && selfAvoidTentacle.TerrainBacktrackSerial == 0;
         int selfAvoidAttempts = 0;
@@ -1103,16 +1106,15 @@ internal static class Program
                 new TickContext(Vector3.Zero, emptyTerrain, tick));
         }
         bool guideOnlyReleased = guideBlockAssigned
-            && guideBlockTentacle.GuideObstructionReleaseSerial == (enabled ? 1 : 0)
+            && guideBlockTentacle.GuideObstructionReleaseSerial == 1
             && guideBlockTentacle.TerrainBacktrackSerial == 0
             && guideBlockTentacle.BacktrackFrom == -1
             && !guideBlockTentacle.TerrainRecoveryActive
-            && (!enabled || guideBlockTentacle.ExternalTarget is null);
+            && guideBlockTentacle.ExternalTarget is null;
         TickTentacle(
             guideBlockDaddy, guideBlockTentacle, emptyTerrain,
             guideBlockParams.TerrainBacktrackReleaseTicks + 1L);
-        bool guideReleasedOnce = enabled
-            && guideBlockTentacle.TargetEffect.Released
+        bool guideReleasedOnce = guideBlockTentacle.TargetEffect.Released
             && guideBlockTentacle.TargetEffect.TargetId == guideBlockedTargetId;
         TickTentacle(
             guideBlockDaddy, guideBlockTentacle, emptyTerrain,
@@ -1129,8 +1131,7 @@ internal static class Program
         shiftedRecovery.Daddy.Shift(recoveryShift);
         Vector3 recoveryPointAfter = (Vector3)GetPrivateField(
             shiftedRecovery.Tentacle, "_terrainRecoveryPoint");
-        bool recoveryShifted = enabled
-            && shiftedRecovery.Tentacle.TerrainRecoveryActive
+        bool recoveryShifted = shiftedRecovery.Tentacle.TerrainRecoveryActive
             && shiftedRecovery.Tentacle.TerrainRecoveryPhase == 1
             && recoveryPointAfter == recoveryPointBefore + recoveryShift;
         shiftedRecovery.Daddy.Teleport(new Vector3(2f, 1f, -1f));
@@ -2060,8 +2061,10 @@ internal static class Program
         foreach (ulong seed in seeds)
         {
             StuckEscapeResult result = RunStuckEscape(enabled, seed);
+            // 实测这些 seed 全部经 detour + 普通换步脱困，从不动用强制豁免；
+            // 场景只断言真实发生的行为，豁免路径由下方直构探针单独钉死。
             bool ok = result.MaxStuck >= 0.75f
-                && result.ForcedSteps > 0
+                && result.TotalSteps > 0
                 && result.CrossedObstacle
                 && result.MinimumTargetDistance < 0.60f
                 && result.RecoveredAfterCrossing
@@ -2071,9 +2074,72 @@ internal static class Program
             all &= ok;
             summaries.Add($"{seed}:cross{result.CrossedObstacle}/recover" +
                 $"{result.RecoveredAfterCrossing}/d{result.MinimumTargetDistance:F2}/" +
-                $"step{result.ForcedSteps}/lat{result.MaximumLateral:F2}/torque{result.NoTorque}");
+                $"step{result.TotalSteps}/forced{result.ForcedSteps}/" +
+                $"lat{result.MaximumLateral:F2}/torque{result.NoTorque}");
         }
-        return (all, $"enabled={enabled} seeds=[{string.Join(',', summaries)}]");
+        (bool forcedGate, string forcedSummary) = CheckStuckForcedStepBypass(enabled);
+        all &= forcedGate;
+        return (all,
+            $"enabled={enabled} seeds=[{string.Join(',', summaries)}] " +
+            $"forcedBypass=[{forcedSummary}]");
+    }
+
+    /// <summary>
+    /// 直接构造“到达数不足 + stuck 超阈值”钉住强制换步豁免本身：豁免被删则强制
+    /// 释放不发生；普通释放与未卡住的对照都不得递增 StuckForcedStepReleaseSerial。
+    /// </summary>
+    private static (bool, string) CheckStuckForcedStepBypass(bool enabled)
+    {
+        DaddyLongLegsLocomotionController ArrangeProbe(
+            int arrivedCount, int stuckCounter)
+        {
+            DaddyLongLegsParams p = ProbeParams();
+            p.EnableStuckRecovery = enabled;
+            DaddyLongLegsLocomotionController daddy =
+                DaddyLongLegsFactory.CreateController(Vector3.Zero, p, 0x5F0CUL);
+            daddy.MoveDir = Vector3.Right;
+            daddy.RunSpeed = 1f;
+            int marked = 0;
+            foreach (DaddyTentacle tentacle in daddy.Tentacles)
+            {
+                if (marked >= arrivedCount)
+                    break;
+                SetPrivateProperty(tentacle, "HasLandingTarget", true);
+                SetPrivateProperty(tentacle, "AtGrabDestination", true);
+                marked++;
+            }
+            SetPrivateProperty(daddy, "StuckCounter", stuckCounter);
+            return daddy;
+        }
+
+        DaddyLongLegsParams reference = ProbeParams();
+        int forcedStuck = reference.StuckRiseTicks + 1;
+
+        // ① 到达数不足 + 卡住：只有豁免路径能释放，且必须计入 forced serial。
+        DaddyLongLegsLocomotionController forcedProbe = ArrangeProbe(1, forcedStuck);
+        InvokePrivate(forcedProbe, "UpdateStepRelease", Vector3.Right);
+        bool forcedReleased = forcedProbe.StepReleaseSerial == 1
+            && forcedProbe.StuckForcedStepReleaseSerial == 1
+            && forcedProbe.ActiveReplantTentacleIndex >= 0;
+
+        // ② 到达数不足 + 未卡住：普通门必须拦下，两个 serial 都不动。
+        DaddyLongLegsLocomotionController blockedProbe = ArrangeProbe(1, 0);
+        InvokePrivate(blockedProbe, "UpdateStepRelease", Vector3.Right);
+        bool shortfallBlocked = blockedProbe.StepReleaseSerial == 0
+            && blockedProbe.StuckForcedStepReleaseSerial == 0;
+
+        // ③ 全部触手到达 + 未卡住：普通释放发生，但绝不冒充 forced。
+        DaddyLongLegsLocomotionController ordinaryProbe = ArrangeProbe(int.MaxValue, 0);
+        InvokePrivate(ordinaryProbe, "UpdateStepRelease", Vector3.Right);
+        bool ordinaryNotCounted = ordinaryProbe.StepReleaseSerial == 1
+            && ordinaryProbe.StuckForcedStepReleaseSerial == 0;
+
+        // 三个子判据均只断言机制开启时的行为：消融时 ① 因豁免真实消失而行为变红；
+        // 若开关接线腐烂则三项全通过，成为矩阵可见的 unexpected PASS。
+        bool gate = forcedReleased && shortfallBlocked && ordinaryNotCounted;
+        return (gate,
+            $"forced={forcedReleased} shortfallBlocked={shortfallBlocked} " +
+            $"ordinaryClean={ordinaryNotCounted}");
     }
 
     private static (bool, string) CheckStuckJitter(Ablation ablation)
@@ -2191,6 +2257,8 @@ internal static class Program
             maxStuck,
             minimumTargetDistance,
             daddy.StepReleaseSerial,
+            // 只统计真正动用 stuck 豁免的释放；普通换步不再冒充 "forced"。
+            daddy.StuckForcedStepReleaseSerial,
             maximumLateral,
             noTorque,
             finite,
@@ -3045,7 +3113,9 @@ internal static class Program
                 && progress >= 5f
                 && stepDelta >= 4 && landingDelta >= stepDelta
                 && averageMovingSupport >= 0.15f
-                && minimumMovingSupport >= 0f
+                // EffectiveSupport 按构造恒非负，>=0 是空断言；末窗实测最低 ~0.76，
+                // 0.35 的地板在留出调参余量的同时仍能抓住“移动中支撑塌陷”类回归。
+                && minimumMovingSupport >= 0.35f
                 && finite && !daddy.QueryBudgetExceeded
                 && maximumQueries <= p.MaximumTerrainQueriesPerTick;
             all &= seedPass;
@@ -3398,6 +3468,7 @@ internal static class Program
         bool RecoveredAfterCrossing,
         float MaxStuck,
         float MinimumTargetDistance,
+        int TotalSteps,
         int ForcedSteps,
         float MaximumLateral,
         bool NoTorque,
