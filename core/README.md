@@ -19,13 +19,15 @@ core/
 ├── diagnostics/        ProcAnim.Core.Diagnostics    DeterminismHasher
 ├── species/            ProcAnim.Core.Species        BodyFactory（跨物种装配枢纽）
 │   ├── lizard/  humanoid/  spider/  centipede/  cicada/  vulture/  tentacle_plant/  deer/
+│   └── daddy_long_legs/
 │                        ProcAnim.Core.Species.<物种>
 ├── godot/              ProcAnim.Core.Terrain        引擎适配器（归宿主程序集，见下）
 ├── AssemblyInfo.cs                                  程序集属性（无命名空间）
-└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/  无引擎回归工程
+└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/
+    daddy_long_legs_smoke/                         无引擎回归工程
 ```
 
-**八个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
+**九个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
 唯一的跨物种边是 **Humanoid → Lizard**：人形腿复用蜥蜴 `Limb` 的 opt-in `LookaheadTicks`
 前瞻释放循环与 `MoveIntentDeadzone` 常量（其余物种各自声明自己的 deadzone，不共享）。
 这条边和「没有别的边」都由 `smoke/` 的 `[CORE-MODULARITY]` 扫描钉死：
@@ -42,7 +44,7 @@ core/
 `AssemblyInfo.cs` 只承载程序集属性。
 
 `species/BodyFactory.cs` 装配 lizard + humanoid + vulture 三个物种，是当前唯一的不对称点
-（另五个物种各有自己的 `XFactory`）。它坐在 `ProcAnim.Core.Species` 而非任何物种目录里，
+（另六个物种各有自己的 `XFactory`）。它坐在 `ProcAnim.Core.Species` 而非任何物种目录里，
 就是为了让这个不对称显式可见；按物种拆开是独立的后续工作。
 
 ## 文件
@@ -84,6 +86,20 @@ core/
   `DeerParams` / `DeerFactory`
   （`deer/original|compact|strider` 三个稳定 ID）；完整取证、3D 取舍与验证契约见
   [`docs/deer_controller.md`](../docs/deer_controller.md)
+- 长腿爸爸后端：`DaddyTentacle`（独立多段、被动碰撞/主动抓握分层、渐进剥离、短贴面平滑 guide、
+  停驶落点 incumbent、residual 的 LastPos 优先单段回滚，以及物理半径裁边的 tick-end 邻边审计；
+  拓扑阻断与 guide obstruction 分离，阻断后缀先卸力，再由世界材料 frame 驱动的有限候选做
+  球/边/自避全验证后原子重建）+
+  `DaddyLongLegsLocomotionController`（无前向完整图球团、移动期 1.2× 连续重力回补/净抬升、
+  movement episode 后至多 1g 回补与质心共同速度阻尼、
+  Task 与 Needed 正交的职责预算、受支撑余量保护的换步、默认无助推的 movement episode
+  与移动侧安全起步重落点、
+  确定性卡住退化；侧向权重 `.75`、attempt `80/400 tick`，超时重试成对精确反向；
+  body 与 tentacle 各有 `K=4` residual，触手仅在 LastPos 也不可行时回 Anchor）+
+  `DaddyLongLegsParams` / `DaddyLongLegsFactory`
+  （`daddy-long-legs/brother|daddy|terror` 三个稳定 ID）；完整 DLL 取证、3D 材料 frame、
+  宿主目标效果与查询上限见
+  [`docs/daddy_long_legs_controller.md`](../docs/daddy_long_legs_controller.md)
 - 秃鹫后端：`VultureWing`（段链翅膀：Flap 相位行波 / Grab 射线抓附，对身体零回传）+
   `VultureFlightController`（重力常开 + 拍翅相位同步 sin² 升力脉冲注入后脊柱；
   起飞/悬停/降落由 MoveTarget 几何与翅膀模式组合涌现，无 locomotion 状态机）+
@@ -98,7 +114,12 @@ core/
   `cicada_smoke/`（蝉专项无引擎冒烟）、
   `tentacle_plant_smoke/`（拟态草装配、三维游荡、攻击时序、命中/扑空、生命周期与确定性）、
   `deer_smoke/`（鹿拓扑、多节腿、常开重力支撑、完整步态、三预设 180° 换向弓向、
-  精确 frame 运输消融、地形、生命周期与确定性）
+  精确 frame 运输消融、地形、生命周期与确定性）、
+  `daddy_long_legs_smoke/`（seed 形态、整链支撑、连续重力、职责/换步、全向地形、
+  单触手打断、外部够取、五 seed 卡住脱困、STUCK-RETRY、Teleport 清 stun、
+  body+tentacle tick-end 2mm 残余地形门、
+  持续步态/深休息起步/长按对四种点按/三 seed 移动高度保持/静止墙边稳定、宿主时基与
+  二十四项无引擎机制消融）
 
 `BodyChunk` / `ChunkConnection` / `Body` / 地形查询是跨生物共享层；
 `Limb` + `LizardLocomotionController` + `BreedParams` 是蜥蜴式运动后端，
@@ -108,14 +129,16 @@ core/
 `CicadaLocomotionController` + `CicadaParams` 是蝉式飞行后端，
 `TentacleChain` + `TentaclePlantController` + `TentaclePlantParams` 是拟态草伏击后端，
 `VultureWing` + `VultureFlightController` + `VultureBreedParams` 是秃鹫式飞行后端，
-`DeerLeg` + `DeerLocomotionController` + `DeerParams` 是鹿式多节腿后端。
-八者是共享层之上的并列控制器，
+`DeerLeg` + `DeerLocomotionController` + `DeerParams` 是鹿式多节腿后端，
+`DaddyTentacle` + `DaddyLongLegsLocomotionController` + `DaddyLongLegsParams` 是无轴球团后端。
+九者是共享层之上的并列控制器，
 不互相继承；后续物种也应沿这个边界增加后端，不把 locomotion 模式堆进一个万能类。
-蜈蚣、蝉、拟态草与鹿的完整契约分别见
+蜈蚣、蝉、拟态草、鹿与长腿爸爸的完整契约分别见
 [`docs/centipede_controller.md`](../docs/centipede_controller.md) 和
 [`docs/cicada_controller.md`](../docs/cicada_controller.md)、
 [`docs/tentacle_plant_controller.md`](../docs/tentacle_plant_controller.md) 和
-[`docs/deer_controller.md`](../docs/deer_controller.md)。
+[`docs/deer_controller.md`](../docs/deer_controller.md)、
+[`docs/daddy_long_legs_controller.md`](../docs/daddy_long_legs_controller.md)。
 
 ## 最小嵌入（宿主三件事：地形、输入、tick）
 
@@ -189,9 +212,27 @@ dotnet run --project core/deer_smoke
                                     # + 高站姿/身体净空/头角不侵入/动态休息 reach
                                     # + 休息延迟前不误放脚、收腿全过程同对不双空
                                     # + 斜坡/台阶 + MoveTarget/生命周期 + 八项消融与双跑确定性
+dotnet run --project core/daddy_long_legs_smoke
+                                    # 三预设/多 seed 形态 + 完整图球团 + 整链贴面/连续重力
+                                    # + 职责/换步 + 全向地形 + 打断/外部够取/拉扯
+                                    # + 五 seed 卡住脱困/STUCK-RETRY + Teleport 清 stun
+                                    # + body/tentacle K=4 residual 与 tick-end 2mm 门
+                                    # + 静止墙边落点锁/中性支撑 + 邻边拓扑恢复
+                                    # + 普通/起步换腿槽的 1-tick stun 清槽与接管
+                                    # + 二十四项无引擎消融、三项 Godot 消融与双跑确定性
 ```
 
-哈希和配置数量以各 smoke / matrix 脚本的当前输出与钉死常量为唯一真相源；文档不复制
-可能漂移的快照。改共享内核后先跑全部无引擎 smoke，再跑仓库根的
+DaddyLongLegs 的 Jolt primitive-unit 保守式为
+`(5+2K)B + 14C + (11+2K)S + T(R+5) + 1`（`K=4`）；它包含每条触手同 tick 至多一个
+原子后缀恢复候选的前驱球、逐段球壳和相邻链边验证。三个预设公式下限
+`1658/2870/4021`，硬预算 `1700/2900/4050`。恢复保证是条件性的：有限候选中存在可行项时
+至多在候选数次尝试内重接；封闭/过窄几何保持无张力断开并确定性重试。Godot `course` 夹具隔离在 `z=-48m`，从约
+17.2° 斜坡上表面出生，避免与平地路线的长触手查询域或 Ramp/Floor 封闭交叠区混在一起。
+
+2026-08-04 实跑的 DaddyLongLegs 无引擎/Godot flat 基线为
+`C6AE88A2B807488E` / `B8F1A06E5BBEBB7C`，全矩阵查询峰值为 `1629/4050`；Daddy 专项为
+39 项 Godot 配置 + 27 个预期红灯消融。哈希和配置数量仍以各 smoke / matrix 脚本的当前输出与
+钉死常量为唯一真相源。改共享内核后先跑全部无引擎 smoke，再跑仓库根的
 `./tools/run_matrix.sh`、`./tools/run_spider_matrix.sh`、`./tools/run_cicada_matrix.sh` 和
-`./tools/run_tentacle_plant_matrix.sh`、`./tools/run_deer_matrix.sh`，保证既有后端基线不漂移。
+`./tools/run_tentacle_plant_matrix.sh`、`./tools/run_deer_matrix.sh` 和
+`./tools/run_daddy_long_legs_matrix.sh`，保证所有并列后端基线不漂移。

@@ -1,0 +1,225 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/daddy_long_legs_sandbox/DaddyLongLegsSandboxWorld.cs" id="1_world"]
+
+[sub_resource type="StandardMaterial3D" id="mat_floor"]
+albedo_color = Color(0.16, 0.18, 0.22, 1)
+roughness = 0.94
+
+[sub_resource type="StandardMaterial3D" id="mat_course"]
+albedo_color = Color(0.32, 0.36, 0.29, 1)
+roughness = 0.88
+
+[sub_resource type="StandardMaterial3D" id="mat_wall"]
+albedo_color = Color(0.29, 0.31, 0.38, 1)
+roughness = 0.84
+
+[sub_resource type="StandardMaterial3D" id="mat_ceiling"]
+albedo_color = Color(0.25, 0.30, 0.38, 1)
+roughness = 0.84
+
+[sub_resource type="StandardMaterial3D" id="mat_corner"]
+albedo_color = Color(0.38, 0.28, 0.46, 1)
+roughness = 0.80
+
+[sub_resource type="StandardMaterial3D" id="mat_block"]
+albedo_color = Color(0.48, 0.25, 0.18, 1)
+roughness = 0.86
+
+[sub_resource type="BoxShape3D" id="shape_floor"]
+size = Vector3(64, 0.5, 128)
+
+[sub_resource type="BoxMesh" id="mesh_floor"]
+size = Vector3(64, 0.5, 128)
+
+[sub_resource type="BoxShape3D" id="shape_course_ramp"]
+size = Vector3(8, 0.5, 8)
+
+[sub_resource type="BoxMesh" id="mesh_course_ramp"]
+size = Vector3(8, 0.5, 8)
+
+[sub_resource type="BoxShape3D" id="shape_course_step_1"]
+size = Vector3(3, 0.6, 8)
+
+[sub_resource type="BoxMesh" id="mesh_course_step_1"]
+size = Vector3(3, 0.6, 8)
+
+[sub_resource type="BoxShape3D" id="shape_course_step_2"]
+size = Vector3(3, 1.2, 8)
+
+[sub_resource type="BoxMesh" id="mesh_course_step_2"]
+size = Vector3(3, 1.2, 8)
+
+[sub_resource type="BoxShape3D" id="shape_course_platform"]
+size = Vector3(6, 2, 8)
+
+[sub_resource type="BoxMesh" id="mesh_course_platform"]
+size = Vector3(6, 2, 8)
+
+[sub_resource type="BoxShape3D" id="shape_wall"]
+size = Vector3(0.5, 10, 14)
+
+[sub_resource type="BoxMesh" id="mesh_wall"]
+size = Vector3(0.5, 10, 14)
+
+[sub_resource type="BoxShape3D" id="shape_ceiling"]
+size = Vector3(12, 0.5, 14)
+
+[sub_resource type="BoxMesh" id="mesh_ceiling"]
+size = Vector3(12, 0.5, 14)
+
+[sub_resource type="BoxShape3D" id="shape_inner_ceiling"]
+size = Vector3(12, 0.5, 3)
+
+[sub_resource type="BoxMesh" id="mesh_inner_ceiling"]
+size = Vector3(12, 0.5, 3)
+
+[sub_resource type="BoxShape3D" id="shape_corner"]
+size = Vector3(0.5, 8, 14)
+
+[sub_resource type="BoxMesh" id="mesh_corner"]
+size = Vector3(0.5, 8, 14)
+
+[sub_resource type="BoxShape3D" id="shape_block"]
+size = Vector3(4, 3.5, 4)
+
+[sub_resource type="BoxMesh" id="mesh_block"]
+size = Vector3(4, 3.5, 4)
+
+[sub_resource type="Environment" id="environment"]
+background_mode = 1
+background_color = Color(0.022, 0.027, 0.040, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.55, 0.63, 0.76, 1)
+ambient_light_energy = 0.62
+tonemap_mode = 2
+
+[node name="DaddyLongLegsSandboxWorld" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Terrain"]
+position = Vector3(0, -0.25, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+shape = SubResource("shape_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+mesh = SubResource("mesh_floor")
+surface_material_override/0 = SubResource("mat_floor")
+
+[node name="Course" type="Node3D" parent="Terrain"]
+
+[node name="Ramp" type="StaticBody3D" parent="Terrain/Course"]
+position = Vector3(-17, 0.75, -48)
+rotation = Vector3(0, 0, -0.30)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Course/Ramp"]
+shape = SubResource("shape_course_ramp")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Course/Ramp"]
+mesh = SubResource("mesh_course_ramp")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="Step1" type="StaticBody3D" parent="Terrain/Course"]
+position = Vector3(-11.5, 0.3, -48)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Course/Step1"]
+shape = SubResource("shape_course_step_1")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Course/Step1"]
+mesh = SubResource("mesh_course_step_1")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="Step2" type="StaticBody3D" parent="Terrain/Course"]
+position = Vector3(-8.5, 0.6, -48)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Course/Step2"]
+shape = SubResource("shape_course_step_2")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Course/Step2"]
+mesh = SubResource("mesh_course_step_2")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="Platform" type="StaticBody3D" parent="Terrain/Course"]
+position = Vector3(-4, 1, -48)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Course/Platform"]
+shape = SubResource("shape_course_platform")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Course/Platform"]
+mesh = SubResource("mesh_course_platform")
+surface_material_override/0 = SubResource("mat_course")
+
+[node name="Wall" type="StaticBody3D" parent="Terrain"]
+position = Vector3(8.25, 5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Wall"]
+shape = SubResource("shape_wall")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Wall"]
+mesh = SubResource("mesh_wall")
+surface_material_override/0 = SubResource("mat_wall")
+
+[node name="Ceiling" type="StaticBody3D" parent="Terrain"]
+position = Vector3(14, 8.25, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Ceiling"]
+shape = SubResource("shape_ceiling")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Ceiling"]
+mesh = SubResource("mesh_ceiling")
+surface_material_override/0 = SubResource("mat_ceiling")
+
+[node name="InnerCeiling" type="StaticBody3D" parent="Terrain"]
+position = Vector3(2, 8.25, 4)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/InnerCeiling"]
+shape = SubResource("shape_inner_ceiling")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/InnerCeiling"]
+mesh = SubResource("mesh_inner_ceiling")
+surface_material_override/0 = SubResource("mat_ceiling")
+
+[node name="Corner" type="StaticBody3D" parent="Terrain"]
+position = Vector3(20.25, 4, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Corner"]
+shape = SubResource("shape_corner")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Corner"]
+mesh = SubResource("mesh_corner")
+surface_material_override/0 = SubResource("mat_corner")
+
+[node name="Block" type="StaticBody3D" parent="Terrain"]
+position = Vector3(-10, 1.75, 12)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Block"]
+shape = SubResource("shape_block")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Block"]
+mesh = SubResource("mesh_block")
+surface_material_override/0 = SubResource("mat_block")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(-14, 12, 24)
+rotation = Vector3(-0.30, -0.75, 0)
+current = true
+fov = 62.0
+far = 100.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+rotation = Vector3(-0.82, -0.58, -0.18)
+light_color = Color(0.80, 0.89, 1, 1)
+light_energy = 1.25
+shadow_enabled = true
+
+[node name="WarmFill" type="OmniLight3D" parent="."]
+position = Vector3(-4, 8, 10)
+light_color = Color(1, 0.56, 0.34, 1)
+light_energy = 5.0
+omni_range = 28.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("environment")

@@ -21,7 +21,7 @@
 
 ### 1.1 目录分层与命名空间（`core/`）
 
-内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；八个物种后端互为平级、
+内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；九个物种后端互为平级、
 只共享底座（唯一例外见下表脚注）。
 
 ```
@@ -38,9 +38,11 @@ core/
 │   ├── cicada/         ProcAnim.Core.Species.Cicada
 │   ├── vulture/        ProcAnim.Core.Species.Vulture
 │   ├── tentacle_plant/ ProcAnim.Core.Species.TentaclePlant
-│   └── deer/           ProcAnim.Core.Species.Deer
+│   ├── deer/           ProcAnim.Core.Species.Deer
+│   └── daddy_long_legs/ ProcAnim.Core.Species.DaddyLongLegs
 ├── godot/              ProcAnim.Core.Terrain        引擎适配器（**归宿主程序集**，见 §1.2）
-└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/  无引擎回归工程
+└── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/
+    daddy_long_legs_smoke/                         无引擎回归工程
 ```
 
 两处**有意的目录 ≠ 命名空间**：`godot/` 的适配器实现 `Terrain` 的接口却不属于内核程序集，
@@ -90,6 +92,10 @@ core/
 | `species/deer/DeerLeg.cs` | 独立多节腿段链：出生初始理想长、随 RestAmount 变化的当前 reach、固定次数距离约束、地形抓点、可及极限拖身、持久有向 bend pole 与摆动内段纵向/正交双通道形态响应 | DeerTentacle / Tentacle |
 | `species/deer/DeerLocomotionController.cs` | 鹿专属控制器：恒重力支撑、非均匀推进、换步互锁、犹豫、连续体高与 COM balance | Deer.Act / Deer.Update |
 | `species/deer/DeerParams.cs` / `species/deer/DeerFactory.cs` | 鹿独立参数表与头、重叠躯干、轻鹿角、四条多节腿装配；original/compact/strider 三个稳定预设 | Deer 构造 + DeerTentacle 构造 |
+| `species/daddy_long_legs/DaddyTentacle.cs` | 独立多段触手：逐段扫掠/贴面/MTD、停驶落点保持、LastPos 优先残余回滚、物理半径裁边的 tick-end 邻边审计、无张力断边与原子后缀恢复、正交 Task/Needed 职责、打断与外部够取效果 | DaddyTentacle + Tentacle |
+| `species/daddy_long_legs/DaddyLongLegsLocomotionController.cs` | 无前向完整图球团控制器：整链支撑汇总、移动期 1.2× / 停驶后至多 1g 的连续重力回补、方向抓点推进、职责预算、换步与确定性卡住退化 | DaddyLongLegs.Act |
+| `species/daddy_long_legs/DaddyLongLegsParams.cs` / `DaddyLongLegsMorphology.cs` | 独立预设参数与按 seed 冻结的可变球/触手形态、材料 frame landmark | DaddyLongLegs 构造的随机出生形态 |
+| `species/daddy_long_legs/DaddyLongLegsFactory.cs` / `DaddyLongLegsTargetContracts.cs` | brother/daddy/terror 三稳定 ID、无状态确定性装配，以及按触手编号的纯值外部目标/效果接缝 | DaddyLongLegs / DaddyTentacle + 3D 宿主扩展 |
 | `species/vulture/VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
 | `species/vulture/VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
 | `species/vulture/VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
@@ -101,6 +107,7 @@ core/
 | `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
 | `tentacle_plant_smoke/` | 拟态草独立无引擎回归（装配、三面游荡、攻击时序、目标效果、生命周期与确定性） | — |
 | `deer_smoke/` | 鹿独立无引擎回归（装配、恒重力支撑、多节腿步态、地形、生命周期、确定性与机制消融） | — |
+| `daddy_long_legs_smoke/` | DaddyLongLegs 独立无引擎回归（seed 形态、整链支撑、职责/换步、全向地形、打断、外部够取、生命周期、确定性与机制消融） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -388,6 +395,26 @@ DeerLocomotionController deer =
   `AtMoveTarget`、`Shift` / `Teleport` / `Launch`。完整 DLL 取证、原作数值、3D 偏离理由、
   观测面和验证边界见 [`deer_controller.md`](deer_controller.md)。
 
+### 2.8 长腿爸爸装配契约（DaddyLongLegsLocomotionController）
+
+```csharp
+DaddyLongLegsParams p = DaddyLongLegsFactory.ByStableId("daddy-long-legs/daddy");
+DaddyLongLegsLocomotionController daddy =
+    DaddyLongLegsFactory.CreateController(spawnPoint, p, stableSeed);
+```
+
+- 工厂入口没有 `forward`：身体是出生时生成的完整连接球团，没有头尾轴。
+- 同一参数与 `ulong stableSeed` 冻结同一球数、半径、质量、完整图静息距离、触手数、逐条长度/
+  段数和 Fibonacci sphere 材料偏好；不同 seed 的形态差异由专项 smoke 扫描。
+- 每条触手无条件使用 `MinimumSegmentsPerTentacle=3`；原作只有启用 MMF 时才把最小段数钳到 3。
+- 触手按索引轮流锚到身体球，每条 `DaddyTentacle` 自有段链，不复用 `Limb`、`SpiderLeg`、
+  `TentacleChain` 或其它物种参数。
+- 三个稳定 ID 为 `daddy-long-legs/brother|daddy|terror`；未知 ID 快速失败。
+- 形态上限与查询公式、当前 DLL 数值、Terror 缩限理由和全部 3D 取舍见
+  [`daddy_long_legs_controller.md`](daddy_long_legs_controller.md)。
+- 参数校验还证明最大触手数下的最短初始长度分配可装配，并要求最短可能生成的 `LinkLength`
+  严格大于球壳/自避最小间距；这两个条件是后缀恢复候选可验证的装配前提。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -426,6 +453,16 @@ DeerLocomotionController deer =
   四条 `DeerLeg` 段链 → 仅在本 tick 已确认支点物理失效时的同对紧急落脚 → 统一评分换步与
   同对互锁 → 单次发布下一 tick 支撑。宿主不得单独 tick 腿链，也不得在支撑发布和
   下一 tick 受力之间改写抓点；这样会把支撑低通推进两次或让失效抓点多承力一拍。
+- `DaddyLongLegsLocomotionController.Tick` 内部序：`Body.Tick` 施完整重力并消费上一 tick 阻尼 →
+  `UnconditionalSupport-.025` → body `K=4` residual → 三 landmark 材料 frame → 解析原始 MoveTarget/MoveDir 与卡住历史 →
+  锁存/验证 detour，得到 locomotionMove → 固定索引逐条触手积分、逐段地形查询和贴面 →
+  最终链约束后的 tentacle `K=4` residual（先回可行 LastPos，最终才 Anchor 回退）→ 物理半径裁边的
+  相邻链边审计、拓扑阻断无张力断边和至多一个全验证原子后缀候选（guide obstruction 只清任务，
+  不进入拓扑恢复）→ 汇总全部 Locomotion task 的贴面支撑 →
+  移动期同 tick 对全团注入不钳 1 的 `1.2×` 抗重力；真实 episode 结束后钳至 `1g` 并衰减质量质心共同速度 →
+  无力偶推进/共同脱困增量 → 职责分配与换步 →
+  发布低通观测量与下一 tick 阻尼。
+  到点与卡住检测仍看原始 carrot；宿主不得单独 tick 触手或先应用效果再反向改变本 tick 支撑。
 - `VultureFlightController.Tick` 内部序（≙ RW `Vulture.Act`）：解析直喂目标与到达迟滞 →
   拍翅相位/振幅 → 逐翅模式决策（坠落自救 → 降落 → 起飞 → 逐翅自主）→ 身体阻尼/俯仰配平 →
   悬停或巡航推进（或栖息爬行）→ **逐翅升力注入** → 降落制动/起飞助推 → 头部伺服 →
@@ -435,7 +472,8 @@ DeerLocomotionController deer =
 ### 3.2 渲染插值
 
 渲染帧读 `chunk.LerpPos(t)` / `limb.LerpPos(t)`；拟态草另读 `Root`、`Hand` 和
-`Segments`，鹿另读每条 `DeerLeg.Segments[i].LerpPos(t)`。`t` = 物理插值分数 ∈ [0,1)。
+`Segments`，鹿另读每条 `DeerLeg.Segments[i].LerpPos(t)`，Daddy 另读每条
+`DaddyTentacle.Segments[i].LerpPos(t)`。`t` = 物理插值分数 ∈ [0,1)。
 Godot 宿主：`t = (float)Engine.GetPhysicsInterpolationFraction()`（沙盒即此）。
 渲染永远比物理「晚」不到一个 tick；**逻辑一律不读渲染帧率**。
 
@@ -486,6 +524,14 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
 和腿段统一冲量、保留 `MoveTarget` 和连续 `CurrentRideHeight`，但同样清休息/犹豫、恢复完整
 reach，并立即作废 `AtMoveTarget` 等下一 tick 重算。三者都不切换重力——Deer 的
 `GravityScale` 全程仍为 1。
+
+Daddy 同样暴露 `Shift`/`Teleport`/`Launch`：`Shift` 平移完整图身体、全部触手段、
+地形落点、MoveTarget、外部目标快照、卡住历史与拓扑恢复参考点，保留恢复 phase、职责和连续
+支撑；`Teleport` 保留出生形态但清旧落点、外部任务、MoveTarget、支撑、卡住历史与恢复暂态，
+恢复最低 locomotion 预算并把
+`UnconditionalSupport` 置 1；旧外部任务在下一 tick 发布一次 Released。`Launch` 给所有身体球和
+触手段同速冲量、清地形落点/恢复暂态并把 `UnconditionalSupport` 清 0，但保留 MoveTarget
+与外部目标输入供落地后续接。不能只 Shift 身体球而漏掉独立段链。
 
 拟态草不用移动生物的 `Teleport/Launch`：`Shift` 只用于世界 rebase 并保留攻击/抓取连续性；
 地形不随体移动的换洞必须调用 `Remount(newMount)`，它会清目标、抓取、攻击和旧导引；
@@ -591,6 +637,55 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   `BendPole` 和约束误差，供渲染与诊断使用；`MaxConstraintError` 在最终 MTD 后测量，固定端点、
   缓变形态长度和无穿透优先均可能贡献，不是纯 solver residual。宿主不得写这些状态来伪造支撑。
 
+### 4.1d 长腿爸爸（DaddyLongLegsLocomotionController）的输入与观测差异
+
+- 三旋钮仍是 `MoveDir` / `RunSpeed` / nullable `MoveTarget`，到点半径字段名为
+  `MoveTargetArriveRadius`。`MoveDir` 是完整 3D 世界方向，但只表达运动意图：身体没有 head、hips、
+  forward 或 world-up 姿态，控制器也不会为它补一根隐式前向轴。`MoveTarget` 以质量加权
+  `BodyCenter` 到宿主直喂点的 3D 距离判定；仍只接受邻近可达点，到点后宿主负责换点或清空。
+- 连续支撑观测为 `RawSupport`（各 Locomotion task 触手 `sqrt(贴面比例)` 并对到达落点加权后，
+  按全部触手数归一化）、`UnconditionalSupport`（Create/Teleport 后从 1 每 tick 减 `.025`）、
+  `ContinuousSupport=max(RawSupport^.21,UnconditionalSupport)`（原作是 `.30`；项目为连续 3D
+  稀疏整链接触有意改为 `.21`）、`EffectiveSupport`（前者的低通
+  观测值）、`GravityCancellation`（出生/移动期为 `ContinuousSupport*1.2`；至少一个 movement
+  episode 真结束后静止时至多为 `1g`）、
+  `DirectionalSupport`、`DriveScale` 与 `SupportNormal`。`SupportNormal` 通常汇总实际贴面段法线；
+  若某条触手只有经复验的 arrival reward、当前没有实际接触，则使用其已验证 `LandingNormal`。
+  全部都无贡献时保留上次有效值。它只代表支撑法线合成，不是生物的“上”，宿主不得据此改写
+  材料 frame。
+- 职责与恢复观测为 `LocomotionTentacleCount`、`ArrivedTentacleCount`、`StuckCounter` /
+  `StuckAmount`、`StuckDetourActive` / `StuckDetourDirection` / `StuckEpisodeSerial`、职责/释放/换步
+  serial，以及逐触手落点、reach/validation/residual 失效与 LastPos 恢复 serial、
+  `TickQueryCount` / `PeakQueryCount` /
+  `QueryBudgetExceeded`。地形拓扑诊断另读逐触手 `BacktrackFrom`、`TerrainRecoveryActive` / phase、
+  topology/guide obstruction 连续计数与恢复/release serial。逐触手再读正交的 `Task` /
+  `NeededForLocomotion`；`Role` 只是兼容 HUD
+  的派生色，再读 `GripFraction`、`SupportContribution`、
+  `AtGrabDestination`、`SearchFailureTicks` 和段接触；不存在“任一尖端抓住 = 整体抓稳”的布尔捷径。
+  detour 侧向权重为 `.75`，attempt 最短/最长 `80/400 tick`；超时且仍 stuck 时，连续 attempt 的
+  锁存侧向必须成对精确反向，smoke `[DADDY-CORE-STUCK-RETRY]` 直接断言这条重试契约。
+- `StunTentacle(index,ticks)` 按编号打断单条触手：它立即退出职责、清空支撑与目标并软化；其余触手
+  由同一个预算分配器接管。宿主应从 `FindIdleTentacle()` 取得真正空闲编号，再以
+  `TryAssignExternalTarget(index,snapshot)` 指派非运动够取；同一稳定 ID 的快照可逐 tick 更新，
+  `ClearExternalTarget(index)` 取消；无当前外部任务时取消是幂等 no-op，不影响运动支撑或落点。
+  等待下一 tick 发出旧目标 `Released` 的触手不会被
+  `FindIdleTentacle()` 返回。`ExternalReach` 与 `Stunned` 都清旧地形接触记忆、不吃 adhesion，且不计
+  运动支撑；free-duty Locomotion 虽显示为 Idle，仍会搜索、贴面、支撑并参与换步。
+- `TargetEffects[index]` 是每 tick 覆盖的纯值输出：`Reached` / `Held` / `Released` 加建议的
+  `PositionCorrection` / `VelocityDelta`。目标实体、伤害、吞入和是否接受拉扯始终归宿主权威；
+  `Reached` 与 `Held` 都是当前 tick 尖端在到达半径内的电平值（不锁存），`Released` 才是一次性
+  边沿；`PullTowardBody=false` 时只报告够到，不请求拉向身体。快照的 `VelocityPerTick` 供宿主状态链和
+  确定性/rebase 使用；当前核心不额外预测位置，宿主应先更新 `Position` 再回喂。
+- 真实相邻链边一旦被地形阻断，该条触手从同 tick 起不得再输出 ExternalReach 的
+  `Reached/Held` 或拉扯；若持续阻断使任务失效，核心为旧 StableId 排队且只发布一次
+  `Released`。guide obstruction 也可使任务失效，但只触发重搜/释放，不设置 `BacktrackFrom`、
+  不拆边和不重建后缀。
+- `Shift` / `Teleport` / `Launch` 与其它移动后端同名同义；三者都覆盖全部身体球与全部触手段。
+  `Shift` 平移阻断点并保留正在尝试的恢复 phase；`Teleport` 清旧地形/外部目标/路径点、单条 stun
+  与恢复历史并恢复出生支撑，`Launch` 清恢复暂态并释放地形、
+  清出生支撑但保留外部目标快照和 `MoveTarget`，之后靠连续支撑与职责预算自然恢复；专项 lifecycle
+  smoke 会先制造单条 stun 和外部目标，再直接断言 `Teleport` 已清 stun 且下一 tick 发布 Released。
+
 ### 4.2 人形（HumanoidLocomotionController）的输入面差异
 
 三旋钮语义与蜥蜴一致（`MoveDir`/`RunSpeed`/可选 `MoveTarget`，同一 `MoveIntentDeadzone`），
@@ -653,6 +748,10 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 | `DeerLocomotionController.Head` / `.Trunk[i]` / `.Antler` | 鹿的头、粗重叠躯干链和大轻鹿角物理代理；鹿角目标在头上方略向前，渲染层不可把它当躯干球；半径直接取 chunk 数据 |
 | `DeerLeg.Segments[i].LerpPos(t)` / `.BendPole` | 鹿多节腿的正式几何；从锚点依次连每段，不用单粒子腿或渲染层 IK 代替 |
 | `DeerLeg.AttachedAtTip` / `.Gripping` / `.CandidatePoint` / `.SupportContribution` | 鹿足端踩住、确认、候选与连续支撑调试状态；沙盒据此区分落脚和摆动 |
+| `DaddyLongLegsLocomotionController.Body.Chunks` / `.Body.Connections` | 长腿爸爸可变数量的重叠身体球与完整图静息距离；全部连接都是出生体型，不要从任意两球推导前向 |
+| `DaddyTentacle.Segments[i].LerpPos(t)` / `.TerrainContact` / `.ContactNormal` | 每条独立触手的正式几何与逐段贴面状态；支撑来自整链比例，不另画只承重的“脚尖” |
+| `DaddyTentacle.Task` / `.NeededForLocomotion` / `.Role` / `.LandingPoint` / `.IdealLandingPoint` / `.GripFraction` | 真实任务、运动预算标记、派生职责配色、当前/理想落点与连续贴附比例；free-duty 也显示理想落点 |
+| `RawSupport` / `UnconditionalSupport` / `ContinuousSupport` / `EffectiveSupport` / `GravityCancellation` / `LocomotionTentacleCount` | 长腿爸爸瞬时贴面、出生支撑、直接物理支撑、低通观测、移动期 1.2× / 停驶后至多 1g 回补与职责预算调试量；这些连续量取代抓稳/坠落二态着色 |
 
 ### 5.2 AI / 游戏逻辑可读
 
@@ -662,6 +761,9 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 `SpiderLeg.GripNormal` / `HasGrip` / `BendPole` / `KneePos`；弯腿姿态是正式只读输出。
 鹿的同名移动观测外，另按 §4.1c 读取连续支撑、高度、犹豫、足端凸包 balance 与逐腿段链状态；
 鹿没有 `ApplyGravity`，也不把 `DeerLeg` 强转成 `Limb`。
+长腿爸爸按 §4.1d 读取连续支撑、方向侧支撑、职责与卡住恢复量；它同样没有 `ApplyGravity`，
+也没有可供 AI 读取或写入的 forward。外部够取结果只认 `TargetEffects`，不得从段链距离自行制造
+命中、伤害或吞入事件。
 蜥蜴专属的 `StraightenOutNeeded` / `SpineCornerStuckTicks` /
 `MaxSpineCornerStuckTicks`（姿态恢复需求、局部髋部卡角与本次恢复生命周期峰值；
 Teleport/Launch 开新生命周期；诊断/AI 可读，不得由宿主写）、
@@ -779,6 +881,19 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
 - 拟态草查询由目标视线、固定候选导引探针和可见段碰撞构成；候选顺序与单 tick 上限必须固定。
   `TickQueryCount` / `PeakQueryCount` 进入 smoke 峰值门。具体预算以
   `tentacle_plant_smoke` 和 Godot matrix 当前输出为准，文档不预写未测数字。
+- DaddyLongLegs 按 Jolt primitive units 计费：Raycast=`1`、SpherePenetration=`2`。令身体球为 `B`、
+  完整图连接数 `C=B(B-1)/2`、触手总段 `S`、触手数 `T`、每次扇扫 `R`、body/tentacle 共用
+  residual 上限 `K=4`，保守式为 `(5+2K)B + 14C + (11+2K)S + T(R+5) + 1`。
+  后两项包含所有触手同 tick 各尝试一个原子后缀候选时的前驱球复验、逐段球壳和相邻链边验证。
+  Brother/Daddy/Terror 的总段帽为 `64/120/144`，公式下限为 `1658/2870/4021`，硬预算为
+  `1700/2900/4050` units/tick；预算适配器只包现有 `ITerrainQuery`，耗尽时确定地返回 miss，
+  不旁路到场景树。`Body.Tick` 后每个身体球最多四次 residual sphere MTD，检测到相反方向二周期
+  时回上一 tick `LastPos`。最终链约束后每个触手段同样最多四次；检测到二周期或第 4 次后仍命中，
+  先复验并回到可行 `LastPos`，只有历史位置也不可行才收回 Anchor。随后用物理半径裁边审计真实
+  相邻边；拓扑阻断立即卸掉跨边张力，整条触手连续阻塞达到 6 tick 后才尝试原子后缀恢复。有限
+  候选内存在可行项时至多在候选数次尝试内接回；封闭或过窄几何保持断开并确定性重试。tick-end
+  穿透门为 `2mm`。Daddy 专属 snag 阀为 `SnagStretchRatio=4`、
+  `SnagReleaseTicks=120`，不进入共享连接语义。
 
 ## 7. 确定性守则与回归
 
@@ -831,27 +946,45 @@ dotnet run --project core/tentacle_plant_smoke
 #    support/pair/hesitation/release/balance/stance/antler/bend 验证门自身会红。
 dotnet run --project core/deer_smoke
 
-# ⑥ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
+# ⑥ 长腿爸爸无引擎冒烟：27 个 seed 形态、完整图装配、整链支撑与连续重力、方向推进、
+#    职责预算/换步、五类解析地形、单触手打断接管、外部够取、五 seed 卡住恢复、生命周期、
+#    查询/自分离/高站姿/持续换步与反向移动、无慢性自旋、Teleport 清 stun/发布 Released、
+#    STUCK-RETRY 精确反向重试、
+#    body+tentacle tick-end 2mm 残余地形门、静止墙边落点锁与中性支撑、
+#    邻边拓扑阻断/guide obstruction 分离、无张力断边、原子后缀重建、外部 Released exactly-once、
+#    双跑/40vs400Hz/微扰，并逐项关闭二十四项机制（含主动/被动抓握区分、渐进剥离、
+#    slack guide、无助推起步重落点、换步支撑余量、support-lift、independent-duty、
+#    idle-landing-stability、idle-support-neutrality、residual-terrain）验证门会红。
+dotnet run --project core/daddy_long_legs_smoke
+
+# ⑦ 长腿爸爸 Godot 矩阵：39 配置覆盖普通与 12-body 形态的双跑/40vs400Hz、微扰、
+#    三预设四种 seed 形态、平地/深休息起步/点按、三 seed 高站姿→水平移动高度保持、坡/墙/
+#    静止墙边/天花板/内外角、打断接管、五 seed 卡住脱困、外部够取、击飞与生命周期；另有
+#    二十四个无引擎及三个 Godot 预期红灯消融。course 整体隔离在 z=-48m，
+#    从约 17.2° 斜坡上表面出生，不与 flat/idle-start 的长触手查询域重叠。
+./tools/run_daddy_long_legs_matrix.sh
+
+# ⑧ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
 #    小/大窄墙双侧抱持、墙—墙 L 角、墙→天花板，以及小/大型三向急转恢复。
 ./tools/run_spider_matrix.sh
 
-# ⑦ Cicada Godot 矩阵：双预设、40/400Hz、微扰、三面停驻、起飞、Charge 与撞墙。
+# ⑨ Cicada Godot 矩阵：双预设、40/400Hz、微扰、三面停驻、起飞、Charge 与撞墙。
 ./tools/run_cicada_matrix.sh
 
-# ⑧ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
+# ⑩ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
 #    双跑/40vs400/1mm 微扰与三预设；哈希由脚本当前基线判定。
 ./tools/run_tentacle_plant_matrix.sh
 
-# ⑨ 鹿 Godot 矩阵：三预设、双跑/40vs400/微扰、斜坡、台阶、墙前停住、90° 转向、
+# ⑪ 鹿 Godot 矩阵：三预设、双跑/40vs400/微扰、斜坡、台阶、墙前停住、90° 转向、
 #    三预设各自的 180° 反转、
 #    摆动腿真实弓向、粗糙错高、休息、击飞、MoveTarget 与生命周期；退出码聚合八个预期红灯注入。
 ./tools/run_deer_matrix.sh
 
-# ⑩ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ⑫ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ⑪ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑬ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
@@ -901,6 +1034,21 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 终态非相邻间距为半径和 1.917 倍，严重成团连续 0 tick。
 固定 End 窄墙场景完成一次前向翻越后停驶 381 tick，终态连接偏差 7%，穿透 `0m`。
 
+DaddyLongLegs 的本轮地形卡腿专项覆盖：物理半径裁边的 tick-end 邻边审计、比 `TerrainSkin`
+更薄的墙、阻断边沿链迁移但触手 episode 连续、正交双墙、候选末端球失败与候选自避失败、失败
+候选零部分提交、合法凸角绕行、拓扑阻断/guide obstruction 分离、ExternalReach exactly-once
+`Released`，以及 Shift 保留 phase、Teleport/Launch/Stun 清恢复暂态。关闭
+`EnableTerrainBacktrack` 时组合门必须退出 1。串行换腿另以普通/起步两夹具断言 1-tick stun
+同步清槽、同一安全窗不二次释放、下一窗口由其它腿接管，并在起步夹具重新置位 pending；真实
+触手 tick 会在控制器检查前把计时归零。Godot `wall/corner/outer/ceiling/stuck` 另用真实 Jolt
+统计逐边与逐触手阻塞 run，并要求终态无阻断边、残余穿透与查询预算同时通过。三个正式预算为
+`1700/2900/4050`，公式下限为 `1658/2870/4021`。2026-08-04 完整实跑的 Daddy 无引擎/
+Godot flat 基线为 `C6AE88A2B807488E` / `B8F1A06E5BBEBB7C`，全矩阵查询峰值为
+`1629/4050`；地形路线最长阻断 episode 为 10 tick，全部终态阻断边为 0、tick-end 穿透为 `0m`。
+Daddy 的 39 项 Godot 配置 + 27 个预期红灯消融全绿；六套 Godot 矩阵合计 144 项
+（45+16+9+17+18+39）全部 GREEN，既有 105 项仍命中原固定哈希和行为门。后续仍以各脚本钉死
+常量和 PASS 输出为真相源，不能用这份快照替代重跑。
+
 可执行基线真相源分别位于：
 
 - Lizard / Centipede：`tools/run_matrix.sh`、`core/smoke/Program.cs` 与
@@ -909,6 +1057,8 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 - Cicada：`tools/run_cicada_matrix.sh` 与 `core/cicada_smoke/Program.cs`；
 - TentaclePlant：`tools/run_tentacle_plant_matrix.sh` 与 `core/tentacle_plant_smoke/Program.cs`；
 - Deer：`tools/run_deer_matrix.sh` 与 `core/deer_smoke/Program.cs`；
+- DaddyLongLegs：`tools/run_daddy_long_legs_matrix.sh` 与
+  `core/daddy_long_legs_smoke/Program.cs`；
 - Humanoid：`tools/run_matrix.sh`（HASH_HUMANOID_* 六条）与 `core/smoke/Program.cs`
   的 `HumanoidExpectedHash`。
 
@@ -920,7 +1070,8 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 主项目无单元测试工程、`tests/` 为空，惯例是 **headless 场景冒烟**（`MotionSmoke` 模式：
 `--headless --scene …` + PASS 标记；其 ClockProbe 已验证过「两次构建 40 步轨迹逐 float 一致」，
 确定性标准同构）。建议：对应物种的 `core/*_smoke` 原样带走（拟态草为
-`core/tentacle_plant_smoke`，鹿为 `core/deer_smoke`，均为纯 .NET 秒级回归），另加一条
+`core/tentacle_plant_smoke`，鹿为 `core/deer_smoke`，长腿爸爸为
+`core/daddy_long_legs_smoke`，均为纯 .NET 秒级回归），另加一条
 `tech_validation/m10_motion/` 风格的场景探针跑真实地形（等价本仓库 `--determinism` 模式）。
 
 ## 8. 迁移路线与集成姿态（主项目对接面调研结论，2026-07）
@@ -989,13 +1140,21 @@ collider，天然合规）、不动根（内核只算自己的 chunk 位置）�
 - 站姿/恢复观测读 `PlantedLegCount`、`TotalSupport`、`SupportNormal`、
   `CurrentRideHeight` 和 `BalanceOffset`，不从“重力开关”反推 Deer 状态。
 
+**DaddyLongLegs 分支**也以 `BodyCenter` 为 tether 的 `bodyAnchor`，但意图不压平：墙、顶与棱角
+路径点都保留完整 3D 方向。它没有 `Grounded`/`ApplyGravity` 或 forward；宿主只读连续
+`ContinuousSupport` / `EffectiveSupport` / `GravityCancellation` / `DirectionalSupport` 和逐触手
+`Task`/`NeededForLocomotion`，不能从根朝向
+重建身体姿态。主动击飞仍走 `Launch`，换房走 `Teleport`，世界 rebase 走 `Shift`。若 AI 要用
+空闲触手够取目标，必须先 `FindIdleTentacle`，逐 tick 回喂纯值快照并消费 `TargetEffects`；
+gameplay 对目标的实际修正、伤害与吞入不进入视觉 tether 层。
+
 > 状态如实说明：本仓库交付到「API 与配方齐备」；tether 循环本体（读根、算三档、写
 > 输入）活在主项目的 snapshot 映射层里，**闭环要在主仓接线后才算验证完成**——
 > 在那之前 M5 的准确状态是「内核抽离完成 + 集成契约就位」，不是「默认集成姿态已闭环」。
 
 **姿态 2：RW 忠实——内核当位置权威，根跟随内核。**
 `MoveDir/RunSpeed` 直接来自 AI，宿主根每帧贴到所选后端的权威点：Lizard 为
-`Hips.Pos`（或质心），Deer 为 `BodyCenter`。运动手感 100% 由所选内核决定（Deer 仍是地面
+`Hips.Pos`（或质心），Deer 与 DaddyLongLegs 为各自 `BodyCenter`。运动手感 100% 由所选内核决定（Deer 仍是地面
 支撑/跌落，不会因此获得爬墙），但违反规格 §7 现行边界——
 适合作为**新怪物原型**走规格修订（M10.4+ 的决策），不适合塞进现有怪物。
 
