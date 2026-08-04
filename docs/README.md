@@ -12,6 +12,7 @@
 | [tentacle_plant_controller.md](tentacle_plant_controller.md) | **拟态草 3D 后端**：直接反编译 TentaclePlant/Tentacle 并以 PoleMimic、GarbageWorm 对照；记录锚定式身体、独立触手段链、确定性三维游荡、蓄势—突刺—回收、纯值目标/效果接缝、三种安装朝向与专项回归。 |
 | [deer_controller.md](deer_controller.md) | **Deer 3D 后端**：直接反编译 Deer / DeerTentacle / Tentacle；记录高站姿、头顶大轻鹿角物理代理、粗重叠躯干、动态 reach 的独立多节腿、重力常开下的连续支撑/推进/迈步，以及 3D 外撇、有向 bend pole、三预设 180° 换向真实弓向、地形接缝、宿主生命周期、白盒沙盒与专项回归。 |
 | [daddy_long_legs_controller.md](daddy_long_legs_controller.md) | **DaddyLongLegs 3D 后端**：直接反编译 DaddyLongLegs / DaddyTentacle / Tentacle；记录无头尾完整图球团、seed 冻结的确定性可变形态、Fibonacci sphere 材料偏好、主动/被动贴附分层、渐进剥离与余长弧形 guide、连续重力抵消、触手职责预算、停驶落点锁与中性支撑、锁存侧向脱困，以及 tick-end 邻边审计、无张力断边和全验证原子后缀恢复；另含单触手打断、纯值外部够取/拉扯与专项回归。 |
+| [dropbug_controller.md](dropbug_controller.md) | **DropBug 3D 后端**：直接反编译 DropBug / DropBugAI / DropBugGraphics（腿为纯图形件实证）；记录三节短链身体、站稳计数与前后不对称重力、运行时收放静息长度的悬挂态、3D 悬挂点判据、弹道俯冲与空中修正、蓄力扑击与轴向可及、越障抬升、倒退接近、确定性卡住抖动、宿主接口、有意偏离原作清单与专项回归。 |
 | [known_issue_three_chunk_turn_response.md](known_issue_three_chunk_turn_response.md) | **历史问题（已随 RearBrace 轮消失，保留复现与指标）**：`heavy`/`hexapod` 行进中切换胡萝卜时中段局部轴领先头段。含确定性复现、当时与当前的量化对照、当前回归边界。 |
 
 > **没有独立文档的三个并列后端**：蜘蛛（`SpiderLocomotionController`）、秃鹫

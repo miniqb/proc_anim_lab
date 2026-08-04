@@ -2,16 +2,17 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**DaddyLongLegs 无轴球团后端 + Deer 多节腿支撑后端 + 既有并列物种控制器（2026-08-04）**——
+> 当前状态：**DropBug 悬挂伏击后端 + 既有并列物种控制器（2026-08-04）**——
 > `ProcAnim.Core` 现在包含 Lizard / Humanoid / Spider / Centipede / Cicada / Vulture /
-> TentaclePlant / Deer / DaddyLongLegs 九个平行的物种控制器。
+> TentaclePlant / Deer / DaddyLongLegs / DropBug 十个平行的物种控制器。
 > 蜈蚣的任意节装配、双端表面轨迹、真实抓足和四个稳定预设，蝉的 3D 飞行、显式三面停驻、Charge、
 > 四翼四触须和 light/dark 预设，以及秃鹫的重力常开升力脉冲飞行、拍翅行波、栖息/起飞涌现和
 > 四个品种预设均已落地并有独立回归；拟态草另以三向锚定、独立段链、伏击抓取回收和三预设
 > 展示固定生物参数空间；鹿以粗重叠躯干、轻鹿角和四条独立多节腿验证常开重力下的连续
 > 支撑/迈步路线；长腿爸爸以 seed 冻结的完整图重叠球团、可变整链贴面触手、连续重力抵消、
-> 肢体职责预算和全向攀附验证无前向轴的第三条运动路线；M5 内核抽离、回迁契约及 Lizard
-> 外部评审修复保持完成。
+> 肢体职责预算和全向攀附验证无前向轴的第三条运动路线；掉落虫以三节短链、前后不对称重力、
+> 运行时收放静息长度的悬挂态、弹道俯冲与蓄力扑击验证第四条"伏击者"运动路线；
+> M5 内核抽离、回迁契约及 Lizard 外部评审修复保持完成。
 > 「默认集成姿态」的闭环在主仓接线后验证（契约 §4.1/§8.3）。
 >
 > 2026-07-21 墙角残留深挖轮已完成：多节脊柱持久拉直、确定性掉头、局部卡角/terrainSqueeze、接触可行锥结构恢复与四条事件相对回归均已落地；历史红灯说明保留在下文，最终状态以下一段「修复轮三」与当前矩阵为准。
@@ -37,7 +38,8 @@
 4. **走路 = plant-and-trail**：脚踩住不动 → 身体前移 → 脚相对落后超阈值 → 找新落点 → 再踩住；腿长用距离约束维持。
 5. **脚落点 = 射线打真实 3D collider**（**不拆网格、不重造格子碰撞**，见研究文档 §12）；Godot 用 `PhysicsRayQueryParameters3D`。
 6. **locomotion 模式靠涌现**：Lizard/Spider 抓住地形时关闭重力；Deer/Vulture 用常开重力下的
-   连续升力，DaddyLongLegs 则按整链贴面支撑连续抵消重力。走/爬/攀附仍不按 floor/wall/ceiling
+   连续升力，DaddyLongLegs 按整链贴面支撑连续抵消重力，DropBug 站稳时前段全额、
+   尾段部分抵消（前后不对称）。走/爬/攀附仍不按 floor/wall/ceiling
    枚举模式；玩家式显式状态机仅在确需精细操控的角色上使用。（水中运动不做，见 §4。）
 
 ## 3. 相关文档（本项目内引用）
@@ -51,6 +53,7 @@
 - **[`docs/deer_controller.md`](docs/deer_controller.md)** —— **并列 Deer 后端**。直接反编译 Deer / DeerTentacle / Tentacle：粗重叠躯干、轻鹿角、四条独立多节腿、常开重力连续支撑/推进/换步、3D 外撇与 bend pole、宿主生命周期、沙盒和专项回归。
 - **[`docs/daddy_long_legs_controller.md`](docs/daddy_long_legs_controller.md)** —— **并列 DaddyLongLegs 后端**。直接反编译 DaddyLongLegs / DaddyTentacle / Tentacle：无头尾完整图球团、seed 冻结的可变形态、Fibonacci sphere 材料偏好、整链逐段贴面、连续重力抵消、职责预算、确定性卡住退化，以及 tick-end 邻边审计、无张力断边和原子后缀恢复；另含单触手打断与纯值外部够取接缝。
 - [`docs/known_issue_three_chunk_turn_response.md`](docs/known_issue_three_chunk_turn_response.md) —— **历史问题**（已随 RearBrace 轮消失，2026-07-30 重跑确认）：三节脊柱行进中切向时中段领先头段。保留确定性复现、指标定义与前后对照。
+- **[`docs/dropbug_controller.md`](docs/dropbug_controller.md)** —— **并列 DropBug 后端**。直接反编译 DropBug / DropBugAI / DropBugGraphics（腿为纯图形件实证）：三节短链身体、站稳计数与前后不对称重力、运行时收放静息长度的悬挂态、3D 悬挂点判据（法线朝下门 + 厚度探针 + 净空 + 竖直落差）、弹道俯冲与高位水平修正、蓄力扑击与轴向可及、越障抬升、倒退接近、确定性卡住抖动、宿主接口、有意偏离原作清单与专项回归。
 - **蜘蛛 / 秃鹫 / 人形三个并列后端没有独立文档**：契约分别在 [`docs/porting_contract.md`](docs/porting_contract.md) §2.3 / §2.5·§4.1b / §4.2·§5.4，以及本文件 §5 的对应段落。
 - [`docs/README.md`](docs/README.md) —— 文档索引。
 - 源文档（主项目，真相源）：`../random_room/random-room-runtime/docs/rainworld_procedural_animation_research.md`（本项目内为**工作副本**，两边如有更新需手动同步；副本中指向主项目其它文档的相对链接会失效，属正常）。
@@ -356,6 +359,39 @@
 > 读上次 Tick 缓存质心的 no-op，以及沙盒 40tps 下渲染插值 alpha 恒 0（改为 tick 余数+引擎物理帧
 > 分数两级合成，仅渲染，不进 tick/哈希）。
 >
+> **并列掉落虫后端（DropBug，2026-08-04）**：直接反编译 DropBug / DropBugAI /
+> DropBugGraphics（腿实证为纯图形 `Limb[2,2]`，不回传力），新增 `core/species/dropbug/`
+>（`DropBugParams` / `DropBugFactory` / `DropBugLeg` / `DropBugLocomotionController`），
+> 只复用 Body/连接/`ITerrainQuery` 底座，共享层零改动（core csproj 仅加 dropbug_smoke
+> 的 glob 排除行）。身体 = 三节短链（头/中/尾 6/8/6px 换算，头-中/中-尾 Rigid +
+> 头-尾 PushOnly 防对折，WeightA 按质量反比 ≙ weight −1）+ 仅运动时注入的自撑力对。
+> 三点此前九个后端都没有：① **运行时形变**——悬挂时三条连接静息长度按 HangFactor
+> 插值收缩（12→5 / 14→2 / 8→0 px），中/尾停止碰撞埋入锚面，退出瞬时恢复（RestLength
+> 是既有公开可变字段，无共享层配合）；② **弹道攻击**——脱悬俯冲先削速再施 21/16px
+> 方向功率冲量，腾空持续头朝目标/中尾反向修正，高于目标 6.25m 且距 8.75m 内加水平
+> 修正，触地即停 + 20 tick 冷却；③ **前后不对称支撑**——站稳（footingCounter>10，
+> 失稳 −3/tick 宽限帽 35）时前两节 ×0.8 阻尼 + 全额抵消重力，尾节只抵消
+> Lerp(0.5, 1, stuck) 且无阻尼（尾巴自然下垂），倒退行走时尾节按前节处理。
+> 悬挂点 3D 判据 = 法线向下 ≥cos45° + 实体厚度探针 0.3m + 法向净空 0.6m + 世界竖直
+> 落差 ≥3m（≙ 空 tile + 上方 2 实心 + 下方空 + floorAltitude ≥6 tile）；贴附半径 1m +
+> 最后 1.25m 爬升辅助，更高的锚由宿主给邻近可达位（不移植原作的天花板攀爬）。地面蓄力
+> 扑击 charging +1/15（头 +c²、中 −4c px），可及 = LerpMap(dot(扑向,身体轴), −0.1, 0.8,
+> 0, 300px, 0.4)——侧对显著缩短，目标出可及逐 tick 放弃；越障抬升按「前进受阻且头落在
+> 中段后面」的原作字面条件涌现（实测点火于反转朝向）；卡住抖动 = 30 tick 窗口净位移 +
+> 整数模数伪随机（原作 Random → 确定性等价）；步频 RunCycle 按头部实际位移比例驱动，
+> 静止严格为零。显式状态只保留 HangFactor / PounceCharge / Diving / AttackCooldown
+> 四个跨 tick 意图量，其余（站/走/坠/倒退/越障）全部涌现。宿主接口：MoveDir/RunSpeed/
+> MoveTarget + CarriedMass + AttackTarget（固定或逐 tick 随动）+
+> TryAssignHangAnchor/ClearHangAnchor/ReleaseHangDive/TryStartPounce/CancelPounce +
+> Shift/Teleport/Launch。稳定 ID = `dropbug/original|nimble|bulky`（未知 ID 快速失败）。
+> 独立入口 `scenes/dropbug_sandbox.tscn`、`core/dropbug_smoke`、
+> `tools/run_dropbug_matrix.sh`。无引擎 smoke 20 门全真断言、八机制各含消融红灯验证，
+> 900 tick 固定哈希 `C96B800B5F039447`（1mm 微扰 `56A3ADA871066245`）；Godot 矩阵
+> 18 项（walk 双跑/40vs400/微扰 + 坡/越障/卡住/倒退/悬挂收放/俯冲/蓄力/放弃/负重/
+> 击飞/生命周期 + nimble/bulky）全部命中钉定基线（walk `8C182AF34288285A`）；改动前后
+> 全仓既有 12 套回归输出逐字节一致（唯一差异为主 smoke `[CORE-MODULARITY]` 横幅
+> 9→10 物种）。数值表、3D 取舍与偏离清单见 `docs/dropbug_controller.md`。
+>
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
 > **SpineFollower 修复（RotationChunk 轮后追加，2026-07；多节脊柱爬墙 V 形折叠 bug）**：`LizardLocomotionController.ApplyLocomotionForce` 原先让链尾 `Hips` 直接追「目标点身后一节」，偏移量取 `SpineLength`（= 脊柱**全长**，头到髋各连接 RestLength 之和）——两节脊柱（Head/Hips 相邻）时这恰好退化成正确语义，三节以上（heavy/hexapod）时中间节完全没有驱动力，两条独立刚性连接在「头到髋直线距离 < 脊柱全长」的欠约束自由度上被动折成 V 形，且抓稳后重力关闭，错误姿态可稳定维持（反编译 `Lizard.cs:2277-2280` 核实根因：RW 原版只用 `bodyChunkConnections[0].distance`——**单节**长度——驱动 `bodyChunks[1]`，链尾 `bodyChunks[2]` 从不被直接追踪，只靠连接约束被动拖行）。修复：新增 `LizardLocomotionController.SpineFollower`（≙ `bodyChunks[1]`，工厂钉定为 `chunks[1]`）与 `HeadLinkLength`（单节长度）承接这个追踪力，`Hips` 恢复纯被动拖行。两节脊柱下 `SpineFollower` 与 `Hips` 是同一 chunk 且 `HeadLinkLength` 数值与原 `SpineLength` 相同——`default`/`sprinter`/`wall`/`stand`/`carrot`/`embed`/`wallside` 七条矩阵配置与 smoke 哈希逐位不变（no-op 有数学证明，非仅回归验证）；`heavy`/`hexapod`（三节脊柱）换新基线：路点数 heavy 6→8、hexapod 8→9（同 2000 tick），官方巡逻路线下头-中-髋夹角由折叠态稳定 ~53° 回升到稳态 ~177°（转弯/翻越瞬态低至 116°~151°，但数百 tick 内自行回直，不再像修复前那样滞留）。
@@ -474,16 +510,34 @@
 > # course 隔离在 z=-48m 的约 17.2° 斜坡。2026-08-04 实跑 core/flat hash=
 > # C6AE88A2B807488E/B8F1A06E5BBEBB7C，矩阵峰值查询=1629/4050；其余八个并列后端的既有
 > # 哈希、路点与 smoke 断言逐位不变。
-> # 当前全仓六套 Godot 矩阵合计 144 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 +
-> # Deer18 + DaddyLongLegs39；2026-08-04 后置实跑全部 GREEN，其中既有 105 项均命中原固定基线。
 >
-> # ⑥ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
+> # ⑥ DropBug 专项（18 项 Godot 配置；smoke 内含八机制消融红灯验证）：
+> dotnet run --project core/dropbug_smoke
+> ./tools/run_dropbug_matrix.sh
+> # smoke 20 门全真断言：DET 双跑/固定哈希 C96B800B5F039447/1mm 微扰、装配与未知 ID
+> # 快速失败、前后不对称重力（台缘尾垂增量 + 消融翻红）、失稳宽限 9 tick（消融 0）、
+> # 行走/头领航/失稳注力比、18° 坡、越障点火（消融 0）、倒退接近（消融 0）、悬挂判定
+> # 七分支、悬挂收放（团缩/静止/静息长度/碰撞开关 + morph 消融）、退出与悬挂中
+> # Teleport 不弹飞、俯冲（落点/冷却 + 转向消融脱靶）、蓄力（后坐/侧对可及/逃逸放弃 +
+> # 可及门消融照跳/负重拒绝）、卡住抖动（消融无抖）、负重梯度、表现腿（静止零步进/
+> # 步频随速/击飞 dangle）、生命周期、查询预算（行走 avg 7.3 / max 8 rays）、
+> # 全程残余穿透 2mm 门。矩阵 = walk 双跑/40vs400Hz/微扰 + slope/hop/stuck/backward/
+> # hang/hang-exit/dive/pounce/pounce-abandon/carry/launch/lifecycle + nimble/bulky
+> # 变体，哈希基线钉在脚本顶部（walk=8C182AF34288285A，微扰 E3061F62EE76DA0C，
+> # nimble/bulky=8ACBF43362435CAB/2D47FFA890CF6CC1）。
+> # 当前全仓七套 Godot 矩阵合计 162 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 +
+> # Deer18 + DaddyLongLegs39 + DropBug18；2026-08-04 DropBug 落地轮实跑全部 GREEN，
+> # 既有 12 套回归输出与改动前逐字节一致（唯一差异 = 主 smoke [CORE-MODULARITY]
+> # 横幅 9→10 物种）。
+>
+> # ⑦ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 > # 可执行基线真相源：tools/run_matrix.sh + core/smoke/Program.cs
 > # （ExpectedHash 蜥蜴 / ExpectedVultureHash 秃鹫 / HumanoidExpectedHash 人形）+
 > # core/smoke/CentipedeSmoke.cs；拟态草另见 tools/run_tentacle_plant_matrix.sh +
 > # core/tentacle_plant_smoke/Program.cs；鹿另见 tools/run_deer_matrix.sh +
 > # core/deer_smoke/Program.cs；长腿爸爸另见 tools/run_daddy_long_legs_matrix.sh +
-> # core/daddy_long_legs_smoke/Program.cs。有意改内核时更新对应真相源，别处一律引用不复制。
+> # core/daddy_long_legs_smoke/Program.cs；掉落虫另见 tools/run_dropbug_matrix.sh +
+> # core/dropbug_smoke/Program.cs。有意改内核时更新对应真相源，别处一律引用不复制。
 > ```
 
 ## 6. 环境

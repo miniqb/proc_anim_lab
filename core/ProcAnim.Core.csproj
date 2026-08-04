@@ -20,6 +20,7 @@
     <Compile Remove="tentacle_plant_smoke/**/*.cs" />
     <Compile Remove="deer_smoke/**/*.cs" />
     <Compile Remove="daddy_long_legs_smoke/**/*.cs" />
+    <Compile Remove="dropbug_smoke/**/*.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- 版本须与宿主 Godot 匹配（本项目 4.7.0；回迁时对齐目标仓库的 Godot.NET.Sdk 版本）。 -->
