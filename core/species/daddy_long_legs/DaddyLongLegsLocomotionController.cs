@@ -60,12 +60,23 @@ public sealed class DaddyLongLegsLocomotionController
     public int StuckForcedStepReleaseSerial { get; private set; }
     public int MovementEpisodeSerial { get; private set; }
     public int StartReplantSerial { get; private set; }
+    /// <summary>仅因 1.00g 余量门连续饥饿后按 0.90 预算放行的换步累计次数。</summary>
+    public int ReserveStarvationReleaseSerial { get; private set; }
     public bool MoveEpisodeActive => _moveEpisodeActive;
     public int MoveEpisodeGraceTicksRemaining => _moveEpisodeGraceTicks;
     public Vector3 MoveEpisodeDirection => _moveEpisodeDirection;
     public bool StartReplantPending => _startReplantPending;
     public int ActiveStartReplantTentacleIndex => _startReplantIndex;
-    public int ActiveReplantTentacleIndex => _activeReplantIndex;
+    /// <summary>当前处于显式换步在途（已释放、尚未重新 Planted+到达）的触手数。</summary>
+    public int InFlightStepCount { get; private set; }
+    /// <summary>
+    /// 换步配额的参与池：Locomotion 任务、未眩晕/未在地形恢复，且落点可得
+    /// （有落点、在途，或搜索失败尚未到扩张上限）。永久够不到地形的触手不占配额。
+    /// </summary>
+    public int StepPoolCount { get; private set; }
+    /// <summary>≙ 原作 legsGrabbing &gt; N/2 的换步配额，分母取参与池。</summary>
+    public int RequiredArrivedTentaclesForStep { get; private set; }
+    public int ReserveStarvationTicks => _reserveStarvationTicks;
     public int LastStartReplantTentacleIndex { get; private set; } = -1;
     public float LastStartReplantReleaseDot { get; private set; } = 1f;
     public float LastStepReleasePredictedGravityCancellation { get; private set; }
@@ -75,6 +86,11 @@ public sealed class DaddyLongLegsLocomotionController
     public float LastStartReplantPredictedGravityCancellation { get; private set; }
         = float.PositiveInfinity;
     public float MinimumStartReplantPredictedGravityCancellation { get; private set; }
+        = float.PositiveInfinity;
+    /// <summary>饥饿阀释放的预测抗重力单独跟踪；普通换步的 1.00 门指标不被它污染。</summary>
+    public float LastReserveStarvationPredictedGravityCancellation { get; private set; }
+        = float.PositiveInfinity;
+    public float MinimumReserveStarvationPredictedGravityCancellation { get; private set; }
         = float.PositiveInfinity;
     public int TickQueryCount { get; private set; }
     public int PeakQueryCount { get; private set; }
@@ -97,7 +113,7 @@ public sealed class DaddyLongLegsLocomotionController
     private Vector3 _moveEpisodeDirection;
     private bool _startReplantPending;
     private int _startReplantIndex = -1;
-    private int _activeReplantIndex = -1;
+    private int _reserveStarvationTicks;
     private float _unconditionalSupport = 1f;
     private float _continuousSupport = 1f;
     private bool _frameInitialized;
@@ -288,26 +304,24 @@ public sealed class DaddyLongLegsLocomotionController
     public void StunTentacle(int tentacleIndex, int ticks)
     {
         DaddyTentacle tentacle = TentacleAt(tentacleIndex);
-        bool interruptedActiveReplant = tentacleIndex == _activeReplantIndex;
+        bool interruptedStep = tentacle.StepInFlight;
         bool interruptedStartReplant = tentacleIndex == _startReplantIndex;
         tentacle.Stun(ticks);
-        if (!interruptedActiveReplant && !interruptedStartReplant)
+        if (!interruptedStep && !interruptedStartReplant)
             return;
 
-        // Stun 是同步宿主输入，而 DaddyTentacle 会在控制器检查串行槽之前递减计时。
-        // 只看下一次 UpdateStepRelease 里的当前 StunTicks 会吞掉 1-tick 中断，让已经
-        // ResetReplantState 的腿永久占槽。因此在输入边界立即提交中断事件；冷却至少
-        // 保留一个完整 UpdateStepRelease 窗口，仍不允许同一安全窗再松第二条腿。
-        if (interruptedActiveReplant)
-            _activeReplantIndex = -1;
+        // Stun 是同步宿主输入，而 DaddyTentacle 会在控制器检查在途状态之前递减计时。
+        // 只看下一次 UpdateStepRelease 里的当前 StunTicks 会吞掉 1-tick 中断。因此在
+        // 输入边界立即提交中断事件（Stun 内部 ResetReplantState 已清 StepInFlight）；
+        // 冷却至少保留一个完整 UpdateStepRelease 窗口，同一安全窗不再松第二条腿。
         if (interruptedStartReplant)
-            _startReplantIndex = -1;
-        if (interruptedStartReplant && _moveEpisodeActive
-            && _parameters.EnableStartReplant)
         {
-            _startReplantPending = true;
+            _startReplantIndex = -1;
+            if (_moveEpisodeActive && _parameters.EnableStartReplant)
+                _startReplantPending = true;
         }
         _stepCooldown = Math.Max(_stepCooldown, 2);
+        InFlightStepCount = CountInFlightSteps();
     }
 
     /// <summary>地形与生物一起 rebase：位置态全部平移，速度、职责、支撑与 seed 相位保留。</summary>
@@ -395,7 +409,11 @@ public sealed class DaddyLongLegsLocomotionController
         hasher.Fold(_moveEpisodeDirection);
         hasher.Fold(_startReplantPending);
         hasher.Fold(_startReplantIndex);
-        hasher.Fold(_activeReplantIndex);
+        hasher.Fold(_reserveStarvationTicks);
+        hasher.Fold(InFlightStepCount);
+        hasher.Fold(StepPoolCount);
+        hasher.Fold(RequiredArrivedTentaclesForStep);
+        hasher.Fold(ReserveStarvationReleaseSerial);
         hasher.Fold(GravityCancellation);
         hasher.Fold(DirectionalSupport);
         hasher.Fold(DriveScale);
@@ -417,6 +435,8 @@ public sealed class DaddyLongLegsLocomotionController
         hasher.Fold(MinimumStepReleasePredictedGravityCancellation);
         hasher.Fold(LastStartReplantPredictedGravityCancellation);
         hasher.Fold(MinimumStartReplantPredictedGravityCancellation);
+        hasher.Fold(LastReserveStarvationPredictedGravityCancellation);
+        hasher.Fold(MinimumReserveStarvationPredictedGravityCancellation);
         hasher.Fold(TickQueryCount);
         hasher.Fold(PeakQueryCount);
         hasher.Fold(QueryBudgetExceeded);
@@ -791,40 +811,47 @@ public sealed class DaddyLongLegsLocomotionController
     {
         if (_stepCooldown > 0)
             _stepCooldown--;
-        if (!_parameters.EnableStepRelease || _stepCooldown > 0)
+        InFlightStepCount = CountInFlightSteps();
+        StepPoolCount = CountStepPool();
+        RequiredArrivedTentaclesForStep = Math.Max(
+            _parameters.MinimumArrivedTentaclesForStep,
+            StepPoolCount / 2 + 1);
+        if (!_parameters.EnableStepRelease)
             return;
-        bool forcedByStuck = HasMoveIntent
-            && _parameters.EnableStuckRecovery
-            && StuckCounter > _parameters.StuckRiseTicks;
 
-        if (_parameters.EnableSerialReplant && _activeReplantIndex >= 0)
+        // 起步腿保持独占在途：抓稳或被打断前不释放普通腿（既有起步契约不变）。
+        // 普通换步不再共用串行槽——原作 Act 以 legsGrabbing > N/2 的计数门为唯一
+        // 节流，每 tick 都可重定向一条最差到达腿；释放即清到达数，门自行收紧。
+        if (_startReplantIndex >= 0)
         {
-            DaddyTentacle activeTentacle = _tentacles[_activeReplantIndex];
-            bool completed = activeTentacle.ReplantPhase
-                    == DaddyTentacleReplantPhase.Planted
-                && activeTentacle.AtGrabDestination;
-            bool interrupted = activeTentacle.StunTicks > 0
-                || activeTentacle.Task != DaddyTentacleTask.Locomotion
-                || activeTentacle.TerrainRecoveryActive;
+            DaddyTentacle startLeg = _tentacles[_startReplantIndex];
+            bool completed = startLeg.ReplantPhase == DaddyTentacleReplantPhase.Planted
+                && startLeg.AtGrabDestination;
+            bool interrupted = startLeg.StunTicks > 0
+                || startLeg.Task != DaddyTentacleTask.Locomotion
+                || startLeg.TerrainRecoveryActive
+                || !startLeg.StepInFlight;
             if (!completed && !interrupted)
-            {
-                // 起步腿和普通腿共用唯一在途槽。Stuck 只扩大这一条腿的搜索，不能
-                // 绕过槽位再松第二条，否则 8 tick 冷却会把多条腿同时送进 Peeling。
                 return;
-            }
-            bool wasStartReplant = _activeReplantIndex == _startReplantIndex;
-            _activeReplantIndex = -1;
             _startReplantIndex = -1;
-            if (wasStartReplant && !completed
-                && _moveEpisodeActive && _parameters.EnableStartReplant)
-            {
+            if (!completed && _moveEpisodeActive && _parameters.EnableStartReplant)
                 _startReplantPending = true;
-            }
             // 完成或被打断的同一 tick 不再释放第二条腿。
             return;
         }
-        if (!HasMoveIntent)
+        if (_stepCooldown > 0)
             return;
+        if (!HasMoveIntent)
+        {
+            // 点按间隙只冻结饥饿记忆；episode 真结束才复位。
+            if (!_moveEpisodeActive)
+                _reserveStarvationTicks = 0;
+            return;
+        }
+        // stuck 强制换步保持单腿：只有零在途时才动用豁免，绕过到达数/余量门。
+        bool forcedByStuck = _parameters.EnableStuckRecovery
+            && StuckCounter > _parameters.StuckRiseTicks
+            && InFlightStepCount == 0;
         if (_parameters.EnableStartReplant && _startReplantPending && !forcedByStuck)
         {
             if (DirectionalSupport >= _parameters.StartReplantDirectionalSupportThreshold)
@@ -838,24 +865,31 @@ public sealed class DaddyLongLegsLocomotionController
                 return;
             }
         }
-        int required = Math.Max(
-            _parameters.MinimumArrivedTentaclesForStep,
-            _tentacles.Length / 2 + 1);
-        bool arrivedShortfall = ArrivedTentacleCount < required;
-        if ((!forcedByStuck && arrivedShortfall)
-            || (effectiveMove.LengthSquared() <= 1e-10f && !forcedByStuck))
+        if (effectiveMove.LengthSquared() <= 1e-10f && !forcedByStuck)
+            return;
+        bool arrivedShortfall =
+            ArrivedTentacleCount < RequiredArrivedTentaclesForStep;
+        if (_parameters.EnableStepReleaseThrottle && arrivedShortfall && !forcedByStuck)
         {
+            // 计数门挡住时只冻结饥饿计时，不复位：稀疏形态的阀腿在途/重新到达期间
+            // 到达数必然周期性跌破配额，此处复位会让饥饿窗永远凑不满阈值。
+            // 复位只发生在释放（普通或阀）或运动 episode 真结束时。
             return;
         }
         int selected = -1;
         float selectedCancellationAfter = float.PositiveInfinity;
         float highestScore = float.NegativeInfinity;
+        int reserveBlockedCandidates = 0;
+        int valveSelected = -1;
+        float valveCancellation = float.PositiveInfinity;
+        float valveScore = float.NegativeInfinity;
         for (int i = 0; i < _tentacles.Length; i++)
         {
             DaddyTentacle tentacle = _tentacles[i];
             if (tentacle.Task != DaddyTentacleTask.Locomotion
                 || (!_parameters.EnableIndependentLocomotionDuty
                     && !tentacle.NeededForLocomotion)
+                || tentacle.StepInFlight
                 || !tentacle.AtGrabDestination
                 || !tentacle.HasLandingTarget)
             {
@@ -867,6 +901,15 @@ public sealed class DaddyLongLegsLocomotionController
             if (!forcedByStuck && _parameters.EnableStepSupportReserve
                 && cancellationAfter < _parameters.StepReleaseMinimumGravityCancellation)
             {
+                reserveBlockedCandidates++;
+                if (cancellationAfter
+                        >= _parameters.StartReplantMinimumGravityCancellation
+                    && tentacle.ReleaseScore > valveScore)
+                {
+                    valveScore = tentacle.ReleaseScore;
+                    valveSelected = i;
+                    valveCancellation = cancellationAfter;
+                }
                 continue;
             }
             if (tentacle.ReleaseScore > highestScore)
@@ -882,8 +925,9 @@ public sealed class DaddyLongLegsLocomotionController
             MinimumStepReleasePredictedGravityCancellation = Math.Min(
                 MinimumStepReleasePredictedGravityCancellation, selectedCancellationAfter);
             _tentacles[selected].BeginStep();
-            _activeReplantIndex = selected;
+            InFlightStepCount = CountInFlightSteps();
             StepReleaseSerial++;
+            _reserveStarvationTicks = 0;
             // 只有这次释放确实依赖 stuck 豁免（到达数不足，或被选腿低于 1g 余量门）
             // 才算强制换步；stuck 期间恰好满足普通条件的释放不计入。
             if (forcedByStuck
@@ -895,7 +939,40 @@ public sealed class DaddyLongLegsLocomotionController
                 StuckForcedStepReleaseSerial++;
             }
             _stepCooldown = _parameters.StepReleaseCooldownTicks;
+            return;
         }
+        if (reserveBlockedCandidates == 0)
+        {
+            // 本 tick 没有仅因余量被拒的候选（如全部在途）；冻结计时等待下一个合格 tick。
+            return;
+        }
+        if (!_parameters.EnableStepSupportReserve
+            || !_parameters.EnableStepReserveStarvationValve
+            || forcedByStuck)
+        {
+            return;
+        }
+        // 余量饥饿阀：计数门已过、候选仅因 1.00 门被拒的合格 tick 连续累计到阈值后，
+        // 以起步腿同款 0.90 预算串行放行一条。每次阀释放都重新累计完整饥饿窗——
+        // 只有 1.00 门恒拒绝的真死锁形态才持续用阀（约 1 步/(阈值+换步) tick），
+        // 尚有普通换步能力的低余量形态在两次普通步之间不会被阀频繁抽腿压低身高。
+        _reserveStarvationTicks = Math.Min(
+            _reserveStarvationTicks + 1, _parameters.StepReserveStarvationTicks);
+        if (_reserveStarvationTicks < _parameters.StepReserveStarvationTicks
+            || InFlightStepCount != 0
+            || valveSelected < 0)
+        {
+            return;
+        }
+        LastReserveStarvationPredictedGravityCancellation = valveCancellation;
+        MinimumReserveStarvationPredictedGravityCancellation = Math.Min(
+            MinimumReserveStarvationPredictedGravityCancellation, valveCancellation);
+        _tentacles[valveSelected].BeginStep();
+        InFlightStepCount = CountInFlightSteps();
+        StepReleaseSerial++;
+        ReserveStarvationReleaseSerial++;
+        _reserveStarvationTicks = 0;
+        _stepCooldown = _parameters.StepReleaseCooldownTicks;
     }
 
     private bool TryBeginStartReplant(Vector3 effectiveMove)
@@ -956,8 +1033,8 @@ public sealed class DaddyLongLegsLocomotionController
         LastStartReplantTentacleIndex = selected;
         LastStartReplantReleaseDot = selectedDot;
         _tentacles[selected].BeginStartReplant(move);
+        InFlightStepCount = CountInFlightSteps();
         _startReplantIndex = selected;
-        _activeReplantIndex = selected;
         _startReplantPending = false;
         StartReplantSerial++;
         StepReleaseSerial++;
@@ -1281,13 +1358,15 @@ public sealed class DaddyLongLegsLocomotionController
         _lastMoveIntent = Vector3.Zero;
         EndMovementEpisode();
         _startReplantIndex = -1;
-        _activeReplantIndex = -1;
+        _reserveStarvationTicks = 0;
         LastStartReplantTentacleIndex = -1;
         LastStartReplantReleaseDot = 1f;
         LastStepReleasePredictedGravityCancellation = float.PositiveInfinity;
         MinimumStepReleasePredictedGravityCancellation = float.PositiveInfinity;
         LastStartReplantPredictedGravityCancellation = float.PositiveInfinity;
         MinimumStartReplantPredictedGravityCancellation = float.PositiveInfinity;
+        LastReserveStarvationPredictedGravityCancellation = float.PositiveInfinity;
+        MinimumReserveStarvationPredictedGravityCancellation = float.PositiveInfinity;
         SupportNormal = Vector3.Up;
         StuckCounter = 0;
         StuckAmount = 0f;
@@ -1326,6 +1405,38 @@ public sealed class DaddyLongLegsLocomotionController
         foreach (DaddyTentacle tentacle in _tentacles)
             if (tentacle.NeededForLocomotion)
                 count++;
+        return count;
+    }
+
+    private int CountInFlightSteps()
+    {
+        int count = 0;
+        foreach (DaddyTentacle tentacle in _tentacles)
+            if (tentacle.StepInFlight)
+                count++;
+        return count;
+    }
+
+    private int CountStepPool()
+    {
+        int count = 0;
+        foreach (DaddyTentacle tentacle in _tentacles)
+        {
+            if (tentacle.Task != DaddyTentacleTask.Locomotion
+                || tentacle.StunTicks > 0
+                || tentacle.TerrainRecoveryActive
+                || (!_parameters.EnableIndependentLocomotionDuty
+                    && !tentacle.NeededForLocomotion))
+            {
+                continue;
+            }
+            if (tentacle.HasLandingTarget
+                || tentacle.StepInFlight
+                || tentacle.SearchFailureTicks < _parameters.SearchFailureExpandTicks)
+            {
+                count++;
+            }
+        }
         return count;
     }
 

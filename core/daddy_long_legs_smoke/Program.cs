@@ -24,7 +24,7 @@ internal static class Program
         new(0f, -36f * TickDt * TickDt, 0f);
 
     // 只在全部专项行为门绿色后更新；任何运行态漂移都必须先解释再重钉。
-    private const ulong ExpectedHash = 0xC6AE88A2B807488EUL;
+    private const ulong ExpectedHash = 0x47F9584427FCD54AUL;
     private const ulong ExpectedDaddySeed1MorphologyHash = 0xA53D15D48A0D40ECUL;
     private const ulong ExpectedTerrorSeed7MorphologyHash = 0x61D6475A16C3845CUL;
 
@@ -69,7 +69,14 @@ internal static class Program
         Check("MOVING-STANCE", () => CheckMovingStance(Ablation.None), failures);
         Check("STEP-SUPPORT-RESERVE",
             () => CheckStepSupportReserve(Ablation.None), failures);
-        Check("SERIAL-REPLANT", () => CheckSerialReplant(Ablation.None), failures);
+        Check("STEP-THROTTLE", () => CheckStepReleaseThrottle(Ablation.None), failures);
+        Check("MOVING-RETARGET",
+            () => CheckMovingLandingTracking(Ablation.None), failures);
+        Check("STARVATION-VALVE",
+            () => CheckReserveStarvationValve(Ablation.None), failures);
+        Check("GUIDE-ARCH-WALL",
+            () => CheckGuideArchWallStability(Ablation.None), failures);
+        Check("STEP-FAILURE-TIMEOUT", CheckStepFailureTimeout, failures);
         Check("SHORT-STUN-REPLANT", CheckShortStunReplantInterruption, failures);
         Check("MOVING-HEIGHT-RETENTION",
             () => CheckMovingHeightRetention(Ablation.None), failures);
@@ -2120,7 +2127,7 @@ internal static class Program
         InvokePrivate(forcedProbe, "UpdateStepRelease", Vector3.Right);
         bool forcedReleased = forcedProbe.StepReleaseSerial == 1
             && forcedProbe.StuckForcedStepReleaseSerial == 1
-            && forcedProbe.ActiveReplantTentacleIndex >= 0;
+            && forcedProbe.InFlightStepCount == 1;
 
         // ② 到达数不足 + 未卡住：普通门必须拦下，两个 serial 都不动。
         DaddyLongLegsLocomotionController blockedProbe = ArrangeProbe(1, 0);
@@ -2374,9 +2381,12 @@ internal static class Program
         float reverse300 = x[520] - x[820];
         int reverseSteps = daddy.StepReleaseSerial - stepsAtTurn;
         int reverseStartReplants = daddy.StartReplantSerial - startReplantsAtTurn;
-        bool ok = forward >= 3f && minimumForwardWindow >= 0.45f
+        // 反失速下限：修复前的失速-回冲极限环里 120 tick 最小前进只有 ~0.45m
+        // （260 tick 零换步的深失速段），并发换步 + 在途落点追踪后实测 4.81m。
+        // 2.0m 的门在两个方向都有 >2x 余量，重新变红即极限环回归。
+        bool ok = forward >= 3f && minimumForwardWindow >= 2.0f
             && firstStepTick is >= 0 and < 100
-            && stepsAtTurn >= 4
+            && stepsAtTurn >= 40
             && reverse100 >= 0.30f && reverse300 >= 1f
             && reverseSteps >= 1 && reverseStartReplants >= 1
             && maximumStuck < p.StuckRiseTicks
@@ -2889,7 +2899,13 @@ internal static class Program
             $"steps={daddy.StepReleaseSerial}");
     }
 
-    private static (bool, string) CheckSerialReplant(Ablation ablation)
+    /// <summary>
+    /// 计数门节流契约（≙ 原作 legsGrabbing &gt; N/2）：全部到达的 5 腿在冷却清零的
+    /// 连续释放窗口里，只允许放到“到达数 = 配额 - 1”为止；配额按参与池计。
+    /// 消融（节流关闭）后同一序列会把全部腿放进在途——多腿同时 Peeling 的支撑塌陷
+    /// 正是计数门要挡住的回归。
+    /// </summary>
+    private static (bool, string) CheckStepReleaseThrottle(Ablation ablation)
     {
         DaddyLongLegsParams p = ProbeParams();
         p.MinimumTentacles = p.MaximumTentacles = 5;
@@ -2899,7 +2915,7 @@ internal static class Program
         p.EnableStuckRecovery = false;
         p.EnableDutyAllocation = false;
         p.EnableStepSupportReserve = false;
-        p.EnableSerialReplant = ablation != Ablation.SerialReplant;
+        p.EnableStepReleaseThrottle = ablation != Ablation.ReleaseThrottle;
         DaddyLongLegsLocomotionController daddy =
             DaddyLongLegsFactory.CreateController(new Vector3(0f, 5f, 0f), p, 29UL);
         foreach (DaddyTentacle tentacle in daddy.Tentacles)
@@ -2916,17 +2932,283 @@ internal static class Program
         daddy.RunSpeed = 1f;
         InvokePrivate(daddy, "ResolveMoveIntent");
         InvokePrivate(daddy, "AggregateSupport", Vector3.Right);
-        InvokePrivate(daddy, "UpdateStepRelease", Vector3.Right);
-        int first = daddy.StepReleaseSerial;
+        var serials = new List<int>();
+        for (int attempt = 0; attempt < 6; attempt++)
+        {
+            SetPrivateField(daddy, "_stepCooldown", 0);
+            InvokePrivate(daddy, "UpdateStepRelease", Vector3.Right);
+            serials.Add(daddy.StepReleaseSerial);
+        }
+        int released = daddy.StepReleaseSerial;
+        int inFlight = daddy.Tentacles.Count(t => t.StepInFlight);
+        int pool = daddy.StepPoolCount;
+        int required = daddy.RequiredArrivedTentaclesForStep;
+        int arrived = daddy.ArrivedTentacleCount;
+        // 5 腿全到达、池=5、配额=3：释放到到达数 2（= 配额 - 1）后计数门必须锁死，
+        // 后续窗口零释放；每次释放都发生在“释放前到达数 >= 配额”的窗口。
+        bool throttled = released == 3
+            && inFlight == 3
+            && arrived == required - 1
+            && daddy.InFlightStepCount == inFlight
+            && serials.SequenceEqual(new[] { 1, 2, 3, 3, 3, 3 });
+        return (throttled,
+            $"enabled={p.EnableStepReleaseThrottle} " +
+            $"serials=[{string.Join(',', serials)}] released={released} " +
+            $"inFlight={inFlight}/{daddy.InFlightStepCount} " +
+            $"pool={pool} required={required} arrived={arrived}");
+    }
+
+    private readonly record struct FlatGaitResult(
+        float MeanSpeed,
+        float MinimumWindow120,
+        float StallFraction,
+        float ArrivedLandingMeanForwardOffset,
+        int Steps,
+        int ValveReleases,
+        int MaximumInFlight,
+        int PoolCeiling,
+        bool Finite,
+        bool QueryBudgetExceeded);
+
+    /// <summary>
+    /// 平地 +X 持续巡走的通用步态量表：40 tick 滑窗速度、到达落点前向偏移均值、
+    /// 换步/阀释放计数与在途峰值。失速极限环（腿全落后→驱动清零→单腿追上→回冲）
+    /// 会同时压低最小滑窗与落点均值。
+    /// </summary>
+    private static FlatGaitResult RunFlatGait(
+        DaddyLongLegsParams p, ulong seed, int settleTicks, int runTicks)
+    {
+        DaddyLongLegsLocomotionController daddy =
+            DaddyLongLegsFactory.CreateController(new Vector3(0f, 0.9f, 0f), p, seed);
+        var floor = new HalfSpaceTerrain(Vector3.Zero, Vector3.Up, 1UL);
+        long tick = 0;
+        for (int i = 0; i < settleTicks; i++)
+        {
+            daddy.MoveDir = Vector3.Zero;
+            daddy.RunSpeed = 0f;
+            Tick(daddy, floor, ref tick);
+        }
+        var xs = new float[runTicks + 1];
+        xs[0] = daddy.BodyCenter.X;
+        float offsetSum = 0f;
+        long offsetSamples = 0;
+        int stallWindows = 0;
+        int windows = 0;
+        float minimumWindow120 = float.PositiveInfinity;
+        int maximumInFlight = 0;
+        int poolCeiling = 0;
+        bool finite = true;
+        int steps0 = daddy.StepReleaseSerial;
+        int valve0 = daddy.ReserveStarvationReleaseSerial;
+        for (int i = 0; i < runTicks; i++)
+        {
+            daddy.MoveDir = Vector3.Right;
+            daddy.RunSpeed = 1f;
+            Tick(daddy, floor, ref tick);
+            xs[i + 1] = daddy.BodyCenter.X;
+            finite &= IsFinite(daddy);
+            maximumInFlight = Math.Max(maximumInFlight, daddy.InFlightStepCount);
+            poolCeiling = Math.Max(poolCeiling, daddy.StepPoolCount);
+            foreach (DaddyTentacle tentacle in daddy.Tentacles)
+            {
+                if (!tentacle.AtGrabDestination || !tentacle.HasLandingTarget)
+                    continue;
+                offsetSum += tentacle.LandingPoint.X - daddy.BodyCenter.X;
+                offsetSamples++;
+            }
+            if (i >= 40)
+            {
+                float speed = (xs[i + 1] - xs[i + 1 - 40]) / 40f;
+                windows++;
+                if (speed < 0.02f)
+                    stallWindows++;
+            }
+            if (i >= 120)
+                minimumWindow120 = Math.Min(minimumWindow120, xs[i + 1] - xs[i + 1 - 120]);
+        }
+        return new FlatGaitResult(
+            (xs[runTicks] - xs[0]) / runTicks,
+            minimumWindow120,
+            windows > 0 ? (float)stallWindows / windows : 1f,
+            offsetSamples > 0 ? (float)(offsetSum / offsetSamples) : 0f,
+            daddy.StepReleaseSerial - steps0,
+            daddy.ReserveStarvationReleaseSerial - valve0,
+            maximumInFlight,
+            poolCeiling,
+            finite,
+            daddy.QueryBudgetExceeded);
+    }
+
+    /// <summary>
+    /// 在途落点追踪门（≙ 原作 Climb 对 !atGrabDest 触手每 tick UpdateClimbGrabPos）：
+    /// 移动 episode 内未到达腿以搜索节拍重瞄，防止“落点冻结→到达即落后”。
+    /// 消融红灯签名 = 到达落点均值退到 -0.6m 之后（实测 -0.40 vs -0.83m）；
+    /// 滑窗/均速/stall 三腿是并发换步兜底下的宽松健全底线，对该消融不敏感
+    /// （消融实测 minWin120 2.66m、meanV 0.0296、stall 2%，均远离各自底线）。
+    /// </summary>
+    private static (bool, string) CheckMovingLandingTracking(Ablation ablation)
+    {
+        DaddyLongLegsParams p = DaddyLongLegsFactory.Daddy();
+        p.EnableStuckRecovery = false;
+        p.EnableMovingReplantRetarget = ablation != Ablation.MovingRetarget;
+        FlatGaitResult gait = RunFlatGait(p, 1UL, 200, 1500);
+        bool ok = gait.ArrivedLandingMeanForwardOffset >= -0.60f
+            && gait.MinimumWindow120 >= 1.00f
+            && gait.MeanSpeed >= 0.026f
+            && gait.StallFraction <= 0.06f
+            && gait.Finite && !gait.QueryBudgetExceeded;
+        return (ok,
+            $"enabled={p.EnableMovingReplantRetarget} " +
+            $"landingOffset={gait.ArrivedLandingMeanForwardOffset:F2}m " +
+            $"minWin120={gait.MinimumWindow120:F2}m meanV={gait.MeanSpeed:F4} " +
+            $"stall={gait.StallFraction:P0} steps={gait.Steps} " +
+            $"inFlight<={gait.MaximumInFlight} finite={gait.Finite}");
+    }
+
+    /// <summary>
+    /// 墙边鼓弧稳定门（2026-08-05 wall-idle 实测复现）：slack guide 的外法线鼓弧
+    /// 不查地形，墙边会持续鼓进 collider，guide obstruction 于是每 6 tick 把一个
+    /// 已到达的有效落点清点重搜、搜索又选回同一点。拱弧自适应衰减让此类 obstruction
+    /// 在释放窗之前自愈；本门钉住“停驶后墙边零落点变化、零 obstruction 释放”。
+    /// </summary>
+    private static (bool, string) CheckGuideArchWallStability(Ablation ablation)
+    {
+        DaddyLongLegsParams p = DaddyLongLegsFactory.Daddy();
+        p.EnableGuideArchAdaptation = ablation != Ablation.GuideArchAdaptation;
+        DaddyLongLegsLocomotionController daddy =
+            DaddyLongLegsFactory.CreateController(new Vector3(7.15f, 4.0f, 0f), p, 1UL);
+        var terrain = new UnionTerrain(
+            new AabbTerrain(new Vector3(-32f, -0.5f, -64f),
+                new Vector3(32f, 0f, 64f), 1UL),
+            new AabbTerrain(new Vector3(8.0f, 0f, -7f),
+                new Vector3(8.5f, 10f, 7f), 2UL));
+        long tick = 0;
+        for (int i = 0; i < 30; i++)
+        {
+            daddy.MoveDir = Vector3.Up;
+            daddy.RunSpeed = 1f;
+            Tick(daddy, terrain, ref tick);
+        }
+        int landingsAtSettle = 0;
+        int guideReleasesAtSettle = 0;
+        bool finite = true;
+        for (int i = 30; i < 1200; i++)
+        {
+            daddy.MoveDir = Vector3.Zero;
+            daddy.RunSpeed = 0f;
+            Tick(daddy, terrain, ref tick);
+            finite &= IsFinite(daddy);
+            if (i == 299)
+            {
+                landingsAtSettle = daddy.Tentacles.Sum(t => t.LandingSerial);
+                guideReleasesAtSettle = daddy.Tentacles
+                    .Sum(t => t.GuideObstructionReleaseSerial);
+            }
+        }
+        int landingChangesAfterSettle = daddy.Tentacles.Sum(t => t.LandingSerial)
+            - landingsAtSettle;
+        int guideReleasesAfterSettle = daddy.Tentacles
+            .Sum(t => t.GuideObstructionReleaseSerial) - guideReleasesAtSettle;
+        int arrived = daddy.ArrivedTentacleCount;
+        bool ok = landingChangesAfterSettle == 0
+            && guideReleasesAfterSettle == 0
+            && arrived >= daddy.Tentacles.Count - 1
+            && finite && !daddy.QueryBudgetExceeded;
+        return (ok,
+            $"enabled={p.EnableGuideArchAdaptation} " +
+            $"landingChanges={landingChangesAfterSettle} " +
+            $"guideReleases={guideReleasesAfterSettle} arrived={arrived}/" +
+            $"{daddy.Tentacles.Count} finite={finite}");
+    }
+
+    /// <summary>
+    /// 稀疏形态余量饥饿阀门：daddy seed 5 只有 5 条触手且部分永久够不到地，
+    /// RawSupport 恒低于 1.00 余量门的可释放线。阀以 0.90 预算串行放行、每次释放后
+    /// 重新累计完整饥饿窗，步态保持连续；消融后回到“永久拒绝换步”的深失速极限环
+    /// （实测 meanV 0.029→0.015、stall 19%→79%、步数 12→2、阀 11→0）。
+    /// </summary>
+    private static (bool, string) CheckReserveStarvationValve(Ablation ablation)
+    {
+        DaddyLongLegsParams p = DaddyLongLegsFactory.Daddy();
+        p.EnableStuckRecovery = false;
+        p.EnableStepReserveStarvationValve = ablation != Ablation.StarvationValve;
+        FlatGaitResult gait = RunFlatGait(p, 5UL, 200, 1800);
+        bool ok = gait.MeanSpeed >= 0.023f
+            && gait.StallFraction <= 0.40f
+            && gait.ValveReleases >= 6
+            && gait.Steps >= 8
+            && gait.ArrivedLandingMeanForwardOffset >= -1.60f
+            && gait.Finite && !gait.QueryBudgetExceeded;
+        return (ok,
+            $"enabled={p.EnableStepReserveStarvationValve} " +
+            $"meanV={gait.MeanSpeed:F4} stall={gait.StallFraction:P0} " +
+            $"steps={gait.Steps} valve={gait.ValveReleases} " +
+            $"landingOffset={gait.ArrivedLandingMeanForwardOffset:F2}m " +
+            $"finite={gait.Finite}");
+    }
+
+    /// <summary>
+    /// 在途腿搜索失败超时（2026-08-05 评审修复）：一条释放后在完整扩张窗内始终找不到
+    /// 落点的腿必须宣告该步失败、退出在途——否则它会永久禁用 stuck 豁免与饥饿阀
+    /// （二者都要求零在途），并经参与池的在途项抬高永远无法满足的到达配额。
+    /// </summary>
+    private static (bool, string) CheckStepFailureTimeout()
+    {
+        DaddyLongLegsParams p = ProbeParams();
+        p.MinimumTentacles = p.MaximumTentacles = 5;
+        p.MaximumTotalTentacleSegments = 60;
+        p.MaximumTerrainQueriesPerTick = 4096;
+        p.EnableStartReplant = false;
+        p.EnableDutyAllocation = false;
+        p.EnableStepSupportReserve = false;
+        DaddyLongLegsLocomotionController daddy =
+            DaddyLongLegsFactory.CreateController(new Vector3(0f, 5f, 0f), p, 41UL);
+        DaddyTentacle failing = daddy.Tentacles[4];
+        DaddyTentacle arrivedLeg = daddy.Tentacles[0];
+        foreach (DaddyTentacle tentacle in new[] { failing, arrivedLeg })
+        {
+            InvokePrivate(tentacle, "SetLocomotion");
+            PrepareSyntheticGrip(tentacle, daddy.BodyCenter,
+                tentacle.Segments.Count, true);
+            InvokePrivate(tentacle, "UpdateSupport");
+        }
+        InvokePrivate(failing, "BeginStep");
+        bool released = failing.StepInFlight && !failing.HasLandingTarget;
+
+        daddy.MoveDir = Vector3.Right;
+        daddy.RunSpeed = 1f;
+        SetPrivateProperty(daddy, "StuckCounter", p.StuckRiseTicks + 1);
         SetPrivateField(daddy, "_stepCooldown", 0);
         InvokePrivate(daddy, "UpdateStepRelease", Vector3.Right);
-        int second = daddy.StepReleaseSerial;
-        bool serialized = first == 1 && second == 1
-            && daddy.Tentacles.Count(t => t.ReplantPhase
-                != DaddyTentacleReplantPhase.Planted) == 1;
-        return (serialized,
-            $"enabled={p.EnableSerialReplant} serial={first}->{second} " +
-            $"active={daddy.ActiveReplantTentacleIndex} serialized={serialized}");
+        // 在途腿存在：stuck 豁免被禁（零在途门），到达数 1 < 配额又挡普通释放。
+        bool blockedWhileInFlight = daddy.StepReleaseSerial == 0
+            && daddy.InFlightStepCount == 1
+            && daddy.StepPoolCount == 5;
+
+        // 低于扩张上限：单个 tentacle tick 不清在途。
+        SetPrivateProperty(failing, "SearchFailureTicks",
+            p.SearchFailureExpandTicks - p.SearchRefreshTicks);
+        TickTentacle(daddy, failing, new EmptyTerrain(), 1L);
+        bool survivesBelowCap = failing.StepInFlight;
+
+        // 达到上限：该步宣告失败，退出在途并被参与池排除；stuck 豁免恢复可用。
+        SetPrivateProperty(failing, "SearchFailureTicks", p.SearchFailureExpandTicks);
+        TickTentacle(daddy, failing, new EmptyTerrain(), 2L);
+        bool clearedAtCap = !failing.StepInFlight;
+        SetPrivateProperty(daddy, "StuckCounter", p.StuckRiseTicks + 1);
+        SetPrivateField(daddy, "_stepCooldown", 0);
+        InvokePrivate(daddy, "UpdateStepRelease", Vector3.Right);
+        bool forcedRecovered = daddy.StepReleaseSerial == 1
+            && daddy.StuckForcedStepReleaseSerial == 1
+            && daddy.InFlightStepCount == 1
+            && daddy.StepPoolCount == 4;
+        bool ok = released && blockedWhileInFlight && survivesBelowCap
+            && clearedAtCap && forcedRecovered;
+        return (ok,
+            $"released={released} blockedWhileInFlight={blockedWhileInFlight} " +
+            $"survivesBelowCap={survivesBelowCap} clearedAtCap={clearedAtCap} " +
+            $"forcedRecovered={forcedRecovered} pool={daddy.StepPoolCount} " +
+            $"serial={daddy.StepReleaseSerial}/forced{daddy.StuckForcedStepReleaseSerial}");
     }
 
     private static (bool, string) CheckShortStunReplantInterruption()
@@ -2964,7 +3246,7 @@ internal static class Program
         p.EnableStuckRecovery = false;
         p.EnableDutyAllocation = false;
         p.EnableStepSupportReserve = false;
-        p.EnableSerialReplant = true;
+        p.EnableStepReleaseThrottle = true;
         DaddyLongLegsLocomotionController daddy =
             DaddyLongLegsFactory.CreateController(new Vector3(0f, 5f, 0f), p, seed);
         foreach (DaddyTentacle tentacle in daddy.Tentacles)
@@ -2996,13 +3278,16 @@ internal static class Program
         }
         InvokePrivate(daddy, "UpdateStepRelease", Vector3.Right);
 
-        int victim = daddy.ActiveReplantTentacleIndex;
+        int victim = startReplant
+            ? daddy.ActiveStartReplantTentacleIndex
+            : daddy.Tentacles.First(t => t.StepInFlight).Index;
         int serialBefore = startReplant
             ? daddy.StartReplantSerial
             : daddy.StepReleaseSerial;
         SetPrivateField(daddy, "_stepCooldown", 1);
         daddy.StunTentacle(victim, 1);
-        bool immediateClear = daddy.ActiveReplantTentacleIndex < 0
+        bool immediateClear = !daddy.Tentacles[victim].StepInFlight
+            && daddy.InFlightStepCount == 0
             && daddy.ActiveStartReplantTentacleIndex < 0;
         bool startRearmed = !startReplant || daddy.StartReplantPending;
 
@@ -3019,7 +3304,12 @@ internal static class Program
         int serialAfterTakeover = startReplant
             ? daddy.StartReplantSerial
             : daddy.StepReleaseSerial;
-        int next = daddy.ActiveReplantTentacleIndex;
+        int next = startReplant
+            ? daddy.ActiveStartReplantTentacleIndex
+            : daddy.Tentacles.Where(t => t.StepInFlight)
+                .Select(t => t.Index)
+                .DefaultIfEmpty(-1)
+                .First();
         bool takeover = serialAfterTakeover == serialBefore + 1
             && next >= 0
             && next != victim;
@@ -3040,7 +3330,6 @@ internal static class Program
         {
             DaddyLongLegsParams p = DaddyLongLegsFactory.Daddy();
             p.EnableSurfaceSpanReplant = ablation != Ablation.SurfaceSpanReplant;
-            p.EnableSerialReplant = ablation != Ablation.SerialReplant;
             if (ablation == Ablation.SupportResponse3D)
                 p.SupportResponseExponent = 0.30f;
             DaddyLongLegsLocomotionController daddy =
@@ -3109,7 +3398,9 @@ internal static class Program
             bool seedPass = standingP10 - spawnY >= medianLength * 0.18f
                 && movingP10 >= standingP10 * 0.80f
                 && standingP10 >= medianLength * 0.70f
-                && loss <= Math.Max(0.65f, medianLength * 0.10f)
+                // 0.14xL50：并发换步的真实迈步比串行时代的近静止爬行起伏更深，
+                // 0.80 保持率门继续拦截真正的塌身（与 Godot 路线同一理由）。
+                && loss <= Math.Max(0.65f, medianLength * 0.14f)
                 && progress >= 5f
                 && stepDelta >= 4 && landingDelta >= stepDelta
                 && averageMovingSupport >= 0.15f
@@ -3568,8 +3859,14 @@ internal static class Program
                 CheckStepSupportReserve(Ablation.StepSupportReserve).Item1,
             [Ablation.SurfaceSpanReplant] =
                 CheckMovingHeightRetention(Ablation.SurfaceSpanReplant).Item1,
-            [Ablation.SerialReplant] =
-                CheckSerialReplant(Ablation.SerialReplant).Item1,
+            [Ablation.ReleaseThrottle] =
+                CheckStepReleaseThrottle(Ablation.ReleaseThrottle).Item1,
+            [Ablation.MovingRetarget] =
+                CheckMovingLandingTracking(Ablation.MovingRetarget).Item1,
+            [Ablation.StarvationValve] =
+                CheckReserveStarvationValve(Ablation.StarvationValve).Item1,
+            [Ablation.GuideArchAdaptation] =
+                CheckGuideArchWallStability(Ablation.GuideArchAdaptation).Item1,
             [Ablation.SupportResponse3D] =
                 CheckMovingHeightRetention(Ablation.SupportResponse3D).Item1,
         };
@@ -3604,7 +3901,10 @@ internal static class Program
             Ablation.IdleSupportNeutrality => CheckIdleWallStability(ablation),
             Ablation.StepSupportReserve => CheckStepSupportReserve(ablation),
             Ablation.SurfaceSpanReplant => CheckMovingHeightRetention(ablation),
-            Ablation.SerialReplant => CheckSerialReplant(ablation),
+            Ablation.ReleaseThrottle => CheckStepReleaseThrottle(ablation),
+            Ablation.MovingRetarget => CheckMovingLandingTracking(ablation),
+            Ablation.StarvationValve => CheckReserveStarvationValve(ablation),
+            Ablation.GuideArchAdaptation => CheckGuideArchWallStability(ablation),
             Ablation.SupportResponse3D => CheckMovingHeightRetention(ablation),
             _ => (true, "none"),
         };
@@ -3658,7 +3958,10 @@ internal static class Program
                 "idle-support-neutrality" => Ablation.IdleSupportNeutrality,
                 "step-support-reserve" => Ablation.StepSupportReserve,
                 "surface-span-replant" => Ablation.SurfaceSpanReplant,
-                "serial-replant" => Ablation.SerialReplant,
+                "release-throttle" => Ablation.ReleaseThrottle,
+                "moving-retarget" => Ablation.MovingRetarget,
+                "starvation-valve" => Ablation.StarvationValve,
+                "guide-arch" => Ablation.GuideArchAdaptation,
                 "support-response-3d" => Ablation.SupportResponse3D,
                 _ => Ablation.Invalid,
             };
@@ -3696,7 +3999,10 @@ internal static class Program
         IdleSupportNeutrality,
         StepSupportReserve,
         SurfaceSpanReplant,
-        SerialReplant,
+        ReleaseThrottle,
+        MovingRetarget,
+        StarvationValve,
+        GuideArchAdaptation,
         SupportResponse3D,
         Invalid,
     }
@@ -3725,7 +4031,10 @@ internal static class Program
         Ablation.IdleSupportNeutrality => "idle-support-neutrality",
         Ablation.StepSupportReserve => "step-support-reserve",
         Ablation.SurfaceSpanReplant => "surface-span-replant",
-        Ablation.SerialReplant => "serial-replant",
+        Ablation.ReleaseThrottle => "release-throttle",
+        Ablation.MovingRetarget => "moving-retarget",
+        Ablation.StarvationValve => "starvation-valve",
+        Ablation.GuideArchAdaptation => "guide-arch",
         Ablation.SupportResponse3D => "support-response-3d",
         _ => "none",
     };

@@ -28,11 +28,14 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private const int HeightRetentionStandWindow = 200;
     private const int HeightRetentionMoveTicks = 900;
     private const int HeightRetentionMoveWindow = 240;
+    private const int SparseGaitSettleTicks = 200;
+    private const int SparseGaitMinimumMoveTicks = 1200;
     private static readonly Vector3 StuckRouteTarget = new(-6.0f, 1.70f, 12f);
 
     private static readonly string[] RouteNames =
     {
-        "flat", "idle-start", "height-retention", "tap", "course", "wall", "wall-idle",
+        "flat", "idle-start", "height-retention", "sparse-gait", "tap", "course",
+        "wall", "wall-idle",
         "ceiling", "corner", "outer", "stun", "stuck", "target", "launch", "lifecycle",
     };
 
@@ -198,11 +201,20 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private int _heightRetentionStartReplantIndex = -1;
     private bool _heightRetentionStartReplantSawPlanted;
     private int _heightRetentionStepEligibleTicks;
-    private int _heightRetentionPreviousActiveReplant = -1;
+    private int _heightRetentionPreviousInFlight = -1;
     private long _heightRetentionFirstReplantCompletionTick = -1;
     private int _heightRetentionCompletionCandidateCount;
     private float _heightRetentionCompletionBestCancellation = float.NegativeInfinity;
     private float _heightRetentionMaximumCandidateCancellation = float.NegativeInfinity;
+    private int _heightRetentionPreviousStepSerial = -1;
+    private int _heightRetentionPreviousStartSerial;
+    private int _heightRetentionPreviousForcedSerial;
+    private int _heightRetentionPreviousValveSerial;
+    private int _heightRetentionThrottleViolations;
+    private bool _sparseGaitCaptured;
+    private float _sparseGaitStartX;
+    private int _sparseGaitStepsBefore;
+    private int _sparseGaitValveBefore;
     private bool _tapCaptured;
     private float _tapStartX;
     private int _tapActiveTicks;
@@ -506,6 +518,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             case "height-retention":
                 DriveHeightRetention();
                 break;
+            case "sparse-gait":
+                DriveSparseGait();
+                break;
             case "tap":
                 DriveTap();
                 break;
@@ -606,6 +621,24 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             _heightRetentionTentacleLandingsBeforeMove = _controller.Tentacles
                 .Select(t => t.LandingSerial)
                 .ToArray();
+        }
+        _controller.MoveDir = Vector3.Right;
+        _controller.RunSpeed = 1f;
+    }
+
+    private void DriveSparseGait()
+    {
+        // 稀疏形态（如 daddy seed 5：5 触手且部分永久够不到地）的余量饥饿阀专项：
+        // 建立姿态后持续 +X。1.00 余量门在该形态下对全部候选恒拒绝，连续步态只能
+        // 由 0.90 预算的粘性阀维持——阀被消融时回退到深失速极限环。
+        if (_tick <= SparseGaitSettleTicks)
+            return;
+        if (!_sparseGaitCaptured)
+        {
+            _sparseGaitCaptured = true;
+            _sparseGaitStartX = _controller.BodyCenter.X;
+            _sparseGaitStepsBefore = _controller.StepReleaseSerial;
+            _sparseGaitValveBefore = _controller.ReserveStarvationReleaseSerial;
         }
         _controller.MoveDir = Vector3.Right;
         _controller.RunSpeed = 1f;
@@ -1361,11 +1394,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 _heightRetentionStartReplantSawPlanted |=
                     start.ReplantPhase == DaddyTentacleReplantPhase.Planted;
             }
-            int requiredArrived = Math.Max(
-                _preset.MinimumArrivedTentaclesForStep,
-                _controller.Tentacles.Count / 2 + 1);
-            if (_controller.ArrivedTentacleCount >= requiredArrived
-                && _controller.ActiveReplantTentacleIndex < 0)
+            // 计数门配额取核心的参与池口径；并发换步下“可释放”不再要求零在途。
+            if (_controller.ArrivedTentacleCount
+                >= _controller.RequiredArrivedTentaclesForStep)
             {
                 _heightRetentionStepEligibleTicks++;
             }
@@ -1373,15 +1404,43 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 HeightRetentionReleaseCandidates();
             _heightRetentionMaximumCandidateCancellation = Math.Max(
                 _heightRetentionMaximumCandidateCancellation, bestCancellation);
-            int active = _controller.ActiveReplantTentacleIndex;
-            if (_heightRetentionPreviousActiveReplant >= 0 && active < 0
+            int inFlightNow = _controller.InFlightStepCount;
+            if (_heightRetentionPreviousInFlight > 0 && inFlightNow == 0
                 && _heightRetentionFirstReplantCompletionTick < 0)
             {
                 _heightRetentionFirstReplantCompletionTick = _tick;
                 _heightRetentionCompletionCandidateCount = candidateCount;
                 _heightRetentionCompletionBestCancellation = bestCancellation;
             }
-            _heightRetentionPreviousActiveReplant = active;
+            _heightRetentionPreviousInFlight = inFlightNow;
+            // 计数门纪律：普通释放（非起步/stuck 豁免/饥饿阀）只允许发生在释放前
+            // 到达数 >= 配额的 tick，因此释放后的 tick 末到达数不得低于配额 - 1。
+            // 这是对核心释放语义的逐 tick 观测契约；节流消融在本路线的 Godot 物理
+            // 面是行为 no-op（余量门先绑定，实测消融哈希与基线逐位相同），其行为
+            // 红灯由无引擎 smoke 的 STEP-THROTTLE 直构门（关闭余量门后全放）承担。
+            if (_heightRetentionPreviousStepSerial >= 0)
+            {
+                bool ordinaryRelease = _controller.StepReleaseSerial
+                        > _heightRetentionPreviousStepSerial
+                    && _controller.StartReplantSerial
+                        == _heightRetentionPreviousStartSerial
+                    && _controller.StuckForcedStepReleaseSerial
+                        == _heightRetentionPreviousForcedSerial
+                    && _controller.ReserveStarvationReleaseSerial
+                        == _heightRetentionPreviousValveSerial;
+                if (ordinaryRelease
+                    && _controller.ArrivedTentacleCount
+                        < _controller.RequiredArrivedTentaclesForStep - 1)
+                {
+                    _heightRetentionThrottleViolations++;
+                }
+            }
+            _heightRetentionPreviousStepSerial = _controller.StepReleaseSerial;
+            _heightRetentionPreviousStartSerial = _controller.StartReplantSerial;
+            _heightRetentionPreviousForcedSerial =
+                _controller.StuckForcedStepReleaseSerial;
+            _heightRetentionPreviousValveSerial =
+                _controller.ReserveStarvationReleaseSerial;
         }
         if (_tick < moveWindowStart
             || _tick > HeightRetentionStandTicks + HeightRetentionMoveTicks)
@@ -1483,6 +1542,50 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         return total;
     }
 
+    private void ValidateSparseGait(List<string> failures)
+    {
+        int moveTicks = (int)(_tick - SparseGaitSettleTicks);
+        float progress = _sparseGaitCaptured
+            ? _controller.BodyCenter.X - _sparseGaitStartX
+            : 0f;
+        int steps = _controller.StepReleaseSerial - _sparseGaitStepsBefore;
+        int valveReleases = _controller.ReserveStarvationReleaseSerial
+            - _sparseGaitValveBefore;
+        GD.Print($"[DADDY-SPARSE-GAIT] seed={_stableSeed} ablate={_ablation} " +
+                 $"moveTicks={moveTicks} progress={progress:F2}m steps={steps} " +
+                 $"valve={valveReleases} pool={_controller.StepPoolCount}/req" +
+                 $"{_controller.RequiredArrivedTentaclesForStep} " +
+                 $"tents={_controller.Tentacles.Count} " +
+                 $"reserveGate={_preset.StepReleaseMinimumGravityCancellation:F2}/" +
+                 $"budget{_preset.StartReplantMinimumGravityCancellation:F2}");
+        if (!_sparseGaitCaptured || moveTicks < SparseGaitMinimumMoveTicks)
+        {
+            failures.Add($"sparse-gait moved for only {moveTicks} tick(s)");
+            return;
+        }
+        // Godot Jolt 实测（1800 move tick）：阀开启 progress 44.6m/steps 36/valve 5；
+        // 阀消融（无引擎探针）progress≈27m/steps 2/valve 0。progress 门 36m 的余量
+        // 为绿向 ~1.24x / 红向 ~1.33x；确定性运行下由 valve 门（5 vs 0）提供
+        // 主判别，progress/steps 是健全底线。
+        float minimumProgress = moveTicks * 0.020f;
+        if (progress < minimumProgress)
+        {
+            failures.Add($"sparse-gait progress was only {progress:F2}m " +
+                         $"(< {minimumProgress:F2}m)");
+        }
+        if (steps < moveTicks / 120)
+        {
+            failures.Add($"sparse-gait completed only {steps} step release(s)");
+        }
+        // Jolt 平地上 seed 5 尚有部分普通 1.00 换步能力，阀只在真饥饿段触发
+        // （实测 5 次/1800 tick）；消融时为 0，门槛 3 双向都有余量。
+        if (valveReleases < moveTicks / 600)
+        {
+            failures.Add($"sparse-gait starvation valve fired only " +
+                         $"{valveReleases} time(s)");
+        }
+    }
+
     private void ValidateHeightRetention(List<string> failures)
     {
         if (!_heightRetentionMoveCaptured)
@@ -1541,7 +1644,11 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                  $"progress={progress:F3} steps={steps}/start{startReplants} " +
                  $"landings={landings}/legs{landingTentacles} " +
                  $"inFlight={_heightRetentionMaximumInFlightReplants} " +
-                 $"activeReplant={_controller.ActiveReplantTentacleIndex} " +
+                 $"inFlightNow={_controller.InFlightStepCount} " +
+                 $"pool={_controller.StepPoolCount}/req" +
+                 $"{_controller.RequiredArrivedTentaclesForStep} " +
+                 $"throttleViolations={_heightRetentionThrottleViolations} " +
+                 $"valve={_controller.ReserveStarvationReleaseSerial} " +
                  $"startLeg={startReplantState} eligible={_heightRetentionStepEligibleTicks} " +
                  $"complete={_heightRetentionFirstReplantCompletionTick}/" +
                  $"candidates{_heightRetentionCompletionCandidateCount}/" +
@@ -1564,8 +1671,11 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             failures.Add($"height-retention standing P10 {standingP10:F2}m was below " +
                          $"0.70xL50={medianTentacleLength * 0.70f:F2}m");
         }
+        // 0.10xL50 的绝对上限按串行时代“每 900 tick 仅 1 次起步”的近静止爬行校准；
+        // 并发换步 + 饥饿阀下 seed 93 真实迈步（15 步/23m），P10 起伏加深但保持率 0.87
+        // 远非跪行。0.14xL50 配合不变的 0.80 保持率门继续拦截真正的塌身。
         if (movingP10 < standingP10 * 0.80f
-            || loss > Math.Max(0.65f, medianTentacleLength * 0.10f))
+            || loss > Math.Max(0.65f, medianTentacleLength * 0.14f))
         {
             failures.Add($"height-retention moving P10 fell from {standingP10:F2}m to " +
                          $"{movingP10:F2}m (retain={retention:F2}, loss={loss:F2}m)");
@@ -1583,7 +1693,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             failures.Add($"height-retention progress was only {progress:F2}m " +
                          $"(< {minimumProgress:F2}m for seed {_stableSeed})");
         }
-        int minimumSteps = _stableSeed is 1UL or 33UL ? 4 : 1;
+        // 修复失速-回冲极限环后（并发换步 + 在途落点追踪），seed 1/33 的普通换步
+        // 吞吐从个位数提高到 20+；seed 93 依赖饥饿阀也应有两位数级换步。
+        int minimumSteps = _stableSeed is 1UL or 33UL ? 15 : 6;
         if (steps < minimumSteps || startReplants < 1
             || landings < Math.Max(4, steps) || landingTentacles < 2)
         {
@@ -1599,10 +1711,28 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                          $"planted={_heightRetentionStartReplantSawPlanted}, " +
                          $"active={_controller.ActiveStartReplantTentacleIndex})");
         }
-        if (_heightRetentionMaximumInFlightReplants > 1)
+        // ≙ 原作 legsGrabbing > N/2 计数门的并发上限：释放到“到达数 = 配额 - 1”
+        // 即锁死，在途数受池-配额差约束，全触手数的一半是保守硬顶。
+        int inFlightCap = Math.Max(1, _controller.Tentacles.Count / 2);
+        if (_heightRetentionMaximumInFlightReplants > inFlightCap)
         {
             failures.Add($"height-retention had " +
-                         $"{_heightRetentionMaximumInFlightReplants} replants in flight at once");
+                         $"{_heightRetentionMaximumInFlightReplants} replants in flight " +
+                         $"(cap {inFlightCap})");
+        }
+        // seed 1/33 有普通换步余量，并发换步必须真实发生过；seed 93 的余量饥饿态
+        // 由串行的饥饿阀维持，不作并发下限要求。
+        if (_stableSeed is 1UL or 33UL
+            && _heightRetentionMaximumInFlightReplants < 2)
+        {
+            failures.Add($"height-retention concurrency never engaged " +
+                         $"(maxInFlight={_heightRetentionMaximumInFlightReplants})");
+        }
+        if (_heightRetentionThrottleViolations > 0)
+        {
+            failures.Add($"height-retention released " +
+                         $"{_heightRetentionThrottleViolations} ordinary step(s) below " +
+                         $"the arrived-count quota");
         }
         if (averageSupport < 0.15f || _heightRetentionMinimumMoveSupport < 0f)
         {
@@ -1772,6 +1902,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 RequireGroundTravel(failures, 2.0f);
                 ValidateHeightRetention(failures);
                 break;
+            case "sparse-gait":
+                ValidateSparseGait(failures);
+                break;
             case "tap":
                 RequireGroundTravel(failures, 1.0f);
                 if (!_tapCaptured || _tapActiveTicks == 0 || _tapSampleTicks == 0)
@@ -1806,6 +1939,12 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                     < _preset.StepReleaseMinimumGravityCancellation)
                 {
                     failures.Add("tap replant violated the post-release gravity reserve");
+                }
+                if (_controller.MinimumReserveStarvationPredictedGravityCancellation
+                        + 1e-5f
+                    < _preset.StartReplantMinimumGravityCancellation)
+                {
+                    failures.Add("tap starvation-valve release violated the 0.90 budget");
                 }
                 break;
             case "course":
@@ -2456,9 +2595,19 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                          $"{HeightRetentionStandTicks + HeightRetentionMoveTicks} ticks");
             return false;
         }
-        if (_ablation != "none" && _route != "height-retention")
+        if (_ablation != "none"
+            && _route != "height-retention"
+            && _route != "sparse-gait")
         {
-            GD.PushError("[DADDY-CLI] --daddy-ablate is scoped to height-retention");
+            GD.PushError(
+                "[DADDY-CLI] --daddy-ablate is scoped to height-retention/sparse-gait");
+            return false;
+        }
+        if (_route == "sparse-gait"
+            && _determinismTicks < SparseGaitSettleTicks + SparseGaitMinimumMoveTicks)
+        {
+            GD.PushError($"[DADDY-CLI] sparse-gait requires at least " +
+                $"{SparseGaitSettleTicks + SparseGaitMinimumMoveTicks} ticks");
             return false;
         }
         return true;
@@ -2468,7 +2617,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     {
         "none" => "none",
         "surface-span-replant" => "surface-span-replant",
-        "serial-replant" => "serial-replant",
+        "release-throttle" => "release-throttle",
+        "moving-retarget" => "moving-retarget",
+        "starvation-valve" => "starvation-valve",
         "support-response-3d" => "support-response-3d",
         _ => throw new FormatException($"unknown ablation '{name}'"),
     };
@@ -2482,8 +2633,14 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             case "surface-span-replant":
                 parameters.EnableSurfaceSpanReplant = false;
                 return;
-            case "serial-replant":
-                parameters.EnableSerialReplant = false;
+            case "release-throttle":
+                parameters.EnableStepReleaseThrottle = false;
+                return;
+            case "moving-retarget":
+                parameters.EnableMovingReplantRetarget = false;
+                return;
+            case "starvation-valve":
+                parameters.EnableStepReserveStarvationValve = false;
                 return;
             case "support-response-3d":
                 // 原作二维响应指数；关闭本项目 3D 多面支撑的更缓响应。

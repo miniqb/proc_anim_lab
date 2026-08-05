@@ -100,6 +100,12 @@ public sealed class DaddyTentacle
     public DaddyTentacleReplantPhase ReplantPhase { get; private set; } =
         DaddyTentacleReplantPhase.Reaching;
     public int ReplantPhaseTicks { get; private set; }
+    /// <summary>
+    /// 一次显式换步（BeginStep/BeginStartReplant）已释放、尚未重新 Planted+到达。
+    /// 计数门以“到达数不跌破配额”自节流，多条腿可同时在途；该标记只用于
+    /// 起步独占、stuck 强制换步的单腿约束与诊断，不是全局串行槽。
+    /// </summary>
+    public bool StepInFlight { get; private set; }
     public bool StartReplantActive { get; private set; }
     public Vector3 StartReplantDirection { get; private set; }
     public int ActiveGripCount { get; private set; }
@@ -117,6 +123,8 @@ public sealed class DaddyTentacle
     public int TerrainRecoveryPhase => _terrainRecoveryPhase;
     public int MaximumGuideObstructionTicks { get; private set; }
     public int GuideObstructionReleaseSerial { get; private set; }
+    /// <summary>当前自适应鼓弧幅度比例；obstruction 衰减、无障碍缓慢恢复。</summary>
+    public float GuideArchScale => _guideArchScale;
 
     private readonly DaddyTentacleSegmentState[] _segments;
     private readonly Vector3[] _releaseOrigins;
@@ -153,6 +161,10 @@ public sealed class DaddyTentacle
     private bool _needsTerrainExpansion = true;
     private bool _guideObstructionObserved;
     private int _guideObstructionTicks;
+    // 逐触手自适应鼓弧幅度：obstruction 当 tick 快速衰减、无障碍时缓慢恢复。
+    // 拱弧鼓进墙体造成的 obstruction 因此在 6 tick 释放窗之前自愈，不再把
+    // 有效落点每 6 tick 清点重搜；真实阻塞仍走原释放路径。
+    private float _guideArchScale = 1f;
     private int _topologyBarrierTicks;
     private int _terrainRecoveryFrom = -1;
     private int _terrainRecoveryPhase;
@@ -252,6 +264,15 @@ public sealed class DaddyTentacle
         }
         if (!stunnedThisTick && maintainsTerrainTask)
         {
+            // 一次显式换步的搜索在完整扩张窗内持续失败：该步宣告失败，腿退化为普通
+            // 搜索腿。不能让它永久占用在途计数——stuck 豁免与饥饿阀都要求零在途，
+            // 参与池的在途项也会用一条永远无法到达的腿抬高到达配额；起步腿同理经
+            // 控制器的 !StepInFlight 中断判定重臂 pending。
+            if (StepInFlight && !HasLandingTarget
+                && SearchFailureTicks >= _parameters.SearchFailureExpandTicks)
+            {
+                StepInFlight = false;
+            }
             UpdateIdealLanding(worldPreference, moveDirection, stuckAmount);
             bool hadLanding = HasLandingTarget;
             ValidateLanding(ctx, movementEpisodeActive);
@@ -263,6 +284,13 @@ public sealed class DaddyTentacle
             }
             bool maySearch = ReplantPhase != DaddyTentacleReplantPhase.Peeling
                 && BacktrackFrom < 0;
+            // ≙ 原作 Climb：!atGrabDest 的触手每 tick 重新提交 preliminaryGrabDest，
+            // 在途落点持续跟随身体的 idealGrabPos。移动 episode 内因此用搜索节拍级的
+            // 短提交年龄；停驶与 idle 保持原有 20 tick 提交避免落点churn。
+            int landingCommitTicks = movementEpisodeActive
+                && _parameters.EnableMovingReplantRetarget
+                    ? _parameters.MovingReplantRetargetTicks
+                    : _parameters.LandingCommitTicks;
             bool landingMayRetarget = HasLandingTarget
                 && !AtGrabDestination
                 // episode 内保留原有步态恢复；停驶后则把已验证点当 incumbent，
@@ -273,7 +301,7 @@ public sealed class DaddyTentacle
                     || movementEpisodeActive
                     || (ReplantPhase == DaddyTentacleReplantPhase.Reaching
                         && !_idleLandingRetargetCommitted))
-                && _landingAge >= _parameters.LandingCommitTicks;
+                && _landingAge >= landingCommitTicks;
             if (maySearch && (!HasLandingTarget || landingMayRetarget)
                 && (_forceLandingSearch
                     || (ctx.TickIndex + Index) % _parameters.SearchRefreshTicks == 0))
@@ -359,6 +387,7 @@ public sealed class DaddyTentacle
         _idleLandingRetargetCommitted = true;
         StartReplantActive = false;
         StartReplantDirection = Vector3.Zero;
+        StepInFlight = false;
     }
 
     private void BeginStepCore(bool startReplant, Vector3 startReplantDirection)
@@ -369,6 +398,7 @@ public sealed class DaddyTentacle
             || (!_parameters.EnableIndependentLocomotionDuty && !NeededForLocomotion))
             return;
         _idleLandingRetargetCommitted = false;
+        StepInFlight = true;
         StartReplantActive = startReplant;
         StartReplantDirection = startReplant
             ? NormalizeOr(startReplantDirection, LocalPreference)
@@ -602,6 +632,7 @@ public sealed class DaddyTentacle
         hasher.Fold(_topologyBarrierTicks);
         hasher.Fold(_guideObstructionObserved);
         hasher.Fold(_guideObstructionTicks);
+        hasher.Fold(_guideArchScale);
         hasher.Fold(MaximumGuideObstructionTicks);
         hasher.Fold(GuideObstructionReleaseSerial);
         for (int i = 0; i < _barrierTicks.Length; i++)
@@ -617,6 +648,7 @@ public sealed class DaddyTentacle
         hasher.Fold(_landingAge);
         hasher.Fold((int)ReplantPhase);
         hasher.Fold(ReplantPhaseTicks);
+        hasher.Fold(StepInFlight);
         hasher.Fold(StartReplantActive);
         hasher.Fold(StartReplantDirection);
         hasher.Fold(_releaseStart);
@@ -1631,6 +1663,7 @@ public sealed class DaddyTentacle
             ClearLanding(incrementStep: false);
             ReplantPhase = DaddyTentacleReplantPhase.Reaching;
             ReplantPhaseTicks = 0;
+            StepInFlight = false;
             StartReplantActive = false;
             StartReplantDirection = Vector3.Zero;
             _forceLandingSearch = true;
@@ -1640,6 +1673,13 @@ public sealed class DaddyTentacle
 
     private void ProcessGuideObstruction()
     {
+        if (_parameters.EnableGuideArchAdaptation)
+        {
+            _guideArchScale = _guideObstructionObserved
+                ? Math.Max(0f,
+                    _guideArchScale - _parameters.GuideObstructionArchDecayPerTick)
+                : Math.Min(1f, _guideArchScale + _parameters.GuideArchRecoveryPerTick);
+        }
         _guideObstructionTicks = _guideObstructionObserved
             ? _guideObstructionTicks < int.MaxValue
                 ? _guideObstructionTicks + 1
@@ -2127,6 +2167,7 @@ public sealed class DaddyTentacle
                     _peelNormal = LandingNormal;
                     StartReplantActive = false;
                     StartReplantDirection = Vector3.Zero;
+                    StepInFlight = false;
                 }
                 break;
             default:
@@ -2156,6 +2197,7 @@ public sealed class DaddyTentacle
     {
         ReplantPhase = DaddyTentacleReplantPhase.Reaching;
         ReplantPhaseTicks = 0;
+        StepInFlight = false;
         _landingAge = 0;
         _releaseStart = 0;
         _peelReleasedFrom = 0;
@@ -2167,6 +2209,7 @@ public sealed class DaddyTentacle
         _idleLandingRetargetCommitted = false;
         StartReplantActive = false;
         StartReplantDirection = Vector3.Zero;
+        _guideArchScale = 1f;
         Array.Clear(_releaseOrigins);
         Array.Clear(_releaseNormals);
         ResetGuideDiagnostics();
@@ -2338,7 +2381,7 @@ public sealed class DaddyTentacle
         float maximumBridgeLength = Math.Max(_guideBridgeLength, capacity - contact);
         float targetBridgeLength = _guideBridgeLength
             + (maximumBridgeLength - _guideBridgeLength)
-                * _parameters.GuideSlackArchShare;
+                * (_parameters.GuideSlackArchShare * _guideArchScale);
         Vector3 bendDirection = normal - bridgeDirection * normal.Dot(bridgeDirection);
         if (bendDirection.LengthSquared() <= 1e-10f)
         {
@@ -2347,7 +2390,7 @@ public sealed class DaddyTentacle
         }
         bendDirection = NormalizeOr(bendDirection, Orthogonal(bridgeDirection));
         float lowBend = 0f;
-        float highBend = Length * _parameters.GuideBendMaximumRatio;
+        float highBend = Length * _parameters.GuideBendMaximumRatio * _guideArchScale;
         BuildHermiteGuide(
             Anchor.Pos,
             _guideSurfaceStart,

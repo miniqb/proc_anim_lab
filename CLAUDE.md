@@ -2,7 +2,7 @@
 
 > Godot 4.x / C# 的独立沙盒项目。**目标：从零实现一套 3D 版"雨世界式"程序化生物动画/运动系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/) 的怪物系统。**
 >
-> 当前状态：**DropBug 悬挂伏击后端 + 既有并列物种控制器（2026-08-04）**——
+> 当前状态：**DaddyLongLegs 失速-回冲修复轮 + 既有并列物种控制器（2026-08-05）**——
 > `ProcAnim.Core` 现在包含 Lizard / Humanoid / Spider / Centipede / Cicada / Vulture /
 > TentaclePlant / Deer / DaddyLongLegs / DropBug 十个平行的物种控制器。
 > 蜈蚣的任意节装配、双端表面轨迹、真实抓足和四个稳定预设，蝉的 3D 飞行、显式三面停驻、Charge、
@@ -278,7 +278,7 @@
 > CurrentRideHeight 与 MoveTarget），无输入夹具两者均在 37 tick 内恢复。launch/lifecycle
 > Godot 哈希因此按实跑更新为 `2F0C8FA0609676B6` / `90C2A98FA2211208`，其余 16 项不变。
 >
-> **并列长腿爸爸后端（DaddyLongLegs，2026-08-04 地形卡腿修复复核）**：当前 DLL 直接核实
+> **并列长腿爸爸后端（DaddyLongLegs，2026-08-05 失速-回冲修复轮）**：当前 DLL 直接核实
 > `DaddyLongLegs` / `DaddyTentacle` / 独立基类 `Tentacle`（另读 `DaddyGraphics` 辅证），
 > 新增 `DaddyLongLegsMorphology` / `DaddyLongLegsParams` / `DaddyLongLegsFactory` /
 > `DaddyTentacle` / `DaddyLongLegsLocomotionController`，不复用其它物种参数或肢体实现，
@@ -312,12 +312,22 @@
 > 触手 `Task=Locomotion|ExternalReach` 与 `NeededForLocomotion` 预算标记正交，`Role` 只是 HUD
 > 派生色；free-duty Locomotion 仍搜索、贴面、支撑并参与换步，支撑不足时征用近地 free duty，
 > 充裕时释放 needed；运动中先要求普通候选释放后的预测抗重力不低于 `1.00`，再从全部
-> Locomotion task 按理想落点误差换步（stuck 强制换步例外）。默认不启用可由点按续杯的起步助推；24 tick
+> Locomotion task 按理想落点误差换步（stuck 强制换步例外，且只在零在途时动用豁免）。
+> 普通换步以计数门为唯一并发上限（≙ 原作 Act `legsGrabbing > N/2` 每 tick 重定向）：释放前
+> 到达数不低于 `max(2, 参与池/2+1)`——参与池排除 SearchFailureTicks 达扩张上限仍无落点的
+> 永久够不到腿——释放即清到达数、门自行收紧，多腿可并发在途，每次释放间 3 tick 冷却；
+> 移动 episode 内未到达腿以 4 tick 节拍重瞄（≙ 原作 Climb 每 tick UpdateClimbGrabPos，
+> 在途落点跟随身体前移）。1.00 余量门对全部候选连续 90 个合格 tick 恒拒绝（稀疏形态的
+> 结构性死锁）时，饥饿阀以起步同款 0.90 预算串行放行一条、每次释放后重新累计完整饥饿窗，
+> 阀释放的预测值单独跟踪不污染普通 1g 门指标。slack 鼓弧份额另乘逐触手自适应幅度
+> （obstruction 当 tick −.25、无障碍 +.01/tick）：拱弧鼓进墙体造成的 obstruction 在 6 tick
+> 释放窗之前压平自愈，不再把停驶墙边的有效落点每 6 tick 清点重搜。默认不启用可由点按续杯的起步助推；24 tick
 > movement episode 只保留触手规划方向，不在松键时推进身体、普通换步或抖动。episode 结束时
 > 提交仍有效的落点、解除旧起步方向；静止单 tick 到达信号闪断不重搜，复验连续 3 次失败或真越出
 > `1.22L` 才清点。新 episode/大幅改向且方向支撑 `<.40` 时，从落点侧 `dot<=.25`、释放后抗重力
 > `>=.90` 的触手中确定性选一条，按至少 `.88` 移动方向权重重落点；这次有界赤字不进入
-> `DriveScale`。起步与普通显式换腿共用唯一在途槽，抓稳或被打断前不能再释放第二条。同面搜索
+> `DriveScale`。起步腿保持独占在途（并发换步契约中仅存的串行片段），抓稳或被打断前不释放
+> 普通腿。同面搜索
 > ray 0 保留旧抓面法向跨度，总 reach `.985L`、面内前移最多 `.25L`、命中法线门 `.45`，不读
 > world Up；其余射线仍可跨棱换面。失败搜索与 80 tick
 > 卡住历史逐步放宽方向/距离。卡住
@@ -325,29 +335,32 @@
 > 同一 detour，并由身体内缘 clearance probe 连续三次 miss 后恢复原向；超时后连续 attempt 成对
 > 精确反向，共同质心增量逐球同值、无控制转矩。`[DADDY-CORE-STUCK-RETRY]` 真断言这条重试契约。
 > `StunTentacle(index,ticks)` 立即清该条落点、接触记忆与支撑并让其余
-> 自动接管；若命中普通/起步串行换腿槽则同步清槽，1-tick stun 真门要求当次安全窗不再松第二条、
-> 下一窗口由另一腿接管且起步 pending 重置。宿主以 `TryAssignExternalTarget` 喂纯值目标、读取逐触手 `TargetEffects`，伤害/吞入/
+> 自动接管；若命中在途换步腿或起步腿则同步清在途标记，1-tick stun 真门要求当次安全窗不再松
+> 第二条、下一窗口由另一腿接管且起步 pending 重置。宿主以 `TryAssignExternalTarget` 喂纯值目标、读取逐触手 `TargetEffects`，伤害/吞入/
 > 实体权威仍在 gameplay。稳定 ID 为 `daddy-long-legs/brother|daddy|terror`，Terror 为控制 3D
 > 查询成本有意缩限的超大型档；三预设总段帽为 `64/120/144`。查询按 Jolt primitive units 计，
 > Ray=`1`、Sphere=`2`，保守式 `(5+2K)B+14C+(11+2K)S+T(R+5)+1`，公式下限
 > `1658/2870/4021`、预算 `1700/2900/4050`；
 > Daddy 专属 snag 阀为 `SnagStretchRatio=4`、`SnagReleaseTicks=120`。
 > 独立入口为 `scenes/daddy_long_legs_sandbox.tscn`、`core/daddy_long_legs_smoke` 和
-> `tools/run_daddy_long_legs_matrix.sh`。27 个预期红灯（24 个无引擎 + 3 个 Godot）包含静止落点锁、
-> 静止中性支撑、地形拓扑恢复、同面跨度、串行换腿与 3D 支撑响应独立门；lifecycle smoke 直接断言
+> `tools/run_daddy_long_legs_matrix.sh`。30 个预期红灯（27 个无引擎 + 3 个 Godot）包含静止落点锁、
+> 静止中性支撑、地形拓扑恢复、同面跨度、计数门节流、在途落点追踪、饥饿阀、鼓弧自适应与
+> 3D 支撑响应独立门；lifecycle smoke 直接断言
 > `Shift` 保留并平移恢复 phase、`Teleport`/`Launch`/单条 stun
 > 清恢复暂态，Teleport 另重置出生支撑并发布旧外部目标的 Released。Godot 配置覆盖双跑/时基/微扰、
 > 三预设四种形态（`4/8/49` 到 `12/11/121`）、平地/深休息起步/点按、三 seed
-> `height-retention`（900 tick 高站姿 + 900 tick 水平移动）、坡/墙/顶/内外角、打断接管、
+> `height-retention`（900 tick 高站姿 + 900 tick 水平移动）、sparse-gait（稀疏形态饥饿阀）、
+> 坡/墙/顶/内外角、打断接管、
 > 卡住脱困、外部够取、击飞与生命周期；高度路线断言 P10/中位数、高度损失、推进、完成的起步
-> 重落点、多腿真实落点更新、串行上限、查询与 finite，并让关闭 `.21` 响应/同面跨度/串行槽
-> 分别变红。`wall/corner/outer/ceiling/stuck` 另统计逐边和逐触手阻塞 episode，要求终态无阻断边。
+> 重落点、多腿真实落点更新、并发在途上限与计数门纪律（普通释放不得低于配额，seed 1/33 另
+> 要求并发峰值 ≥2），并让关闭 `.21` 响应/同面跨度分别变红、关闭饥饿阀让 sparse-gait 变红。
+> `wall/corner/outer/ceiling/stuck` 另统计逐边和逐触手阻塞 episode，要求终态无阻断边。
 > `course` 隔离在 `z=-48m` 的约 17.2° 斜坡，不与平地路线的长触手查询域或 Ramp/Floor 交叠
-> 夹层混在一起。2026-08-04 完整实跑：无引擎 760 tick 基线 `C6AE88A2B807488E`
->（40/400Hz 同值，1mm 微扰 `9BA981099FC6999D`）；Godot flat 基线
-> `B8F1A06E5BBEBB7C`（微扰 `115F1B2121F377AA`）；39 项 Godot 配置 + 27 个预期红灯全绿。
-> 12-body Terror seed 7 的全矩阵峰值为 `1629/4050` units/tick；地形路线最长相邻边/整触手
-> 阻断 episode 均为 10 tick，所有配置终态阻断边为 0、tick-end 穿透为 `0m`。完整 DLL 数值、
+> 夹层混在一起。2026-08-05 完整实跑：无引擎 760 tick 基线 `47F9584427FCD54A`
+>（40/400Hz 同值）；Godot flat 基线
+> `FCC938B3D329B276`（微扰 `9657299AD24335D4`）；40 项 Godot 配置 + 30 个预期红灯全绿。
+> 12-body Terror seed 7 的全矩阵峰值为 `1667/4050` units/tick；地形路线最长相邻边/整触手
+> 阻断 episode 为 9 tick，所有配置终态阻断边为 0、tick-end 穿透为 `0m`。完整 DLL 数值、
 > 3D 偏离理由和逐路线指标见 `docs/daddy_long_legs_controller.md` 与脚本当前输出。
 > 2026-08-04 测试门修复轮（评审 7 缺陷，核心行为零改动、全部哈希基线逐位不变）：
 > terrain-backtrack 消融门去掉 `enabled && X` 恒真式，子判据全部改为只断言开启态行为——消融
@@ -358,6 +371,25 @@
 > 空断言（`minSupport>=0`→`0.35`）、lifecycle tick-50 未防护的 `Tentacles[-1]`、perturb 重捕获
 > 读上次 Tick 缓存质心的 no-op，以及沙盒 40tps 下渲染插值 alpha 恒 0（改为 tick 余数+引擎物理帧
 > 分数两级合成，仅渲染，不进 tick/哈希）。
+> **2026-08-05 失速-回冲修复轮**（用户白盒实测驱动：平地固定方向行进时腿步幅跟不上身体、
+> 全部落点渐落身后、DirectionalSupport 清零失速、单腿追上后回冲循环）：逐 tick 取证 + 反编译
+> 对照确认四处偏离共同成因——原作 Act L705-722 以 `legsGrabbing>N/2` 计数门**每 tick** 重定向
+> 一条最差到达腿（无串行槽），Climb L712 让未到达腿**每 tick** 自主重瞄（落点跟随身体），而
+> 本项目此前是"唯一在途槽 + 8 tick 冷却 + 20 tick 落点冻结"，换腿吞吐低一个数量级（实测
+> 260 tick 零换步深失速段、seed1 到达落点均值 −1.44m）；另有 1.00 余量门在稀疏形态（部分触手
+> 从高站姿永久够不到地）下永久拒绝换步、参与不了的触手还占计数门配额。修复四件套：①普通换步
+> 并发化（计数门唯一节流、配额分母改参与池、冷却 8→3、起步腿保留独占）；②移动 episode 内
+> 未到达腿 4 tick 重瞄；③余量饥饿阀（90 合格 tick 后 0.90 预算串行放行、逐次重臂、独立预测值
+> 跟踪）；④slack 鼓弧障碍自适应（修复轮中发现的既有潜在缺陷：拱弧不查地形，停驶墙边鼓进
+> collider 使 guide obstruction 每 6 tick 清点重搜同一有效落点的无限循环——obstruction 当 tick
+> 衰减拱弧、4 tick 压平先于释放窗自愈）。效果：seed1 均速 0.026→0.035 m/tick、深失速 14%→1%、
+> 换步 43→123；seed5 稀疏形态修复前 0.013/85% 深失速 → 修复后 0.029/19%（关阀消融
+> 0.015/79%，精确复现死锁）；在途腿另有搜索失败超时（完整扩张窗内无落点即宣告该步失败、
+> 退出在途并被参与池排除，防止一条僵死腿永久禁用 stuck 豁免/饥饿阀并抬高配额）；height
+> seed1/33 移动 P10 反超站立（retain 1.04/1.07）。FoldState 新增在途标记/阀状态/拱弧幅度，
+> 全部 daddy 基线换新并按 DADDY_UPDATE_HASHES=1 收集流程重钉；height 高度损失绝对上限
+> 0.10→0.14×L50（真实迈步比串行时代近静止爬行起伏深，0.80 保持率门不变）；其余 12 套
+> 回归（六 smoke + 主矩阵45 + 五物种矩阵）按各自钉死基线复跑 GREEN，共享层零改动。
 >
 > **并列掉落虫后端（DropBug，2026-08-04）**：直接反编译 DropBug / DropBugAI /
 > DropBugGraphics（腿实证为纯图形 `Limb[2,2]`，不回传力），新增 `core/species/dropbug/`
@@ -516,21 +548,25 @@
 > # 头与鹿角姿态、斜坡/台阶、墙前停住、90° 转向、三预设 180° 反转的摆动腿真实弓向、粗糙错高、休息、
 > # MoveTarget 与三生命周期；固定 core hash=80249FD24361B9C8。
 >
-> # ⑤ DaddyLongLegs 专项（39 项 Godot 配置 + 27 个预期红灯注入）：
+> # ⑤ DaddyLongLegs 专项（40 项 Godot 配置 + 30 个预期红灯注入）：
 > dotnet run --project core/daddy_long_legs_smoke
 > ./tools/run_daddy_long_legs_matrix.sh
 > # 覆盖 27 seed 形态扫描、完整图球团、整链贴面支撑与连续重力、方向抓点推进、职责预算/换步、
-> # 平地/深休息起步/点按、三 seed 高站姿→水平移动高度保持、坡/墙/天花板/内外角、单触手打断接管、
+> # 平地/深休息起步/点按、三 seed 高站姿→水平移动高度保持、sparse-gait 稀疏形态饥饿阀、
+> # 坡/墙/天花板/内外角、单触手打断接管、
 > # 确定性卡住脱困、外部够取/拉扯、MoveTarget 与
 > # Shift/Teleport/Launch（lifecycle 直接断言 Teleport 清 stun）；普通与 12-body 形态各有
 > # 双跑/40vs400Hz，另有1mm微扰与五个 stuck seed；STUCK-RETRY 钉死超时精确反向，
 > # residual-terrain 消融钉死 body+tentacle tick-end 2mm 门；另钉主动/被动抓握、渐进剥离、
-> # slack guide、无助推起步重落点、普通 1.00/起步 .90 支撑余量、同面跨度与串行换腿、
+> # slack guide、无助推起步重落点、普通 1.00/起步 .90 支撑余量、同面跨度、计数门并发换步
+> #（STEP-THROTTLE：放到"到达数=配额-1"锁死 + 消融全放红灯）、在途落点追踪
+> #（MOVING-RETARGET）、余量饥饿阀（STARVATION-VALVE：seed5 深失速死锁消融复现）、
+> # 墙边鼓弧稳定（GUIDE-ARCH-WALL：停驶 900 tick 零落点变化/零 obstruction 释放）、
 > # `.21` 3D 支撑响应、静止落点锁与静止中性支撑；wall-idle
 > # 撤输入后断言落点/高度/支撑稳定。terrain-backtrack 消融另钉物理半径裁边审计、阻断 episode、
 > # 无张力断边、候选零部分提交与全量球/边/自避验证、guide 分离、Released exactly-once 和生命周期。
-> # course 隔离在 z=-48m 的约 17.2° 斜坡。2026-08-04 实跑 core/flat hash=
-> # C6AE88A2B807488E/B8F1A06E5BBEBB7C，矩阵峰值查询=1629/4050；其余八个并列后端的既有
+> # course 隔离在 z=-48m 的约 17.2° 斜坡。2026-08-05 失速修复轮实跑 core/flat hash=
+> # 47F9584427FCD54A/FCC938B3D329B276，矩阵峰值查询=1667/4050；其余八个并列后端的既有
 > # 哈希、路点与 smoke 断言逐位不变。
 >
 > # ⑥ DropBug 专项（25 项 Godot 配置；smoke 内含九机制消融红灯验证）：
@@ -550,8 +586,8 @@
 > # nimble/bulky 变体各覆盖 walk/hang/dive/pounce（评审 P2；pounce 起跳窗口按预设
 > # 蓄力时长参数化），哈希基线钉在脚本顶部（walk=7F39EB42FAC652CA，微扰
 > # EE23FD7369FC944C，nimble/bulky=14E3086C9561F50B/6DB83D00D84E9631）。
-> # 当前全仓七套 Godot 矩阵合计 169 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 +
-> # Deer18 + DaddyLongLegs39 + DropBug25；2026-08-04 DropBug 落地轮实跑全部 GREEN，
+> # 当前全仓七套 Godot 矩阵合计 170 项 = 主矩阵45 + Spider16 + Cicada9 + TentaclePlant17 +
+> # Deer18 + DaddyLongLegs40 + DropBug25；2026-08-04 DropBug 落地轮实跑全部 GREEN，
 > # 既有 12 套回归输出与改动前逐字节一致（唯一差异 = 主 smoke [CORE-MODULARITY]
 > # 横幅 9→10 物种）；同日评审修复轮（Launch 悬挂冷却 + 变体覆盖）后 DropBug 全部
 > # 基线重钉（FoldState 新增字段），其余 12 套按各自钉死基线复跑 GREEN。

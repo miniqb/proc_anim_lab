@@ -92,6 +92,15 @@ public sealed class DaddyLongLegsParams
     public float GuideTargetLengthRatio = 0.985f;
     public float GuideSlackArchShare = 0.60f;
     public float GuideBendMaximumRatio = 1.25f;
+    // 余长鼓弧不查地形，墙边可能持续鼓进 collider：段被伺服压向墙内目标，guide
+    // obstruction 每 6 tick 如实释放一个本来有效的落点，随后重搜又选回同一点，
+    // 形成静止墙边的无限“清点-重搜”循环（2026-08-05 wall-idle 实测）。对策是把
+    // 拱弧幅度做成逐触手自适应：观察到 obstruction 当 tick 立即按此步长衰减，
+    // 4 tick 内压平（先于 6 tick 释放窗），无障碍时缓慢恢复；真实阻塞（目标在墙
+    // 另一侧）仍按原释放路径清点重搜。
+    public float GuideObstructionArchDecayPerTick = 0.25f;
+    public float GuideArchRecoveryPerTick = 0.01f;
+    public bool EnableGuideArchAdaptation = true;
     public float GuideTangentHandleRatio = 0.32f;
     public float GuideSurfaceApproachNormalWeight = 0.45f;
     public float SurfaceAdvanceNormalWeight = 1.00f;
@@ -100,6 +109,10 @@ public sealed class DaddyLongLegsParams
     public float SurfaceSpanReachRatio = 0.985f;
     public float SurfaceSpanAdvanceMaximumRatio = 0.25f;
     public int LandingCommitTicks = 20;
+    // 原作 Climb 对 !atGrabDest 触手每 tick 调 UpdateClimbGrabPos——在途落点持续跟随
+    // 身体的 idealGrabPos 前移。3D 版保留候选评分/同面跨度结构，只把移动 episode 内
+    // 未到达腿的重瞄提交年龄降到搜索节拍，避免落点冻结导致“到达即落后”。
+    public int MovingReplantRetargetTicks = 4;
     public int LandingValidationTicks = 6;
     // 静止落点的短复验射线在墙角/三角形接缝可能瞬时命中相邻面；连续失败才失效。
     public int IdleLandingValidationFailures = 3;
@@ -141,13 +154,26 @@ public sealed class DaddyLongLegsParams
     public float StartReplantMoveBlend = 0.88f;
     public float MoveTargetArriveRadius = 0.45f;
     public int MinimumArrivedTentaclesForStep = 2;
-    public int StepReleaseCooldownTicks = 8;
+    // ≙ 原作 Act 的换腿节流：`legsGrabbing > N/2 && moving` 满足时每 tick 重定向一条
+    // ReleaseScore 最差的到达腿——没有串行槽。3D 版同样以“到达数不跌破配额”作为唯一
+    // 并发上限（释放即清到达，计数门自节流），另保留逐次释放的短冷却与逐候选支撑余量门。
+    // 配额分母是参与池（Locomotion 任务且落点可得），永久够不到地形的触手
+    // （SearchFailureTicks 达到扩张上限仍无落点）不占配额，避免高站姿下计数门被
+    // 不可能满足的名额卡死。
+    public int StepReleaseCooldownTicks = 3;
     // 普通连续换腿不得让预测抗重力跌破 1g；低余量形态会保留抓稳腿，并让已经失落的
     // 触手重新搜索，而不是为了凑步数强行 Peeling。Godot seed 93 已钉住这个区别。
     public float StepReleaseMinimumGravityCancellation = 1.00f;
     // 起步腿只允许一次有界的短暂支撑赤字；它仍按“整条腿立即失去贡献”的最坏值
     // 估算，且不进入 DriveScale。普通连续换步继续使用上面的 1.00 门。
     public float StartReplantMinimumGravityCancellation = 0.90f;
+    // 1.00 硬门在稀疏形态（如 5 触手、部分永久够不到地）下会永久拒绝一切换步——原作
+    // 没有余量门，靠计数门保护。折衷：连续 StepReserveStarvationTicks 个“计数门已过、
+    // 候选仅因余量被拒”的合格 tick 后，允许以起步腿同款 0.90 预算串行放行一条
+    // （在途普通步为零时才放）。每次阀释放后重新累计完整饥饿窗：只有 1.00 门恒拒绝
+    // 的真死锁形态才持续用阀，尚有普通换步能力的低余量形态（如 Godot seed 93）不会
+    // 被阀在普通步之间频繁抽腿压低身高。短暂的余量不足仍保留抓稳腿。
+    public int StepReserveStarvationTicks = 90;
 
     // —— 卡住退化与确定性抖动 ——
     public int StuckHistoryTicks = 80;
@@ -198,7 +224,13 @@ public sealed class DaddyLongLegsParams
     public bool EnableStartReplant = true;
     public bool EnableStepSupportReserve = true;
     public bool EnableStartReplantTransientSupportBudget = true;
-    public bool EnableSerialReplant = true;
+    // 计数门节流（≙ 原作 legsGrabbing > N/2）。关闭后普通换步不再受到达数约束，
+    // 多腿可同时进入 Peeling——专项消融用，正常运行必须开启。
+    public bool EnableStepReleaseThrottle = true;
+    // 移动 episode 内未到达腿的快速重瞄（≙ 原作每 tick UpdateClimbGrabPos）。
+    public bool EnableMovingReplantRetarget = true;
+    // 余量饥饿阀；关闭后稀疏形态回到 1.00 硬门永久拒绝换步的死锁。
+    public bool EnableStepReserveStarvationValve = true;
     // 独立消融门：移动 episode 结束后提交已有落点、释放旧起步方向，并对复验做滞回。
     public bool EnableIdleLandingStability = true;
     public bool EnableIdleSupportNeutrality = true;
@@ -327,6 +359,18 @@ public sealed class DaddyLongLegsParams
         Range(GuideTargetLengthRatio, 0.75f, 1f, nameof(GuideTargetLengthRatio));
         Unit(GuideSlackArchShare, nameof(GuideSlackArchShare));
         Range(GuideBendMaximumRatio, 0.1f, 2f, nameof(GuideBendMaximumRatio));
+        Range(GuideObstructionArchDecayPerTick, 0.05f, 1f,
+            nameof(GuideObstructionArchDecayPerTick));
+        Range(GuideArchRecoveryPerTick, 0.001f, 0.5f,
+            nameof(GuideArchRecoveryPerTick));
+        if (GuideObstructionArchDecayPerTick * (TerrainBacktrackReleaseTicks - 1) < 1f)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(GuideObstructionArchDecayPerTick),
+                GuideObstructionArchDecayPerTick,
+                "Arch decay must fully flatten the slack arch before the guide " +
+                "obstruction release window elapses.");
+        }
         Range(GuideTangentHandleRatio, 0.01f, 1f, nameof(GuideTangentHandleRatio));
         Range(GuideSurfaceApproachNormalWeight, 0f, 2f,
             nameof(GuideSurfaceApproachNormalWeight));
@@ -336,6 +380,8 @@ public sealed class DaddyLongLegsParams
         Range(SurfaceSpanAdvanceMaximumRatio, 0.01f, 0.50f,
             nameof(SurfaceSpanAdvanceMaximumRatio));
         IntegerRange(LandingCommitTicks, 1, 120, nameof(LandingCommitTicks));
+        IntegerRange(MovingReplantRetargetTicks, 1, LandingCommitTicks,
+            nameof(MovingReplantRetargetTicks));
         IntegerRange(LandingValidationTicks, 1, 120, nameof(LandingValidationTicks));
         IntegerRange(IdleLandingValidationFailures, 1, 10,
             nameof(IdleLandingValidationFailures));
@@ -391,6 +437,8 @@ public sealed class DaddyLongLegsParams
             nameof(StepReleaseMinimumGravityCancellation));
         Range(StartReplantMinimumGravityCancellation, 0f, 2f,
             nameof(StartReplantMinimumGravityCancellation));
+        IntegerRange(StepReserveStarvationTicks, 1, 2000,
+            nameof(StepReserveStarvationTicks));
 
         IntegerRange(StuckHistoryTicks, 8, 512, nameof(StuckHistoryTicks));
         IntegerRange(StuckCompareTicks, 1, StuckHistoryTicks - 1, nameof(StuckCompareTicks));

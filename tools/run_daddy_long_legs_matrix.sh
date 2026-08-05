@@ -20,39 +20,40 @@ OUT="${1:-/private/tmp/proc_anim_daddy_long_legs_matrix}"
 LOG="${OUT}/godot.log"
 SCENE="res://scenes/daddy_long_legs_sandbox.tscn"
 
-HASH_FLAT="B8F1A06E5BBEBB7C"
-HASH_PERTURB="115F1B2121F377AA"
-HASH_IDLE_START="F53B762903390568"
-HASH_TAP="AAA12434E1613159"
-HASH_HEIGHT_RETENTION_SEED1="FF13ECBD79A39633"
-HASH_HEIGHT_RETENTION_SEED33="E0CA5CCFA50B900A"
-HASH_HEIGHT_RETENTION_SEED93="3AB7E41B732C339D"
-HASH_BROTHER="C0B597F84B0F2F5D"
-HASH_DADDY_SEED2="DA6E615F7B2FFE73"
-HASH_TERROR_SEED1="2EDD3E553C53652E"
-HASH_TERROR_SEED7="4BBA564CED233522"
-HASH_COURSE="92C1777B640DD835"
-HASH_WALL="BFDB956DDD29EF6F"
-HASH_WALL_IDLE="8D795D43E6D005E9"
-HASH_CEILING="4789DF155B47E458"
-HASH_CORNER="F401556489AF41AC"
-HASH_OUTER="1A8A07F49887EA25"
-HASH_STUN="768E3479071491EF"
-HASH_STUCK="AF149255C0A9ED09"
-HASH_STUCK_SEED3="272635641254B362"
-HASH_STUCK_SEED4="DC57B3429B7E7ACB"
-HASH_STUCK_SEED7="B0C0A01A189937B6"
-HASH_STUCK_SEED93="7D39F90B9E245B37"
-HASH_TARGET="020D7A6BF87C6922"
-HASH_LAUNCH="7326649CB6AD4D98"
-HASH_LIFECYCLE="23B20AD589C26147"
-HASH_TERROR_WALL="37D3F2EA2C53C49D"
-HASH_TERROR_CEILING="521EE321E5F6679D"
-HASH_TERROR_CORNER="B6A0F7291ABD3E80"
-HASH_TERROR_OUTER="E6581258BFE26A74"
-HASH_TERROR_STUCK="38C1D4F3299BD37E"
-HASH_BROTHER_WALL="7D1ECBB0DB105542"
-HASH_BROTHER_CORNER="E34837FE05B2F15D"
+HASH_FLAT="FCC938B3D329B276"
+HASH_PERTURB="9657299AD24335D4"
+HASH_IDLE_START="BFBB3CA888FBDA27"
+HASH_TAP="7F0F86B29732E549"
+HASH_HEIGHT_RETENTION_SEED1="EA42857092EAD141"
+HASH_HEIGHT_RETENTION_SEED33="C5FC57888C1B9B9D"
+HASH_HEIGHT_RETENTION_SEED93="E119C5292F55EC4C"
+HASH_SPARSE_GAIT="F549762BF1946CF1"
+HASH_BROTHER="0BF2E03635391D10"
+HASH_DADDY_SEED2="82997A92A1E835DD"
+HASH_TERROR_SEED1="129DE0B95ADC049D"
+HASH_TERROR_SEED7="D2C88F9E158B64A7"
+HASH_COURSE="62929677D9BAF882"
+HASH_WALL="59978F2841B22DFF"
+HASH_WALL_IDLE="F512B2EC88BA8D1D"
+HASH_CEILING="A84D01BA70B8481E"
+HASH_CORNER="CB4EA4EE89AB4B55"
+HASH_OUTER="8AFF2B3C0E4DA24D"
+HASH_STUN="F6AF3992FDC4AFBC"
+HASH_STUCK="9571A10382DCA7F9"
+HASH_STUCK_SEED3="04C61682E6A5EB23"
+HASH_STUCK_SEED4="2E970A61CEFF209F"
+HASH_STUCK_SEED7="26EFE0D9C05F28EE"
+HASH_STUCK_SEED93="B716BA68D8A292CD"
+HASH_TARGET="88DF62ECD19328EF"
+HASH_LAUNCH="3F6DD11D137EF75D"
+HASH_LIFECYCLE="E780C63E72CAA66C"
+HASH_TERROR_WALL="6D278DB824B59052"
+HASH_TERROR_CEILING="3AF41B02ECB9B99A"
+HASH_TERROR_CORNER="CC9DD724893CA50A"
+HASH_TERROR_OUTER="1139B972C767B71E"
+HASH_TERROR_STUCK="50E410DC7DD74A53"
+HASH_BROTHER_WALL="FF204D02414A04F8"
+HASH_BROTHER_CORNER="9323249FB7AA2A4B"
 
 mkdir -p "$OUT"
 if [ "$UPDATE_HASHES" -eq 1 ]; then
@@ -148,6 +149,30 @@ run_height_ablation() {
     fi
 }
 
+# 稀疏形态余量饥饿阀的 Godot 级消融：阀关闭后 sparse-gait 的进度/阀释放门必须变红。
+run_sparse_ablation() {
+    local mechanism="$1" seed="$2"
+    local name="sparse-ablate-$mechanism"
+    local file="$OUT/$name.txt"
+    "$GODOT" --headless --rendering-method gl_compatibility \
+        --rendering-driver opengl3 --path . --log-file "$LOG" \
+        --fixed-fps 40 "$SCENE" -- \
+        --daddy-determinism=2000 --daddy-tps=400 --daddy-preset=daddy \
+        "--daddy-seed=$seed" --daddy-route=sparse-gait \
+        "--daddy-ablate=$mechanism" > "$file" 2>&1
+    local code=$?
+    if [ "$code" -eq 1 ] \
+            && grep -q '^\[DADDY-SPARSE-GAIT\]' "$file" \
+            && grep -q '^\[DADDY-RESULT\] FAIL' "$file"; then
+        echo "[sparse-ablate-$mechanism] PASS (expected exit=1, seed=$seed)"
+    else
+        echo "[sparse-ablate-$mechanism] FAIL (exit=$code, seed=$seed)"
+        grep -E '^\[DADDY-(RESULT|SPARSE-GAIT|METRIC|DET|SANDBOX)\]' "$file" \
+            | tail -20 | sed 's/^/    /'
+        fail=1
+    fi
+}
+
 det_stream() {
     grep '^\[DADDY-DET\]' "$OUT/$1.txt"
 }
@@ -177,8 +202,13 @@ run height-retention-seed33 daddy 33 height-retention 1800 400 \
 run height-retention-seed93 daddy 93 height-retention 1800 400 \
     "$HASH_HEIGHT_RETENTION_SEED93"
 run_height_ablation surface-span-replant 1
-run_height_ablation serial-replant 1
 run_height_ablation support-response-3d 1
+
+# 稀疏形态（daddy seed 5：5 触手、部分永久够不到地）依赖余量饥饿阀维持连续步态；
+# 计数门节流与在途落点追踪的行为红灯由无引擎 smoke 消融钉住（平地密集形态下
+# 二者与余量门互为冗余，Godot 物理面不可靠区分）。
+run sparse-gait daddy 5 sparse-gait 2000 400 "$HASH_SPARSE_GAIT"
+run_sparse_ablation starvation-valve 5
 
 # 三个正式预设与四个不同 seed 形态；包含 4-body 小型和 12-body 大型实例。
 run brother-seed1 brother 1 flat 800 400 "$HASH_BROTHER"
@@ -300,7 +330,8 @@ for mechanism in support support-lift allocation independent-duty directional-dr
         terrain-backtrack \
         grip-discrimination step-peel slack-guide start-replant \
         idle-landing-stability idle-support-neutrality \
-        step-support-reserve surface-span-replant serial-replant \
+        step-support-reserve surface-span-replant release-throttle \
+        moving-retarget starvation-valve guide-arch \
         support-response-3d; do
     ablation_file="$OUT/daddy-ablate-$mechanism.txt"
     dotnet run --no-build --no-restore --project core/daddy_long_legs_smoke -- \
@@ -317,9 +348,9 @@ done
 
 if [ "$fail" -eq 0 ]; then
     if [ "$UPDATE_HASHES" -eq 1 ]; then
-        echo "== DADDY HASH COLLECTION COMPLETE (39 Godot configurations + 27 ablations; hashes not pinned) =="
+        echo "== DADDY HASH COLLECTION COMPLETE (40 Godot configurations + 30 ablations; hashes not pinned) =="
     else
-        echo "== DADDY LONG LEGS MATRIX GREEN (39 Godot configurations + 27 ablations) =="
+        echo "== DADDY LONG LEGS MATRIX GREEN (40 Godot configurations + 30 ablations) =="
     fi
 else
     if [ "$UPDATE_HASHES" -eq 1 ]; then
