@@ -133,6 +133,111 @@ public static class SpiderFactory
     }
 
     /// <summary>
+    /// 精瘦蜘蛛：按反编译的原作 <c>Spider</c>（群居小蜘蛛）比例换算，而不是沿用
+    /// <see cref="SmallSpider"/> / <see cref="LargeSpider"/> 那两只 BigSpider 拓扑的自创比例。
+    ///
+    /// 取原作 <c>iVars.size = 0.6</c> 一档（1px = 0.025m）：
+    /// 身体 <c>rad = Lerp(2,9,0.6) = 6.2px = 0.155m</c> 的**单球**、
+    /// <c>limbLength = Lerp(10,40,0.6) = 28px = 0.70m</c>、
+    /// 逐对总长系数 <c>{0.85, 1, 0.95, 0.9}</c>、上段占比 <c>{0.5, 0.6, 0.5, 0.65}</c>、
+    /// 扇角 <c>Lerp(30°,140°,i/3)</c> 且第四对再 +20°（= 体轴 30/67/103/160°）。
+    /// 结果是可达半径约为身体后节半径的 5.8 倍（原作小蜘蛛 4.5、BigSpider 6.1，
+    /// 既有两只只有 2.5），即用户要的“身子小、腿细长”剪影。
+    ///
+    /// 三处有意偏离原作，各有理由：
+    /// ① 原作是 1 chunk / 0 connection，本控制器要求有序链至少两节；这里改用
+    ///    「头胸 0.085 + 腹 0.115、连接 0.10」的两球，总跨度 0.30m 与原作单球直径
+    ///    0.31m 等价，顺带给出真实蜘蛛的两体节剪影。八条腿仍全部锚在第 0 节（≙ 原作
+    ///    全挂 mainBodyChunk）。
+    /// ② 原作腿是纯图形件（<c>Limb</c> 在 GraphicsModule，<c>ConnectToPoint</c> 从不写回
+    ///    身体 chunk），移动是 <c>mainBodyChunk.vel += dir × 1.4</c>。本项目的腿真驱动身体，
+    ///    因此 HuntSpeed 必须随腿长同比例上调，否则脚追不上身体（≙ M4「heavy 近瘫」教训）。
+    /// ③ 逐对**总长**逐位取自原作，但上/下段的分割比压回 ±10%（原作 <c>{.5,.6,.5,.65}</c>）。
+    ///    原作那组比例是 2D 贴图的 scaleY，其 <c>Limb.ConnectToPoint</c> 只钳最大距离、
+    ///    没有下限；我们的两段 IK 有 <c>MinimumReach = |上段−下段|</c> 的内侧死区。照抄
+    ///    会让第 4 对的死区达 0.19m（腿长 30%），地形 MTD 往内推、可达约束往外推，
+    ///    <c>EnsureReachableAfterTerrain</c> 的四次交替投影不收敛，足端被兜底瞬移
+    ///    0.9m（实测 course 路线膝跳变 105% > 88% 门）。保留「股节 ≥ 胫节」的原作朝向。
+    /// </summary>
+    public static SpiderBreedParams LeanSpider()
+    {
+        var p = new SpiderBreedParams
+        {
+            Name = "spider-lean",
+            BaseSpeed = 0.062f,
+            MaxMoveSpeed = 0.09f,
+            NoGripSpeed = 0.1f,
+            MinGroundedLegs = 2,
+            RegainFootingTicks = 3,
+            LoseGripTicks = 6,
+            // 身体轻小、腿长，姿态帧一快就带着 bend pole 和支撑法线甩：法线低通放慢、
+            // 相位拉长、常驻抓地腿加到 4，急转时 poleDot 与 supportUp 才留得住。
+            SupportBlend = 0.20f,
+            GaitPhaseTicks = 9,
+            MinPlantedLegs = 4,
+            TrailingGain = 0.18f,
+            LookAhead = 0.5f,
+            RideHeight = 0.26f,
+            StallReleaseTicks = 16,
+            ConstraintIterations = 4,
+        };
+        // 头胸与腹：两球跨度 0.085+0.10+0.115 = 0.30m ≈ 原作单球直径 0.31m。
+        p.BodySegments.Add(new BodySegmentSpec
+        {
+            Radius = 0.085f,
+            Mass = 0.12f,
+        });
+        p.BodySegments.Add(new BodySegmentSpec
+        {
+            Radius = 0.115f,
+            Mass = 0.24f,
+            ConnectionLength = 0.10f,
+            ConnectionWeight = 0.42f,
+            ConnectionElasticity = 0.24f,
+        });
+
+        // 逐对总长 = limbLength × {0.85,1,0.95,0.9} = {0.596,0.700,0.666,0.630}，逐位照搬；
+        // 分割比取 {.545,.55,.545,.555}（见上文 ③），死区落在腿长的 9%~12%。
+        float[] upperLengths = { 0.325f, 0.385f, 0.363f, 0.350f };
+        float[] lowerLengths = { 0.271f, 0.315f, 0.303f, 0.280f };
+        // 本表的扇角从身体横轴量起（正值朝前）。原作的 30/67/103/160°（→ 60/23.3/-13.3/-70）
+        // 同样是贴图扇角：最前/最后一对几乎沿体轴，横向分量被 MaxReach 钳制后挤没，实测
+        // 急转后每条腿只剩名义站距的 67%（门 87.5%）。这里保留比既有两只更宽的展开，
+        // 但收回已验证可行带。
+        float[] fanAngles = { 56f, 20f, -20f, -56f };
+        float[] longitudinalOffsets = { 0.05f, 0.02f, -0.01f, -0.04f };
+        float[] touchdownLeadRatios = { 0.55f, 0.48f, 0.40f, 0.33f };
+        for (int pair = 0; pair < 4; pair++)
+        {
+            p.LegPairs.Add(new LegPairSpec
+            {
+                AnchorSegmentIndex = 0,
+                RootOffset = new Vector3(longitudinalOffsets[pair], 0f, 0f),
+                RootLateralOffset = 0.045f,
+                FanAngleDegrees = fanAngles[pair],
+                PhaseGroup = pair & 1,
+                OpposeSidePhase = true,
+                UpperLength = upperLengths[pair],
+                LowerLength = lowerLengths[pair],
+                FootRadius = 0.022f,
+                HuntSpeed = 0.24f,
+                Quickness = 0.75f,
+                GripDelay = 2,
+                StepLength = 0.58f,
+                TrailReleaseRatio = -1f,
+                TouchdownLeadRatio = touchdownLeadRatios[pair],
+                UseExplicitTouchdownLead = true,
+                ForwardStepBias = 0f,
+                LiftFeet = 0.26f,
+                FeetDown = 0.38f,
+                PairLateral = 0.46f,
+                ProbeReach = 0.09f,
+            });
+        }
+        return p;
+    }
+
+    /// <summary>
     /// 只供核心测试的三节、多锚点拓扑：三对腿分别挂在第 0/1/2 节。
     /// 它证明装配和控制器没有把“两节身体、腿只在第一节”的正式预设写死。
     /// </summary>
@@ -198,7 +303,8 @@ public static class SpiderFactory
     }
 
     /// <summary>沙盒正式实例表；测试专用的 SyntheticMultiAnchor 不列入玩家切换序列。</summary>
-    public static SpiderBreedParams[] AllBreeds() => new[] { SmallSpider(), LargeSpider() };
+    public static SpiderBreedParams[] AllBreeds() =>
+        new[] { SmallSpider(), LargeSpider(), LeanSpider() };
 
     /// <summary>按稳定名称取正式预设；未知名称快速失败，避免命令行拼写错误静默换品种。</summary>
     public static SpiderBreedParams ByName(string name)

@@ -2341,7 +2341,7 @@ public partial class SpiderSandboxWorld : Node3D
             GD.Print($"[SPIDER-SANDBOX] ray debug {(_rayDebug.Enabled ? "on" : "off")}");
             return;
         }
-        if (key.PhysicalKeycode < Key.Key1 || key.PhysicalKeycode > Key.Key2)
+        if (key.PhysicalKeycode < Key.Key1 || key.PhysicalKeycode > Key.Key3)
         {
             return;
         }
