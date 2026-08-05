@@ -229,6 +229,7 @@ internal sealed class CentipedeSandboxCreatureAdapter : ISandboxCreatureAdapter
 internal sealed class VultureSandboxCreatureAdapter : ISandboxCreatureAdapter
 {
     public VultureFlightController Controller { get; }
+    public VultureBreedParams Breed => _breed;
     private readonly VultureBreedParams _breed;
 
     public string StableId => $"vulture/{_breed.Name}";

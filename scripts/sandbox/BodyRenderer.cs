@@ -201,6 +201,31 @@ public sealed class BodyRenderer
         parent.AddChild(_lineNode);
     }
 
+    /// <summary>整体显隐（正式渲染切换用）：隐藏时调用侧同时跳过 Draw，省掉线网格重建。</summary>
+    public void SetVisible(bool visible)
+    {
+        foreach ((_, MeshInstance3D node) in _spheres)
+        {
+            node.Visible = visible;
+        }
+        foreach ((_, MeshInstance3D node) in _feet)
+        {
+            node.Visible = visible;
+        }
+        foreach ((_, _, MeshInstance3D node) in _wingNodes)
+        {
+            node.Visible = visible;
+        }
+        foreach ((_, MeshInstance3D node) in _otherFeet)
+        {
+            node.Visible = visible;
+        }
+        if (_lineNode is not null)
+        {
+            _lineNode.Visible = visible;
+        }
+    }
+
     /// <summary>拆掉本次 Build 创建的全部节点（品种切换重生用），之后可再次 Build。</summary>
     public void Clear()
     {

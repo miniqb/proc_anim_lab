@@ -227,6 +227,14 @@ public partial class SandboxWorld : Node3D
     private readonly RaycastTerrainQuery _terrain = new();
     private RayDebugDraw _rayDebug = null!;
     private readonly BodyRenderer _renderer = new();
+    // —— 正式（美化）渲染层：与 debug 白盒并存，V 键切换；未覆盖物种自动回落白盒。——
+    private ProcAnimLab.Render.IFormalRenderer? _formalRenderer;
+    private bool _formalView = true; // --formal=off 或 V 键关闭
+    private string? _screenshotPath; // --screenshot=path[@tick]：截图后退出（视觉验证回路）
+    private long _screenshotTick = 90;
+    private Vector3? _autoWalkDir; // --autowalk=dx,dz：交互模式恒定行走（配截图用）
+    private (Vector3 Pos, Vector3 LookAt)? _camOverride; // --cam=px,py,pz,lx,ly,lz
+    private Vector3? _camFollowOffset; // --camfollow=ox,oy,oz：相机 = 生物头 + 偏移，注视头
     private readonly DragController _drag = new();
     private CreatureSelectorUI? _creatureUI;
     private DeterminismProbe? _probe;
@@ -290,6 +298,13 @@ public partial class SandboxWorld : Node3D
             // 微扰打在活动身体的 chunk 0 上（蜥蜴=头 / 人形=胸），物种各自等价。
             _creature.Body.Chunks[0].Pos += new Vector3(_perturb, 0f, 0f);
             _creature.Body.Chunks[0].LastPos = _creature.Body.Chunks[0].Pos;
+        }
+        if (_camOverride is { } cam)
+        {
+            _camera.Position = cam.Pos;
+            _camera.LookAt(cam.LookAt, Vector3.Up);
+            _camYaw = _camera.Rotation.Y;
+            _camPitch = _camera.Rotation.X;
         }
         if (_probe is null)
         {
@@ -355,6 +370,7 @@ public partial class SandboxWorld : Node3D
         _drag.Release();
         _humanoid.Spawn(this, breed, origin, ConstraintIterations, _bodies);
         _creature = new HumanoidSandboxCreatureAdapter(_humanoid);
+        RebuildFormalRenderer(); // 人形暂无正式渲染：清掉跨物种残留并回落专用渲染
     }
 
     /// <summary>跨物种切换离开人形时的整体拆除：专用渲染节点与驱动器一起清。</summary>
@@ -366,6 +382,23 @@ public partial class SandboxWorld : Node3D
         }
         _humanoid.Renderer.Clear();
         _humanoid = null;
+    }
+
+    /// <summary>重建正式渲染器（物种/品种切换共用）：未覆盖物种 TryCreate 返回 null → 回落白盒。</summary>
+    private void RebuildFormalRenderer()
+    {
+        _formalRenderer?.Clear();
+        _formalRenderer = ProcAnimLab.Render.FormalRendererFactory.TryCreate(_creature);
+        _formalRenderer?.Build(this);
+        ApplyRenderView();
+    }
+
+    /// <summary>正式/白盒双渲染的显隐仲裁：正式渲染就绪且开启时白盒整体隐藏（Draw 也跳过）。</summary>
+    private void ApplyRenderView()
+    {
+        bool formalOn = _formalRenderer is not null && _formalView;
+        _renderer.SetVisible(!formalOn);
+        _formalRenderer?.SetVisible(formalOn);
     }
 
     /// <summary>（重）生成行走体：替换物理对象并重建渲染节点（数字键换品种共用此路径）。</summary>
@@ -385,6 +418,7 @@ public partial class SandboxWorld : Node3D
         _drag.Release();
         _renderer.Clear();
         _creature.BuildRenderer(_renderer, this);
+        RebuildFormalRenderer();
     }
 
     /// <summary>按稳定 ID 装配蜈蚣；未知 ID 已在 CLI/选择表边界快速失败。</summary>
@@ -408,6 +442,7 @@ public partial class SandboxWorld : Node3D
         _drag.Release();
         _renderer.Clear();
         _creature.BuildRenderer(_renderer, this);
+        RebuildFormalRenderer();
     }
 
     private void ResetCentipedeCourseMetrics(CentipedeLocomotionController controller)
@@ -456,6 +491,7 @@ public partial class SandboxWorld : Node3D
         _drag.Release();
         _renderer.Clear();
         _creature.BuildRenderer(_renderer, this);
+        RebuildFormalRenderer();
     }
 
     public override void _PhysicsProcess(double delta)
@@ -593,6 +629,14 @@ public partial class SandboxWorld : Node3D
     /// 右键（不按 Shift）= 自由摄像机飞行态：WASD 让位给 UpdateCameraFly，本函数直接短路。</summary>
     private void SampleWalkInput()
     {
+        if (_autoWalkDir is { } autoDir)
+        {
+            // --autowalk：截图/视觉验证用的恒定行走，优先于键鼠。
+            _creature.MoveTarget = null;
+            _creature.MoveDir = autoDir;
+            _creature.RunSpeed = 1f;
+            return;
+        }
         if (WantCameraFly)
         {
             _creature.MoveDir = Vector3.Zero;
@@ -2663,15 +2707,48 @@ public partial class SandboxWorld : Node3D
             return;
         }
         UpdateCameraFly((float)delta);
+        if (_camFollowOffset is { } camOffset)
+        {
+            // 截图/视觉验证的跟踪相机：钉在生物头部偏移处注视头部（纯渲染，不进物理）。
+            Vector3 focus = _creature.LeadChunk.LerpPos((float)Engine.GetPhysicsInterpolationFraction());
+            _camera.Position = focus + camOffset;
+            _camera.LookAt(focus, Vector3.Up);
+        }
         if (_humanoid is not null)
         {
             _humanoid.Renderer.Draw((float)Engine.GetPhysicsInterpolationFraction(), _humanoid.ThrownProp,
                 _rayDebug.Enabled);
             _rayDebug.Draw(_camera);
+            MaybeCaptureScreenshot();
             return;
         }
-        _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
+        float alpha = (float)Engine.GetPhysicsInterpolationFraction();
+        if (_formalRenderer is { } formal && _formalView)
+        {
+            formal.Draw(alpha, (float)delta);
+        }
+        else
+        {
+            _renderer.Draw(alpha);
+        }
         _creature.DrawDebug(_rayDebug, _camera);
+        MaybeCaptureScreenshot();
+    }
+
+    /// <summary>--screenshot 视觉验证回路：到达指定 tick 后保存视口帧并退出。
+    /// 渲染专用旁路——不触碰物理与哈希；headless 下图像为空，别在矩阵里用。</summary>
+    private void MaybeCaptureScreenshot()
+    {
+        if (_screenshotPath is null || _tick < _screenshotTick)
+        {
+            return;
+        }
+        Image img = GetViewport().GetTexture().GetImage();
+        Error err = img.SavePng(_screenshotPath);
+        GD.Print($"[SANDBOX] screenshot {(err == Error.Ok ? "saved" : $"FAILED ({err})")}: " +
+            $"{_screenshotPath} (tick {_tick})");
+        _screenshotPath = null;
+        GetTree().Quit(err == Error.Ok ? 0 : 3);
     }
 
     /// <summary>右键held且不按Shift = 想要飞行摄像机（与 Shift+右键放胡萝卜互斥）。
@@ -2768,6 +2845,14 @@ public partial class SandboxWorld : Node3D
         {
             _rayDebug.Enabled = !_rayDebug.Enabled;
             GD.Print($"[SANDBOX] ray debug {(_rayDebug.Enabled ? "on" : "off")}");
+            return;
+        }
+        if (key.PhysicalKeycode == Key.V)
+        {
+            _formalView = !_formalView;
+            ApplyRenderView();
+            GD.Print($"[SANDBOX] formal render {(_formalView ? "on" : "off")}" +
+                (_formalRenderer is null ? "（该物种暂无正式渲染，仍为白盒）" : ""));
             return;
         }
         if (key.PhysicalKeycode == Key.R)
@@ -2883,6 +2968,62 @@ public partial class SandboxWorld : Node3D
                 else if (arg.StartsWith("--yank="))
                 {
                     _yankTick = long.Parse(arg["--yank=".Length..], inv);
+                }
+                else if (arg.StartsWith("--screenshot="))
+                {
+                    // 视觉验证回路（仅交互模式有意义；headless 下取不到帧）：到 tick 截图并退出。
+                    string spec = arg["--screenshot=".Length..];
+                    int at = spec.LastIndexOf('@');
+                    if (at > 0)
+                    {
+                        _screenshotPath = spec[..at];
+                        _screenshotTick = long.Parse(spec[(at + 1)..], inv);
+                    }
+                    else
+                    {
+                        _screenshotPath = spec;
+                    }
+                }
+                else if (arg.StartsWith("--cam="))
+                {
+                    string[] parts = arg["--cam=".Length..].Split(',');
+                    if (parts.Length != 6)
+                    {
+                        throw new System.FormatException("--cam 需要 px,py,pz,lx,ly,lz 六个分量");
+                    }
+                    _camOverride = (
+                        new Vector3(float.Parse(parts[0], inv), float.Parse(parts[1], inv),
+                            float.Parse(parts[2], inv)),
+                        new Vector3(float.Parse(parts[3], inv), float.Parse(parts[4], inv),
+                            float.Parse(parts[5], inv)));
+                }
+                else if (arg.StartsWith("--camfollow="))
+                {
+                    string[] parts = arg["--camfollow=".Length..].Split(',');
+                    if (parts.Length != 3)
+                    {
+                        throw new System.FormatException("--camfollow 需要 ox,oy,oz 三个分量");
+                    }
+                    _camFollowOffset = new Vector3(float.Parse(parts[0], inv),
+                        float.Parse(parts[1], inv), float.Parse(parts[2], inv));
+                }
+                else if (arg.StartsWith("--autowalk="))
+                {
+                    string[] parts = arg["--autowalk=".Length..].Split(',');
+                    if (parts.Length != 2)
+                    {
+                        throw new System.FormatException("--autowalk 需要 dx,dz 两个分量");
+                    }
+                    var dir = new Vector3(float.Parse(parts[0], inv), 0f, float.Parse(parts[1], inv));
+                    if (dir.LengthSquared() < 1e-8f)
+                    {
+                        throw new System.FormatException("--autowalk 方向不能为零");
+                    }
+                    _autoWalkDir = dir.Normalized();
+                }
+                else if (arg == "--formal=off")
+                {
+                    _formalView = false;
                 }
                 else if (arg == "--route=centipede-course")
                 {

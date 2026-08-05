@@ -399,6 +399,21 @@
 > 评审修复轮其余 12 套按各自钉死基线复跑 GREEN。数值表、3D 取舍与偏离清单见
 > `docs/dropbug_controller.md`。
 >
+> **正式渲染层技术验证轮（2026-08-05，Lizard + Centipede + Vulture）**：反编译全部十个
+> 物种 Graphics 类 + `GraphicsModule`/`TriangleMesh`/`RopeGraphic` 渲染基建，提炼 RW
+> "去球感"手法词汇表并落地 3D 验证件，真相源 =
+> [`docs/rainworld_render_research.md`](docs/rainworld_render_research.md)。
+> `scripts/render/`（游戏程序集，不进 core）：共享基建（`SplineSampler` Catmull-Rom /
+> `TubeMeshBuilder` 平行传输扫管 + 鳍片 + 羽毛刀片 / `TwoBoneIk` 余弦钳制 [0.2,0.98]）+
+> 三个 `IFormalRenderer`（蜥蜴身尾连续扫管·显示半径与物理解耦·背刺·足端识别色；蜈蚣
+> 暗底管 + 逐节真实 SupportNormal 定向背甲 + 甲片间隙即节间暗环；秃鹫 K4 正交基替换派
+> 躯干 + 羽毛刀片扇·逐羽滞后低通）。`FormalRendererFactory` 按适配器分派，未覆盖物种
+> 回落白盒；沙盒 V 键切换、`--formal=off`。视觉验证回路 = `--screenshot=path[@tick]` +
+> `--camfollow=ox,oy,oz`/`--cam=…` + `--autowalk=dx,dz`（渲染旁路，不进物理/哈希）。
+> 渲染层对内核**只读**（化妆状态渲染侧私有：呼吸/bend pole/逐节 up/逐羽方向长度低通），
+> 落地前后 45 项矩阵 GREEN、default 哈希逐位命中基线。遗留打磨与后续物种拼装清单见
+> 渲染研究文档 §5。
+>
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >
 > **SpineFollower 修复（RotationChunk 轮后追加，2026-07；多节脊柱爬墙 V 形折叠 bug）**：`LizardLocomotionController.ApplyLocomotionForce` 原先让链尾 `Hips` 直接追「目标点身后一节」，偏移量取 `SpineLength`（= 脊柱**全长**，头到髋各连接 RestLength 之和）——两节脊柱（Head/Hips 相邻）时这恰好退化成正确语义，三节以上（heavy/hexapod）时中间节完全没有驱动力，两条独立刚性连接在「头到髋直线距离 < 脊柱全长」的欠约束自由度上被动折成 V 形，且抓稳后重力关闭，错误姿态可稳定维持（反编译 `Lizard.cs:2277-2280` 核实根因：RW 原版只用 `bodyChunkConnections[0].distance`——**单节**长度——驱动 `bodyChunks[1]`，链尾 `bodyChunks[2]` 从不被直接追踪，只靠连接约束被动拖行）。修复：新增 `LizardLocomotionController.SpineFollower`（≙ `bodyChunks[1]`，工厂钉定为 `chunks[1]`）与 `HeadLinkLength`（单节长度）承接这个追踪力，`Hips` 恢复纯被动拖行。两节脊柱下 `SpineFollower` 与 `Hips` 是同一 chunk 且 `HeadLinkLength` 数值与原 `SpineLength` 相同——`default`/`sprinter`/`wall`/`stand`/`carrot`/`embed`/`wallside` 七条矩阵配置与 smoke 哈希逐位不变（no-op 有数学证明，非仅回归验证）；`heavy`/`hexapod`（三节脊柱）换新基线：路点数 heavy 6→8、hexapod 8→9（同 2000 tick），官方巡逻路线下头-中-髋夹角由折叠态稳定 ~53° 回升到稳态 ~177°（转弯/翻越瞬态低至 116°~151°，但数百 tick 内自行回直，不再像修复前那样滞留）。
