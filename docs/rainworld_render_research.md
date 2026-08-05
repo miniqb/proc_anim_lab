@@ -226,9 +226,9 @@ RW 是侧视 2D，"深度"全是假的，但每个 hack 都指名了 3D 里该�
   A+B 的低配变体；Deer/Daddy 的联集策略独特但风险低（同色 unshaded 联集在 Godot 里是
   已知成立的），且鹿角生成器移植是独立小项目；人形等主项目造型裁决（Gate D）后再做正式皮。
 
-## 5. 实施状态（2026-08-05 技术验证轮已落地）
+## 5. 实施状态（2026-08-05 技术验证轮已落地；同日追加 DaddyLongLegs）
 
-三个验证件已实现于 `scripts/render/`（游戏程序集，依赖 Godot，不进 `core/`）：
+四个验证件已实现于 `scripts/render/`（游戏程序集，依赖 Godot，不进 `core/`）：
 
 - **共享基建**：`SplineSampler`（Catmull-Rom + smoothstep 剖面过渡）、`TubeMeshBuilder`
   （ImmediateMesh 每帧重发 + 平行传输 frame + CPU 包裹漫反射烘顶点色 + AddFin 鳍片 +
@@ -246,16 +246,45 @@ RW 是侧视 2D，"深度"全是假的，但每个 hack 都指名了 3D 里该�
   肩盾 + 骨白头/暗眼/脖管 + 翅臂扫管（FlyingMode 收放剖面）+ 羽毛刀片扇（sqrt 链位、
   后掠随链位、轮廓包络下限保互叠、根黑梢亮渐变、**逐羽方向/长度滞后低通** +
   切线与整臂方向空间混合保扇面连贯）。四品种羽色：vulture=暗红/king=冰蓝/swift=橄榄/quad=紫。
+- **DaddyLongLegsFormalRenderer**（≙ DaddyGraphics 全套障眼法的 3D 移植；独立沙盒
+  `scenes/daddy_long_legs_sandbox.tscn`，不走 FormalRendererFactory）：
+  - **球团**：逐球共享同一张纯平黑 `AlbedoColor` 材质（RW「同色无描边→球间棱线不可见」
+    在 3D unshaded 下原样成立，**不需要 metaball/SDF**），显示半径 `×1.1+0.05m`
+    （≙ rad*1.1+2px）加深互穿。
+  - **X 眼**：每球一个朝质心外向的双笔画十字（AddFin 中心宽底双三角——四臂尖根方案会
+    读成四角星，实测否决），seed 定相位角 + 亮度慢闪；apex/臂梢抬到球面上方
+    （直线刀片的弦会沉入球体），遮埋测试按邻球**渲染**半径（按物理半径测 X 会藏在
+    邻球渲染面下）。
+  - **触手**：锚球中心起笔的 Catmull-Rom 扫管（root melding：前段纯剪影黑渐染
+    ≙ OnTubeEffectColorFac；RW 0.3/0.4 参数在 3D 下整腿发黄，收紧为 45% 起染、梢端
+    ≤22%）；`BacktrackFrom` 处断管成两段、颜色保持原链分数，绝不跨阻断边平滑；
+    stun 触手渲染侧喂点抖动。
+  - **疣珠**：seed 冻结普查（≙ graphicsSeed 段），沿管弧长 + 环向角 + **径向偏移可超管径**
+    （≙ OnTubePos.x）散布 AddKnob 细分八面体小瘤，部分带暗亮 glow 复瘤。
+  - **垂索/死腿**：纯渲染侧 verlet 垂坠索（≙ DaddyDangleTube/DaddyDeadLeg：半重力 +
+    i±2 拉直 + 双程距离约束每程重钉端点；垂索自然段长 = max(下限, 端距/n) → 端点靠近时
+    富余长度垂成深环），端点钉在球或触手近根段，死腿单端钉 + 近根径向外推 + deadness 压暗。
+  - **sRGB 顶点色教训**（重要）：带 tonemap 环境的场景里 `StandardMaterial3D` 顶点色默认按
+    **线性**解读，写入的剪影黑 0.058 被抬亮 ≈4×成灰褐，管与球异色、融根失效；
+    `TubeMeshBuilder.Build(srgbVertexColors: true)` 使顶点色与 AlbedoColor 同空间，管根与
+    球写同一数值 → 屏幕同色。既有三物种的调色在线性解读下定型，翻转需整体重调（遗留）。
+  - 三预设调色：daddy=黄橙 X 眼+橄榄黄梢（按用户参考图），terror=RW 大型正统蓝，
+    brother=橄榄+棕橙眼（≙ 小型 plain）。
 
 沙盒集成：V 键切换正式/白盒；`--formal=off` 起动白盒；视觉验证回路 =
 `--screenshot=path[@tick]` + `--camfollow=ox,oy,oz`（跟踪相机）/`--cam=…`（定点）+
-`--autowalk=dx,dz`（恒定行走）。验收：45 配置全矩阵含渲染层 GREEN、default 哈希逐位命中
-基线（渲染只读实证）；截图对照 RW 参考图（蜥蜴 heavy vs 绿蜥、蜈蚣 short/long vs 橙/红蜈蚣、
-秃鹫 fly vs 展翅参考）均达到剪影级相似。
+`--autowalk=dx,dz`（恒定行走）。Daddy 专用沙盒同构复刻这套旗标（前缀制：
+`--daddy-screenshot/--daddy-cam/--daddy-camfollow/--daddy-formal=off`，V 键同义；正式视图下
+地形查询调试线随白盒一起隐藏——`RayDebugDraw.Draw` 每帧必须照常调用清面，只临时压
+Enabled）。验收：45 配置主矩阵含渲染层 GREEN、default 哈希逐位命中基线（渲染只读实证）；
+Daddy 落地后 40 配置专项矩阵 GREEN、全部哈希基线不变；截图对照 RW 参考图（蜥蜴 heavy vs
+绿蜥、蜈蚣 short/long vs 橙/红蜈蚣、秃鹫 fly vs 展翅参考、daddy vs 黄色长腿爸爸）均达到
+剪影级相似。
 
 **遗留打磨项**：羽毛升级为完整弹簧粒子（折翼过渡相扇面分组散开）、蜥蜴走路 bob/头件形状
 （楔形头+眼位）、蜈蚣甲片高光游走、肩盾/飘带 verlet、死亡 Dangle 表现、低保真后处理
-（抖动+量化+降采样）联调。后续物种按 §2 速查表以既有基建拼装。
+（抖动+量化+降采样）联调、既有三物种切换 sRGB 顶点色空间后整体重调色、Daddy 假瞳孔
+（BulgeVertex 球面包裹瞳点）与眼睛看向目标。后续物种按 §2 速查表以既有基建拼装。
 
 ## 6. 附录：本轮取证的完整行号索引
 

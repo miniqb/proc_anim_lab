@@ -128,6 +128,19 @@ public sealed class DaddyLongLegsRenderer
     public void Bind(Node3D parent, DaddyLongLegsLocomotionController controller) =>
         Build(parent, controller);
 
+    /// <summary>整套白盒节点显隐（正式/白盒渲染切换用；隐藏期间宿主不再调用 Render，
+    /// 逐帧的 marker Visible 翻转不会与此打架）。</summary>
+    public void SetVisible(bool visible)
+    {
+        foreach (Node3D node in _nodes)
+        {
+            if (GodotObject.IsInstanceValid(node))
+            {
+                node.Visible = visible;
+            }
+        }
+    }
+
     public void Clear()
     {
         foreach (Node3D node in _nodes)

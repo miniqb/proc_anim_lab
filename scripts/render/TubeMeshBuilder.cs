@@ -27,7 +27,11 @@ internal sealed class TubeMeshBuilder
     private readonly Vector3[] _curRing = new Vector3[MaxRing];
     private readonly Vector3[] _curNormals = new Vector3[MaxRing];
 
-    public void Build(Node3D parent)
+    /// <summary>srgbVertexColors=true 时顶点色按 sRGB 语义解读（与 AlbedoColor 同一空间）：
+    /// 管件顶点色与球体材质写同一数值 → 屏幕同色，根部融合才逐位成立（Daddy 场景带
+    /// tonemap 环境时线性误读会把剪影黑抬亮 4 倍）。默认 false 保持既有三物种已调校观感
+    /// ——它们的调色在线性解读下定型，翻转需整体重调，记入渲染研究遗留清单。</summary>
+    public void Build(Node3D parent, bool srgbVertexColors = false)
     {
         _mesh = new ImmediateMesh();
         _node = new MeshInstance3D
@@ -37,6 +41,7 @@ internal sealed class TubeMeshBuilder
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
                 VertexColorUseAsAlbedo = true,
+                VertexColorIsSrgb = srgbVertexColors,
                 CullMode = BaseMaterial3D.CullModeEnum.Disabled,
             },
         };
@@ -174,6 +179,59 @@ internal sealed class TubeMeshBuilder
         EmitVertex(rootColor, n, root);
         EmitVertex(tipColor, n, tip);
         EmitVertex(midColor, n, mm);
+    }
+
+    /// <summary>小瘤球（触手疣珠等）：一次细分的八面体球，32 三角。小尺寸下轮廓略带棱角
+    /// 正合适——RW 的 Daddy 疣珠本来就是要把管轮廓搅成有机噪声（≙ DaddyGraphics 的
+    /// Circle20 bump 离管缘散布）。</summary>
+    public void AddKnob(Vector3 center, float radius, Color color)
+    {
+        if (_mesh is null)
+        {
+            return;
+        }
+        Vector3[] verts = KnobVerts;
+        for (int i = 0; i < verts.Length; i++)
+        {
+            Vector3 n = verts[i];
+            EmitVertex(color, n, center + n * radius);
+        }
+    }
+
+    private static Vector3[]? _knobVerts;
+
+    private static Vector3[] KnobVerts => _knobVerts ??= BuildKnobVerts();
+
+    private static Vector3[] BuildKnobVerts()
+    {
+        // 八面体 8 面 × 各细分 4 → 32 三角形，顶点归一化到单位球。
+        Vector3[] axes = { Vector3.Right, Vector3.Up, Vector3.Back };
+        var verts = new List<Vector3>(96);
+        for (int sx = -1; sx <= 1; sx += 2)
+        {
+            for (int sy = -1; sy <= 1; sy += 2)
+            {
+                for (int sz = -1; sz <= 1; sz += 2)
+                {
+                    Vector3 a = axes[0] * sx;
+                    Vector3 b = axes[1] * sy;
+                    Vector3 c = axes[2] * sz;
+                    // 卦限朝向修正：保持外向环绕（奇数个负号时翻转）。
+                    if (sx * sy * sz < 0)
+                    {
+                        (b, c) = (c, b);
+                    }
+                    Vector3 ab = (a + b).Normalized();
+                    Vector3 bc = (b + c).Normalized();
+                    Vector3 ca = (c + a).Normalized();
+                    verts.AddRange(new[] { a, ab, ca });
+                    verts.AddRange(new[] { b, bc, ab });
+                    verts.AddRange(new[] { c, ca, bc });
+                    verts.AddRange(new[] { ab, bc, ca });
+                }
+            }
+        }
+        return verts.ToArray();
     }
 
     /// <summary>装饰鳍片（背脊刺等）：单三角形，双面材质下一枚即可。</summary>

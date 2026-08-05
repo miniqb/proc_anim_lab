@@ -70,6 +70,14 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private Vector2? _pendingMoveTargetPick;
     private long _tick;
 
+    // 正式渲染层（与主沙盒同构：V 键切换，白盒回落；纯渲染，不进 tick/哈希）。
+    private ProcAnimLab.Render.IFormalRenderer? _formalRenderer;
+    private bool _formalView = true; // --daddy-formal=off 或 V 键关闭
+    private string? _screenshotPath; // --daddy-screenshot=path[@tick]：截图后退出
+    private long _screenshotTick = 90;
+    private (Vector3 Pos, Vector3 LookAt)? _camOverride; // --daddy-cam=px,py,pz,lx,ly,lz
+    private Vector3? _camFollowOffset; // --daddy-camfollow=ox,oy,oz：相机=插值质心+偏移
+
     // CLI / deterministic host configuration.
     private int _determinismTicks;
     private int _requestedTps = 40;
@@ -324,6 +332,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         _renderer = new DaddyLongLegsRenderer();
         _renderer.Build(this, _controller);
         _rendererBuilt = true;
+        RebuildFormalRenderer();
         BuildDebugTargetMarker();
 
         if (_perturb != 0f)
@@ -356,6 +365,13 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         _camera.LookAt(_controller.BodyCenter, Vector3.Up);
         _cameraYaw = _camera.Rotation.Y;
         _cameraPitch = _camera.Rotation.X;
+        if (_camOverride is { } cam)
+        {
+            _camera.Position = cam.Pos;
+            _camera.LookAt(cam.LookAt, Vector3.Up);
+            _cameraYaw = _camera.Rotation.Y;
+            _cameraPitch = _camera.Rotation.X;
+        }
         GD.Print($"[DADDY-SANDBOX] ready tps={Engine.PhysicsTicksPerSecond} " +
                  $"preset={_preset.StableId} seed={_stableSeed} route={_route} " +
                  $"ablate={_ablation} " +
@@ -380,7 +396,26 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         _debugTargetActive = false;
         _externalTentacle = -1;
         if (_rendererBuilt)
+        {
             _renderer.Build(this, _controller);
+            RebuildFormalRenderer();
+        }
+    }
+
+    /// <summary>正式渲染器随控制器重建（换预设/seed 时形态与装饰普查都会变）。</summary>
+    private void RebuildFormalRenderer()
+    {
+        _formalRenderer?.Clear();
+        _formalRenderer = new ProcAnimLab.Render.DaddyLongLegsFormalRenderer(_controller);
+        _formalRenderer.Build(this);
+        ApplyRenderView();
+    }
+
+    private void ApplyRenderView()
+    {
+        bool formalOn = _formalRenderer is not null && _formalView;
+        _renderer.SetVisible(!formalOn);
+        _formalRenderer?.SetVisible(formalOn);
     }
 
     public override void _PhysicsProcess(double delta)
@@ -2281,10 +2316,6 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     {
         if (_fatal)
             return;
-        if (Deterministic)
-            UpdateShowcaseCamera();
-        else
-            UpdateCameraFly((float)delta);
 
         // _tickAccumulator 只在 _PhysicsProcess 里变化：tps=40 时每物理帧被精确排空，
         // 单独用它得到恒 0 的 alpha（渲染永远停在 LastPos、以 40Hz 阶梯运动）。补上
@@ -2295,13 +2326,68 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             (float)(_tickAccumulator / TickDt
                 + Engine.GetPhysicsInterpolationFraction() * physicsDelta / TickDt),
             0f, 1f);
-        _renderer.Render(interpolation);
+
+        if (_camFollowOffset is { } camOffset)
+        {
+            // 截图/视觉验证的跟踪相机：钉在插值质心偏移处注视质心（纯渲染，不进物理）。
+            Vector3 focus = InterpolatedBodyCenter(interpolation);
+            _camera.GlobalPosition = focus + camOffset;
+            _camera.LookAt(focus, Vector3.Up);
+            if (_fillLight is not null)
+                _fillLight.GlobalPosition = focus + new Vector3(-3f, 6f, 5f);
+        }
+        else if (Deterministic)
+        {
+            if (_camOverride is null)
+                UpdateShowcaseCamera();
+        }
+        else
+        {
+            UpdateCameraFly((float)delta);
+        }
+
+        bool formalOn = _formalRenderer is not null && _formalView;
+        if (formalOn && _formalRenderer is { } formal)
+            formal.Draw(interpolation, (float)delta);
+        else
+            _renderer.Render(interpolation);
+        // 地形查询调试线属于白盒诊断视图；正式渲染下临时压 Enabled（Draw 必须每帧调用
+        // ——它开头 ClearSurfaces，跳过调用会把上一帧线网格残留在屏上），不碰 F3 状态。
+        bool terrainEnabled = _terrain.Enabled;
+        _terrain.Enabled = terrainEnabled && !formalOn;
         _terrain.Draw(_camera, _controller.BodyCenter,
             _controller.LastMoveTargetKind, _controller.LastMoveTarget);
+        _terrain.Enabled = terrainEnabled;
         _debugTargetMarker.Visible = _debugTargetActive;
         if (_debugTargetActive)
             _debugTargetMarker.GlobalPosition = _debugTargetPos;
         UpdateHud();
+        MaybeCaptureScreenshot();
+    }
+
+    private Vector3 InterpolatedBodyCenter(float interpolation)
+    {
+        // controller.BodyCenter 是上一 tick 缓存；相机跟踪要平滑必须按插值位重算。
+        Vector3 weighted = Vector3.Zero;
+        float mass = 0f;
+        foreach (BodyChunk chunk in _controller.Body.Chunks)
+        {
+            weighted += chunk.LerpPos(interpolation) * chunk.Mass;
+            mass += chunk.Mass;
+        }
+        return mass > 0f ? weighted / mass : _controller.BodyCenter;
+    }
+
+    private void MaybeCaptureScreenshot()
+    {
+        if (_screenshotPath is null || _tick < _screenshotTick)
+            return;
+        Image img = GetViewport().GetTexture().GetImage();
+        Error err = img.SavePng(_screenshotPath);
+        GD.Print($"[DADDY-SANDBOX] screenshot {(err == Error.Ok ? "saved" : $"FAILED ({err})")}: " +
+            $"{_screenshotPath} (tick {_tick})");
+        _screenshotPath = null;
+        GetTree().Quit(err == Error.Ok ? 0 : 3);
     }
 
     private void UpdateShowcaseCamera()
@@ -2383,7 +2469,15 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             ChangeSeed(-1);
         else if (key.PhysicalKeycode == Key.N)
             ChangeSeed(1);
-        else if (Input.IsPhysicalKeyPressed(Key.Alt)
+        else if (key.PhysicalKeycode == Key.V)
+        {
+            _formalView = !_formalView;
+            ApplyRenderView();
+            GD.Print($"[DADDY-SANDBOX] formal render {(_formalView ? "on" : "off")}");
+        }
+        // Alt is labelled Option (⌥) on macOS, but also accept Ctrl/Cmd so the
+        // debug shortcut remains reachable on keyboards without an Alt label.
+        else if (HasInteractiveStunModifier()
                  && TryTentacleIndex(key.PhysicalKeycode, out int tentacle))
             StunInteractiveTentacle(tentacle);
         else if (key.PhysicalKeycode is >= Key.Key1 and <= Key.Key3)
@@ -2570,6 +2664,51 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 {
                     _expectHash = ParseUInt64(
                         argument["--daddy-expect-hash=".Length..], hexadecimalByDefault: true);
+                }
+                else if (argument.StartsWith("--daddy-screenshot=", StringComparison.Ordinal))
+                {
+                    // 视觉验证回路（仅窗口模式有意义；headless 下取不到帧）：到 tick 截图退出。
+                    string spec = argument["--daddy-screenshot=".Length..];
+                    int at = spec.LastIndexOf('@');
+                    if (at > 0)
+                    {
+                        _screenshotPath = spec[..at];
+                        _screenshotTick = long.Parse(
+                            spec[(at + 1)..], CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        _screenshotPath = spec;
+                    }
+                }
+                else if (argument.StartsWith("--daddy-cam=", StringComparison.Ordinal))
+                {
+                    string[] parts = argument["--daddy-cam=".Length..].Split(',');
+                    if (parts.Length != 6)
+                        throw new FormatException("--daddy-cam 需要 px,py,pz,lx,ly,lz 六个分量");
+                    _camOverride = (
+                        new Vector3(
+                            float.Parse(parts[0], CultureInfo.InvariantCulture),
+                            float.Parse(parts[1], CultureInfo.InvariantCulture),
+                            float.Parse(parts[2], CultureInfo.InvariantCulture)),
+                        new Vector3(
+                            float.Parse(parts[3], CultureInfo.InvariantCulture),
+                            float.Parse(parts[4], CultureInfo.InvariantCulture),
+                            float.Parse(parts[5], CultureInfo.InvariantCulture)));
+                }
+                else if (argument.StartsWith("--daddy-camfollow=", StringComparison.Ordinal))
+                {
+                    string[] parts = argument["--daddy-camfollow=".Length..].Split(',');
+                    if (parts.Length != 3)
+                        throw new FormatException("--daddy-camfollow 需要 ox,oy,oz 三个分量");
+                    _camFollowOffset = new Vector3(
+                        float.Parse(parts[0], CultureInfo.InvariantCulture),
+                        float.Parse(parts[1], CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], CultureInfo.InvariantCulture));
+                }
+                else if (argument == "--daddy-formal=off")
+                {
+                    _formalView = false;
                 }
                 else if (argument.StartsWith("--daddy-", StringComparison.Ordinal))
                 {
@@ -2784,6 +2923,11 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 if (segment.ActiveGrip) count++;
         return count;
     }
+
+    private static bool HasInteractiveStunModifier() =>
+        Input.IsPhysicalKeyPressed(Key.Alt)
+        || Input.IsPhysicalKeyPressed(Key.Ctrl)
+        || Input.IsPhysicalKeyPressed(Key.Meta);
 
     private static bool TryTentacleIndex(Key key, out int index)
     {

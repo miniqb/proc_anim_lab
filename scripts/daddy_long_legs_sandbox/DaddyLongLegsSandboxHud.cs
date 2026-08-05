@@ -197,7 +197,7 @@ public sealed class DaddyLongLegsSandboxHud
             ? "F1 hide/show UI    F2 full/compact    WASD+Q/E move    RMB camera"
             : "F1  hide/show UI    F2  full/compact\n" +
               "WASD + Q/E  move in 3D    Shift + RMB  feed MoveTarget\n" +
-              "Alt + 0..9 (Alt + -/= for 10/11)  stun by index    1 / 2 / 3  preset\n" +
+              "Alt/Option, Ctrl, or Cmd + 0..9 (-/= for 10/11)  stun by index\n" +
               "B / N  previous / next seed    Space  Launch\n" +
               "T  Teleport    H  Shift    X  assign/clear debug target\n" +
               "P  toggle pull    I/J/K/L + U/O  move debug target\n" +
