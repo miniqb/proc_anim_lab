@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="proc_anim_lab 正式怪物渲染层的原理：从物理 chunk 到样条、扫管网格、调色板与渲染侧化妆状态。">
+  <title>如何把一团物理球，画成一个生物 · Proc Anim Lab</title>
+  <style>
+    :root {
+      --ink: #0b0f0d;
+      --ink-2: #111815;
+      --ink-3: #17211c;
+      --paper: #e7dfcf;
+      --paper-dim: #aaa99b;
+      --line: rgba(231, 223, 207, .16);
+      --line-bright: rgba(231, 223, 207, .3);
+      --mint: #92e6c0;
+      --mint-dim: #4f9b7d;
+      --amber: #efae61;
+      --orange: #f36d40;
+      --blue: #76b8dc;
+      --pink: #f28ca8;
+      --shadow: 0 24px 80px rgba(0,0,0,.34);
+      --serif: "Iowan Old Style", "Noto Serif SC", "Songti SC", Georgia, serif;
+      --sans: "Avenir Next", "Noto Sans SC", "PingFang SC", sans-serif;
+      --mono: "SFMono-Regular", "Cascadia Code", "Noto Sans Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--paper);
+      background:
+        radial-gradient(circle at 75% 8%, rgba(52, 104, 87, .2), transparent 32rem),
+        radial-gradient(circle at 9% 53%, rgba(144, 83, 48, .12), transparent 28rem),
+        var(--ink);
+      font-family: var(--sans);
+      line-height: 1.78;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      pointer-events: none;
+      position: fixed;
+      inset: 0;
+      opacity: .07;
+      z-index: 20;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+      mix-blend-mode: overlay;
+    }
+    a { color: inherit; }
+    .progress { position: fixed; z-index: 30; inset: 0 0 auto; height: 3px; background: var(--mint); transform-origin: left; transform: scaleX(0); }
+    .wrap { width: min(1220px, calc(100% - 48px)); margin: auto; }
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 24px 0 16px; border-bottom: 1px solid var(--line);
+      color: var(--paper-dim); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    }
+    .brand { color: var(--paper); font-weight: 700; letter-spacing: .22em; }
+    .brand::before { content: "●"; color: var(--mint); margin-right: 10px; font-size: 9px; }
+
+    .hero { min-height: 710px; display: grid; align-items: center; grid-template-columns: 1.02fr .98fr; gap: 6vw; padding: 82px 0 92px; }
+    .eyebrow, .kicker { color: var(--mint); font: 700 11px/1.2 var(--mono); letter-spacing: .18em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 700px; margin: 22px 0 28px; font: 400 clamp(48px, 7vw, 94px)/.99 var(--serif); letter-spacing: -.06em; }
+    h1 em { color: var(--amber); font-style: normal; }
+    .hero-lead { max-width: 650px; color: #c0c1b5; font-size: clamp(17px, 2vw, 21px); line-height: 1.8; }
+    .hero-lead strong { color: var(--paper); font-weight: 600; }
+    .hero-meta { display: flex; gap: 28px; margin-top: 44px; color: var(--paper-dim); font: 11px/1.55 var(--mono); }
+    .hero-meta b { display: block; color: var(--amber); font: 600 27px/1 var(--serif); margin-bottom: 7px; }
+    .hero-visual { position: relative; min-height: 430px; border: 1px solid var(--line); background: linear-gradient(145deg, rgba(25,42,34,.85), rgba(8,13,11,.45)); box-shadow: var(--shadow); overflow: hidden; }
+    .hero-visual::before { content: "RENDER / OBSERVATION 01"; position: absolute; top: 17px; left: 20px; color: rgba(231,223,207,.45); font: 10px var(--mono); letter-spacing: .14em; }
+    .hero-visual::after { content: "物理状态  →  视觉解释"; position: absolute; right: 20px; bottom: 17px; color: var(--mint); font: 10px var(--mono); letter-spacing: .08em; }
+    .hero-visual svg { position: absolute; inset: 9% 5% 9% 5%; width: 90%; height: 82%; }
+    .hero-beam { animation: drift 6s ease-in-out infinite; transform-origin: center; }
+    .hero-eye { animation: blink 5.5s ease-in-out infinite; transform-origin: center; }
+    @keyframes drift { 0%,100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(8px) rotate(1deg); } }
+    @keyframes blink { 0%, 42%, 47%, 100% { opacity: 1; } 44%, 45% { opacity: .16; } }
+    .hero-caption { position: absolute; left: 20px; bottom: 45px; max-width: 235px; color: #a9b4aa; font: 12px/1.6 var(--mono); }
+    .hero-caption b { color: var(--paper); }
+
+    .thesis { display: grid; grid-template-columns: .8fr 1.2fr; gap: 40px; padding: 26px 30px; margin-bottom: 92px; border: 1px solid rgba(146,230,192,.33); background: rgba(22,44,34,.55); }
+    .thesis strong { display: block; color: var(--mint); font: 700 12px var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    .thesis p { margin: 0; font: 400 clamp(18px, 2.3vw, 27px)/1.35 var(--serif); }
+
+    .layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 70px; align-items: start; }
+    .toc { position: sticky; top: 30px; padding-top: 7px; }
+    .toc-title { color: var(--paper-dim); font: 10px var(--mono); letter-spacing: .2em; text-transform: uppercase; margin-bottom: 19px; }
+    .toc a { display: block; position: relative; padding: 6px 0 6px 16px; color: #7f8b83; font-size: 12px; line-height: 1.45; text-decoration: none; transition: color .2s, transform .2s; }
+    .toc a::before { content: ""; position: absolute; left: 0; top: 12px; width: 5px; height: 1px; background: currentColor; transition: width .2s; }
+    .toc a.active, .toc a:hover { color: var(--mint); transform: translateX(3px); }
+    .toc a.active::before { width: 10px; }
+    main { min-width: 0; }
+    section { scroll-margin-top: 30px; margin-bottom: 126px; }
+    .section-head { display: grid; grid-template-columns: 86px 1fr; gap: 18px; margin-bottom: 38px; }
+    .section-no { color: var(--amber); font: 600 12px var(--mono); padding-top: 12px; border-top: 1px solid var(--amber); }
+    h2 { max-width: 780px; margin-bottom: 15px; font: 400 clamp(33px, 5vw, 62px)/1.12 var(--serif); letter-spacing: -.045em; }
+    .section-intro { max-width: 760px; color: var(--paper-dim); font-size: 16px; }
+    h3 { font: 500 24px/1.25 var(--serif); letter-spacing: -.02em; }
+    .muted { color: var(--paper-dim); }
+    .mono { font-family: var(--mono); }
+    .small { font-size: 12px; }
+
+    .principles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .principle { min-height: 175px; padding: 22px 17px; background: rgba(12,19,16,.78); }
+    .principle .num { color: var(--amber); font: 12px var(--mono); }
+    .principle h3 { margin: 24px 0 8px; font-size: 19px; }
+    .principle p { margin: 0; color: var(--paper-dim); font-size: 12px; line-height: 1.65; }
+
+    .pipeline { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 42px 0 0; padding: 28px 12px 20px; border: 1px solid var(--line); background: rgba(7,11,9,.45); }
+    .pipeline::before { content: ""; position: absolute; left: 10%; right: 10%; top: 75px; border-top: 1px dashed var(--mint-dim); opacity: .8; }
+    .pipe-node { position: relative; z-index: 1; text-align: center; }
+    .pipe-dot { width: 52px; height: 52px; display: grid; place-items: center; margin: 19px auto 16px; border: 1px solid var(--mint); border-radius: 50%; background: var(--ink-2); color: var(--mint); font: 12px var(--mono); box-shadow: 0 0 0 7px rgba(11,15,13,.9); }
+    .pipe-node b { display: block; font: 500 16px var(--serif); }
+    .pipe-node span { color: var(--paper-dim); font: 10px/1.45 var(--mono); }
+
+    .case-study { border-left: 2px solid var(--amber); padding-left: 30px; }
+    .steps { display: grid; grid-template-columns: 1fr 1.15fr; gap: 36px; }
+    .step-list { display: grid; gap: 1px; align-content: start; background: var(--line); border: 1px solid var(--line); }
+    .step-button { display: grid; grid-template-columns: 38px 1fr; gap: 11px; border: 0; padding: 17px 16px; color: var(--paper-dim); background: rgba(15,24,20,.78); text-align: left; cursor: pointer; font: inherit; transition: background .2s, color .2s; }
+    .step-button:hover { background: var(--ink-3); color: var(--paper); }
+    .step-button.active { color: var(--paper); background: rgba(50,83,67,.68); }
+    .step-button .step-n { color: var(--amber); font: 12px var(--mono); padding-top: 3px; }
+    .step-button b { display: block; font: 500 18px/1.2 var(--serif); }
+    .step-button small { display: block; margin-top: 5px; font-size: 11px; line-height: 1.5; }
+    .step-detail { min-height: 360px; padding: 28px; border: 1px solid var(--line-bright); background: linear-gradient(145deg, rgba(26,38,32,.8), rgba(11,16,13,.85)); }
+    .step-detail[hidden] { display: none; }
+    .detail-index { color: var(--amber); font: 12px var(--mono); }
+    .step-detail h3 { margin: 20px 0 12px; font-size: 31px; }
+    .step-detail p { color: #c3c8bb; font-size: 14px; }
+    .formula { margin-top: 23px; padding: 15px; color: var(--mint); border: 1px solid rgba(146,230,192,.25); background: rgba(8,19,14,.7); font: 12px/1.8 var(--mono); overflow-x: auto; }
+    .formula em { color: var(--amber); font-style: normal; }
+    .lizard-diagram { margin-top: 32px; padding: 22px; border: 1px solid var(--line); background: #0a110e; }
+    .lizard-diagram svg { display: block; width: 100%; height: auto; }
+    .diagram-note { margin-top: 12px; color: var(--paper-dim); font: 11px/1.6 var(--mono); }
+
+    .cards-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .card { padding: 25px; border: 1px solid var(--line); background: rgba(16,24,20,.62); }
+    .card .tag { color: var(--mint); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .card h3 { margin: 18px 0 9px; }
+    .card p { margin-bottom: 0; color: var(--paper-dim); font-size: 13px; }
+    .card strong { color: var(--paper); }
+    .callout { margin: 24px 0; padding: 21px 24px; border: 1px solid rgba(239,174,97,.42); background: rgba(70,43,25,.22); color: #d9c9af; }
+    .callout b { color: var(--amber); }
+
+    .tube-demo { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 32px; }
+    .tube-panel { min-height: 270px; padding: 20px; border: 1px solid var(--line); background: rgba(8,13,11,.62); }
+    .tube-panel h3 { margin: 0 0 10px; font-size: 21px; }
+    .tube-panel svg { width: 100%; height: 190px; display: block; }
+    .caption { color: var(--paper-dim); font-size: 12px; line-height: 1.6; }
+
+    .ik-layout { display: grid; grid-template-columns: .9fr 1.1fr; gap: 30px; align-items: center; }
+    .ik-diagram { padding: 15px; border: 1px solid var(--line); background: #0a110e; }
+    .ik-diagram svg { display: block; width: 100%; }
+    .ik-copy ul { padding-left: 18px; color: var(--paper-dim); font-size: 14px; }
+    .ik-copy li + li { margin-top: 10px; }
+    .ik-copy li::marker { color: var(--amber); }
+
+    .swatches { display: flex; gap: 8px; align-items: center; margin: 22px 0; }
+    .swatch { width: 58px; height: 58px; border: 1px solid rgba(255,255,255,.18); position: relative; }
+    .swatch span { position: absolute; top: 65px; left: 0; width: 110px; color: var(--paper-dim); font: 10px var(--mono); }
+    .palette-box { padding: 27px; border: 1px solid var(--line); background: linear-gradient(120deg, rgba(34,35,30,.78), rgba(17,25,21,.75)); }
+    .palette-box p { max-width: 720px; color: var(--paper-dim); font-size: 14px; }
+
+    .species-tabs { border: 1px solid var(--line); background: rgba(8,13,11,.5); }
+    .tab-list { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--line); }
+    .tab { border: 0; border-right: 1px solid var(--line); padding: 14px 20px; color: var(--paper-dim); background: transparent; cursor: pointer; font: 11px var(--mono); letter-spacing: .08em; }
+    .tab:hover, .tab.active { color: var(--ink); background: var(--mint); }
+    .species-panel { display: grid; grid-template-columns: .75fr 1.25fr; gap: 30px; padding: 30px; }
+    .species-panel[hidden] { display: none; }
+    .species-mark { min-height: 190px; display: grid; place-items: center; border: 1px solid var(--line); background: radial-gradient(circle, rgba(146,230,192,.13), transparent 65%); }
+    .species-mark svg { width: 92%; max-height: 210px; }
+    .species-copy h3 { margin: 0 0 10px; font-size: 31px; }
+    .species-copy p { color: var(--paper-dim); font-size: 14px; }
+    .species-copy dl { display: grid; grid-template-columns: 100px 1fr; gap: 7px 13px; margin: 22px 0 0; font-size: 12px; }
+    .species-copy dt { color: var(--mint); font-family: var(--mono); }
+    .species-copy dd { margin: 0; color: var(--paper-dim); }
+
+    .life-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .life-item { min-height: 155px; padding: 23px; background: rgba(14,22,18,.75); }
+    .life-item b { color: var(--amber); font: 12px var(--mono); }
+    .life-item h3 { margin: 17px 0 7px; font-size: 21px; }
+    .life-item p { margin: 0; color: var(--paper-dim); font-size: 13px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 14px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--mint); font: 11px var(--mono); letter-spacing: .06em; }
+    td { color: var(--paper-dim); }
+    td:first-child { color: var(--paper); }
+    code, .code { font-family: var(--mono); color: var(--mint); font-size: .9em; }
+    pre { margin: 18px 0 0; padding: 20px; overflow-x: auto; border: 1px solid var(--line); background: #080d0b; color: #b5dfc6; font: 12px/1.75 var(--mono); }
+    .file-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 22px; }
+    .file { padding: 13px 15px; border-left: 2px solid var(--mint-dim); background: rgba(20,34,27,.55); font: 11px/1.5 var(--mono); }
+    .file b { display: block; color: var(--paper); font-weight: 500; }
+    .file span { color: var(--paper-dim); }
+    .footer { margin: 70px 0 0; padding: 30px 0 55px; border-top: 1px solid var(--line); color: var(--paper-dim); font-size: 12px; }
+    .footer strong { color: var(--mint); }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; padding-top: 60px; }
+      .hero-visual { min-height: 340px; }
+      .thesis { grid-template-columns: 1fr; gap: 12px; }
+      .layout { grid-template-columns: 1fr; gap: 20px; }
+      .toc { position: static; display: flex; flex-wrap: wrap; gap: 4px 14px; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+      .toc-title { width: 100%; margin-bottom: 3px; }
+      .toc a { padding-left: 0; }
+      .toc a::before { display: none; }
+      .toc a.active { transform: none; }
+      .principles { grid-template-columns: repeat(2, 1fr); }
+      .principle:last-child { grid-column: 1 / -1; }
+      .steps, .ik-layout, .species-panel { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 600px) {
+      .wrap { width: min(100% - 28px, 1220px); }
+      .topbar { font-size: 9px; }
+      .topbar span:last-child { display: none; }
+      h1 { font-size: 55px; }
+      .hero { min-height: auto; padding: 60px 0 70px; }
+      .hero-meta { gap: 17px; }
+      .principles, .cards-3, .tube-demo, .life-grid, .file-list { grid-template-columns: 1fr; }
+      .principle:last-child { grid-column: auto; }
+      .section-head { grid-template-columns: 54px 1fr; gap: 10px; }
+      .section-no { font-size: 10px; }
+      .case-study { padding-left: 17px; }
+      .step-detail { min-height: auto; }
+      .species-panel { padding: 18px; }
+      .species-copy dl { grid-template-columns: 83px 1fr; }
+      th, td { padding: 10px 7px; font-size: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <header class="wrap">
+    <div class="topbar"><span class="brand">PROC / ANIM LAB</span><span>RENDER FIELD NOTES · 2026.08</span></div>
+    <div class="hero">
+      <div>
+        <div class="eyebrow">A visual reading of the formal renderers</div>
+        <h1>如何把一团<br><em>物理球</em>，画成一个生物</h1>
+        <p class="hero-lead">项目最近的“渲染美化”，不是给球体贴一层更复杂的材质，而是把<strong>运动内核的观测结果</strong>重新解释成连续的身体、腿、甲片、羽毛与生命感。物理仍然负责“它在哪里”，渲染负责“它看起来像什么”。</p>
+        <div class="hero-meta">
+          <div><b>01</b>物理状态<br>不直接画</div>
+          <div><b>02</b>曲线代替<br>球链</div>
+          <div><b>03</b>平色保留<br>剪影</div>
+        </div>
+      </div>
+      <div class="hero-visual" aria-label="一只由连续管带、腿和背脊刺组成的抽象蜥蜴示意图">
+        <svg viewBox="0 0 620 390" role="img">
+          <defs>
+            <linearGradient id="bodyGrad" x1="0" x2="1"><stop stop-color="#17211c"/><stop offset=".7" stop-color="#20392e"/><stop offset="1" stop-color="#efae61"/></linearGradient>
+            <filter id="glow"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <g opacity=".25" stroke="#92e6c0" stroke-dasharray="3 11"><path d="M35 105H585"/><path d="M35 195H585"/><path d="M35 285H585"/></g>
+          <g class="hero-beam" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M128 164 C185 145 226 167 281 192 S380 247 475 197 S524 158 558 149" stroke="#040705" stroke-width="76" opacity=".9"/>
+            <path d="M128 164 C185 145 226 167 281 192 S380 247 475 197 S524 158 558 149" stroke="url(#bodyGrad)" stroke-width="40"/>
+            <path d="M131 162 C190 145 225 171 282 190 S379 245 476 195 S522 160 558 149" stroke="#92e6c0" stroke-width="2" stroke-dasharray="2 12" opacity=".65"/>
+            <path d="M163 181 L121 270" stroke="#16261e" stroke-width="15"/><path d="M182 185 L202 286" stroke="#16261e" stroke-width="13"/>
+            <path d="M385 227 L347 327" stroke="#16261e" stroke-width="12"/><path d="M412 222 L453 301" stroke="#16261e" stroke-width="10"/>
+            <path d="M163 181 L121 270 M182 185 L202 286 M385 227 L347 327 M412 222 L453 301" stroke="#efae61" stroke-width="2" opacity=".7"/>
+          </g>
+          <g fill="#efae61" class="hero-eye" filter="url(#glow)"><circle cx="123" cy="270" r="6"/><circle cx="202" cy="286" r="5"/><circle cx="347" cy="327" r="4"/><circle cx="453" cy="301" r="4"/></g>
+          <path d="M101 155 C76 148 64 136 49 119" fill="none" stroke="#efae61" stroke-width="5" stroke-linecap="round"/>
+          <circle cx="112" cy="157" r="28" fill="#efae61"/><circle cx="100" cy="151" r="4" fill="#0b0f0d"/><circle cx="122" cy="151" r="4" fill="#0b0f0d"/>
+          <g fill="#efae61" opacity=".7"><path d="M234 159 l-5 -28 l12 24z"/><path d="M260 171 l-2 -32 l13 28z"/><path d="M286 187 l2 -31 l12 33z"/><path d="M315 202 l8 -28 l8 34z"/></g>
+        </svg>
+        <div class="hero-caption"><b>读图：</b>黑色是可融合的身体底层，琥珀色是稀缺的识别色；腿尖、尾梢和眼睛因此比一整只彩色模型更有重点。</div>
+      </div>
+    </div>
+    <div class="thesis"><strong>核心判断 / THE SHORT VERSION</strong><p>“去球感”不是一个神奇 shader，而是五个简单决定叠加：<b>不照画物理球、把稀疏点密化、沿曲线扫出管、另算显示半径、用平色藏住接缝。</b></p></div>
+  </header>
+
+  <div class="wrap layout">
+    <aside class="toc" aria-label="文章目录">
+      <div class="toc-title">On this page</div>
+      <a href="#answer">结论</a>
+      <a href="#lizard">蜥蜴案例</a>
+      <a href="#geometry">身体几何</a>
+      <a href="#limbs">腿与 IK</a>
+      <a href="#palette">颜色与材质</a>
+      <a href="#species">四种身体策略</a>
+      <a href="#life">生命感</a>
+      <a href="#boundary">边界与性能</a>
+      <a href="#sources">代码地图</a>
+    </aside>
+
+    <main>
+      <section id="answer">
+        <div class="section-head"><div class="section-no">01 / 09</div><div><div class="kicker">The idea</div><h2>先把“美化”翻译成一条数据管线</h2><p class="section-intro">内核的 chunk、连接和足端是为了算运动；它们是可靠的骨架数据，却不是最终应该出现在屏幕上的形状。正式渲染器从这些数据读取位置和状态，经过一层只读的视觉解释，再生成网格。</p></div></div>
+        <div class="principles">
+          <article class="principle"><span class="num">01</span><h3>只读观测</h3><p>读取 <code>LerpPos(alpha)</code>、半径、支撑法线、足端状态。渲染不会反过来改腿或身体。</p></article>
+          <article class="principle"><span class="num">02</span><h3>样条密化</h3><p>几个 chunk 只是控制点。Catmull–Rom 在它们之间补出连续、可过采样的曲线。</p></article>
+          <article class="principle"><span class="num">03</span><h3>扫掠成管</h3><p>沿曲线每一步生成一个截面环，环与环之间拼成三角形，球链就变成了身体。</p></article>
+          <article class="principle"><span class="num">04</span><h3>解析剖面</h3><p>显示半径、颜色和呼吸来自弧长函数，不必等于物理半径，也不必随 chunk 阶梯变化。</p></article>
+          <article class="principle"><span class="num">05</span><h3>剪影优先</h3><p>Unshaded 平色与少量烘焙明暗保持大块轮廓；重叠的内部接缝因此消失。</p></article>
+        </div>
+        <div class="pipeline" aria-label="渲染层流水线">
+          <div class="pipe-node"><div class="pipe-dot">CORE</div><b>物理状态</b><span>chunk / foot / normal</span></div>
+          <div class="pipe-node"><div class="pipe-dot">←</div><b>插值</b><span>last → current</span></div>
+          <div class="pipe-node"><div class="pipe-dot">CURVE</div><b>化妆与样条</b><span>radius / color / pose</span></div>
+          <div class="pipe-node"><div class="pipe-dot">MESH</div><b>扫管网格</b><span>ring → triangles</span></div>
+          <div class="pipe-node"><div class="pipe-dot">LOOK</div><b>材质</b><span>palette / unshaded</span></div>
+        </div>
+      </section>
+
+      <section id="lizard">
+        <div class="section-head"><div class="section-no">02 / 09</div><div><div class="kicker">Typical creature / Lizard</div><h2>一只蜥蜴，在一帧里到底经历了什么？</h2><p class="section-intro">蜥蜴最适合当例子：它同时包含连续身体、尾巴、腿、背刺、头部和颜色渐变。下面的六步，基本也是其他“链状怪物”的共同骨架。</p></div></div>
+        <div class="case-study">
+          <div class="steps">
+            <div class="step-list" role="tablist" aria-label="蜥蜴渲染步骤">
+              <button class="step-button active" data-step="1" role="tab" aria-selected="true"><span class="step-n">01</span><span><b>先把画面时间对齐</b><small>物理 40 tick，画面不跳帧</small></span></button>
+              <button class="step-button" data-step="2" role="tab" aria-selected="false"><span class="step-n">02</span><span><b>把球链变成控制点</b><small>头、脊柱、尾巴、虚拟尾尖</small></span></button>
+              <button class="step-button" data-step="3" role="tab" aria-selected="false"><span class="step-n">03</span><span><b>在控制点之间补曲线</b><small>Catmull–Rom + smoothstep</small></span></button>
+              <button class="step-button" data-step="4" role="tab" aria-selected="false"><span class="step-n">04</span><span><b>沿曲线扫出身体</b><small>截面环、平行传输、端帽</small></span></button>
+              <button class="step-button" data-step="5" role="tab" aria-selected="false"><span class="step-n">05</span><span><b>腿只在画面里长出来</b><small>足端来自物理，膝盖来自 IK</small></span></button>
+              <button class="step-button" data-step="6" role="tab" aria-selected="false"><span class="step-n">06</span><span><b>最后才加生命感</b><small>呼吸、脉冲、鳍片和渐变</small></span></button>
+            </div>
+            <div>
+              <article class="step-detail" data-detail="1"><div class="detail-index">STEP 01 / INTERPOLATION</div><h3>先画一个“刚刚发生”的位置</h3><p>内核每个 tick 保存 <code>LastPos</code> 与 <code>Pos</code>。渲染帧不直接拿当前点，而是用 alpha 在两者之间插值：这样 40Hz 的逻辑运动仍能在更高的画面帧率下连续显示。</p><div class="formula"><em>drawPos</em> = Lerp(lastPos, currentPos, <em>alpha</em>)<br><span class="muted">alpha 来自物理 tick 余数；它属于画面，不进入运动哈希。</span></div></article>
+              <article class="step-detail" data-detail="2" hidden><div class="detail-index">STEP 02 / CONTROL POINTS</div><h3>物理球是“磁铁”，不是外壳</h3><p>蜥蜴的控制点按顺序收集：头前伸点 → 脊柱 chunk → 尾链 chunk → 向外推开的尾尖。头前伸与虚拟尾尖让曲线超出球心，端部才能自然收锥，不会像一串穿过中心的珠子。</p><div class="formula"><em>points</em> = [head + neckDir × headR × .8, spine…, tail…, tailTip + tipDir × .09]<br><span class="muted">控制点决定姿势；显示半径和颜色另算。</span></div></article>
+              <article class="step-detail" data-detail="3" hidden><div class="detail-index">STEP 03 / SPLINE</div><h3>控制点之间，补出“身体应该经过的线”</h3><p><code>SplineSampler</code> 使用 Catmull–Rom：内部点用中心差分得到切线，端点用单边切线。每一小段再采样四次，最终的站点比物理 chunk 密得多。半径和颜色也用 smoothstep 过渡，避免在控制点处出现折痕。</p><div class="formula"><em>station</em>(t) = cubic position(t)<br><em>profile</em>(t) = Lerp(a, b, 3t² − 2t³)</div></article>
+              <article class="step-detail" data-detail="4" hidden><div class="detail-index">STEP 04 / SWEEP</div><h3>每一个站点都长出一圈截面</h3><p>对每个曲线站点，先得到切线 tangent，再把上一个截面的 up 投影到新切线的垂直平面。这叫平行传输 frame，比每段独立计算法线更不容易突然扭转。最后用 10 边环与下一环拼成三角形。</p><div class="formula"><em>vertex</em>(θ) = center + radius × (side·cosθ + up·sinθ)<br><span class="muted">ring → ring → ring；两端加锥形端帽。</span></div></article>
+              <article class="step-detail" data-detail="5" hidden><div class="detail-index">STEP 05 / RENDER IK</div><h3>物理只找脚，画面负责补膝</h3><p>运动内核的腿是足端粒子：它寻找真实地形落点、支撑和迈步。正式渲染器读取 root 与 foot，再用两骨 IK 解出 knee，之后把 root → knee → foot 也扫成一条细管。膝盖不会碰撞，也不会给身体施力。</p><div class="formula"><em>cos</em> = clamp((d² + L₁² − L₂²) / (2dL₁), <em>.2</em>, <em>.98</em>)<br><span class="muted">钳制的意义：腿不完全绷直，也不完全对折。</span></div></article>
+              <article class="step-detail" data-detail="6" hidden><div class="detail-index">STEP 06 / COSMETICS</div><h3>把“像活的”放在渲染侧</h3><p>低速时前胸随正弦相位呼吸，尾梢逐渐染上品种色，背刺挂在管道的背侧，头部颜色慢慢脉冲。它们都是化妆状态：不改内核、不进确定性哈希，却让同一套运动看起来不像工程图。</p><div class="formula"><em>breath</em> ∝ sin(time) × pow(1 − runSpeed, 2)<br><span class="muted">跑起来呼吸减弱；停下来，轮廓重新有微小起伏。</span></div></article>
+            </div>
+          </div>
+          <div class="lizard-diagram">
+            <svg viewBox="0 0 900 260" role="img" aria-label="蜥蜴从控制点到连续管带的示意图">
+              <defs><linearGradient id="liz" x1="0" x2="1"><stop stop-color="#15241d"/><stop offset=".8" stop-color="#28503e"/><stop offset="1" stop-color="#efae61"/></linearGradient></defs>
+              <g stroke="#384d41" stroke-width="1" stroke-dasharray="5 8"><path d="M20 55H875"/><path d="M20 205H875"/></g>
+              <text x="25" y="25" fill="#92e6c0" font-family="monospace" font-size="12">SPARSE PHYSICS / CONTROL POINTS</text>
+              <path d="M92 129 C180 91 224 112 300 129 S425 177 548 147 S708 101 825 129" fill="none" stroke="#111814" stroke-width="70" stroke-linecap="round"/>
+              <path d="M92 129 C180 91 224 112 300 129 S425 177 548 147 S708 101 825 129" fill="none" stroke="url(#liz)" stroke-width="36" stroke-linecap="round"/>
+              <g fill="#efae61" stroke="#0b0f0d" stroke-width="4"><circle cx="160" cy="105" r="9"/><circle cx="263" cy="121" r="9"/><circle cx="366" cy="158" r="8"/><circle cx="470" cy="163" r="7"/><circle cx="585" cy="137" r="6"/><circle cx="700" cy="112" r="5"/></g>
+              <g fill="#d5d2bf" font-family="monospace" font-size="11"><text x="128" y="88">head</text><text x="239" y="103">spine</text><text x="330" y="191">tail</text><text x="744" y="103">virtual tip</text></g>
+              <g stroke="#92e6c0" stroke-width="2" fill="none"><path d="M160 115 L145 219"/><path d="M263 130 L285 226"/><path d="M585 145 L620 217"/></g>
+              <g fill="#efae61" font-family="monospace" font-size="11"><text x="105" y="247">foot is physical</text><text x="292" y="247">curve is visual</text><text x="592" y="247">tail profile is art</text></g>
+            </svg>
+            <div class="diagram-note">图中亮点是物理控制点，暗色管带是渲染结果。注意：管带并没有逐球贴着物理半径走，而是对身体做了修长的显示剖面。</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="geometry">
+        <div class="section-head"><div class="section-no">03 / 09</div><div><div class="kicker">Geometry / The anti-ball recipe</div><h2>让球链消失，靠的不是更高模，而是三次“换译”</h2><p class="section-intro">身体仍然是 chunk 链，但屏幕上看到的东西已经不是 chunk 链。每一步都在削弱离散物理结构的视觉证据。</p></div></div>
+        <div class="cards-3">
+          <article class="card"><span class="tag">translation 01</span><h3>物理半径 ≠ 显示半径</h3><p>物理半径要服务碰撞和约束；若照画，重叠球会显得臃肿。蜥蜴身体显示半径大约取物理半径的 <strong>0.85</strong>，髋部进一步收至 <strong>0.72</strong>；尾巴则按尾部视觉需要放大。身体因此读成一条有厚薄变化的躯干。</p></article>
+          <article class="card"><span class="tag">translation 02</span><h3>离散点 → 密集站点</h3><p>chunk 之间不是一条直线，而是一段带切线的 cubic 曲线。每节采样 3～4 次，颜色和半径使用 smoothstep。点越密，后续的管环越小，弯曲就越像连续组织而不是折线。</p></article>
+          <article class="card"><span class="tag">translation 03</span><h3>线段 → 管状表面</h3><p>每个站点生成一个 7～10 边截面环；相邻环拼 2 个三角形。首尾加端帽，端点向外推一小段并收细。视觉上，身体成为一根可以弯曲、变细、染色的管。</p></article>
+        </div>
+        <div class="tube-demo">
+          <div class="tube-panel"><h3>一个截面环</h3><svg viewBox="0 0 420 190" aria-label="截面环公式图"><g transform="translate(210 95)"><circle r="67" fill="none" stroke="#384d41" stroke-width="1" stroke-dasharray="4 8"/><circle r="42" fill="#16271f" stroke="#92e6c0" stroke-width="2"/><g stroke="#efae61" stroke-width="2"><path d="M0 0L42 0"/><path d="M0 0L-21 36"/><path d="M0 0L-21 -36"/></g><circle r="4" fill="#efae61"/></g><text x="16" y="24" fill="#92e6c0" font-family="monospace" font-size="11">ring_j</text><text x="16" y="170" fill="#aaa99b" font-family="monospace" font-size="11">center + radius · (side cosθ + up sinθ)</text></svg><p class="caption">side 和 up 组成截面平面，tangent 是曲线前进方向。将这个环沿曲线重复，就得到身体表面。</p></div>
+          <div class="tube-panel"><h3>为什么不会一路拧麻花？</h3><svg viewBox="0 0 420 190" aria-label="平行传输 frame 图"><path d="M35 143 C128 28 225 28 380 141" fill="none" stroke="#20392e" stroke-width="25"/><path d="M35 143 C128 28 225 28 380 141" fill="none" stroke="#92e6c0" stroke-width="2"/><g stroke="#efae61" stroke-width="2"><path d="M78 93L64 51"/><path d="M157 42L157 9"/><path d="M245 46L260 14"/><path d="M330 98L356 65"/></g><g fill="#aaa99b" font-family="monospace" font-size="10"><text x="18" y="182">上一站 up 被投影到下一站的法平面</text></g></svg><p class="caption">代码没有让每一段自己“猜”一个 up，而是把旧 up 最小旋转地带到新切线。这样 support normal、背脊刺、疣珠和管截面共享稳定的朝向。</p></div>
+        </div>
+        <div class="callout"><b>关键的视觉欺骗：</b>身体管和物理球可以相互穿插。只要外层剪影连续，且重叠的图元使用同一张平色材质，内部接缝就没有足够的颜色/光照证据暴露出来。</div>
+      </section>
+
+      <section id="limbs">
+        <div class="section-head"><div class="section-no">04 / 09</div><div><div class="kicker">Legs / Derived pose</div><h2>脚是真实的，膝盖是“画出来的”</h2><p class="section-intro">这是运动与渲染分层最容易被误解的地方：正式外观有完整的腿，但内核不需要真的模拟每一段大腿和小腿。</p></div></div>
+        <div class="ik-layout">
+          <div class="ik-diagram"><svg viewBox="0 0 480 360" role="img" aria-label="两骨 IK 腿部示意图"><path d="M110 68 Q238 132 368 285" fill="none" stroke="#273f33" stroke-width="18"/><path d="M110 68 L245 160 L368 285" fill="none" stroke="#efae61" stroke-width="7" stroke-linecap="round"/><circle cx="110" cy="68" r="15" fill="#92e6c0"/><circle cx="245" cy="160" r="13" fill="#efae61"/><circle cx="368" cy="285" r="14" fill="#efae61"/><path d="M110 68 L368 285" fill="none" stroke="#aaa99b" stroke-width="1" stroke-dasharray="5 6"/><g fill="#d5d2bf" font-family="monospace" font-size="12"><text x="76" y="43">root / anchor</text><text x="256" y="154">knee</text><text x="373" y="306">foot</text><text x="260" y="103">pole  →</text></g><path d="M270 98 Q294 128 273 159" fill="none" stroke="#92e6c0" stroke-width="2"/><text x="281" y="86" fill="#92e6c0" font-family="monospace" font-size="11">bend side</text></svg></div>
+          <div class="ik-copy"><h3>两骨 IK 做了三件事</h3><ul><li><strong>把脚连接到身体：</strong>root 来自腿的锚点，foot 来自内核足端的插值位置。</li><li><strong>选择弯曲侧：</strong>pole 由身体轴、支撑法线和腿的左右侧共同决定，并且低通，避免膝盖每帧翻面。</li><li><strong>限制不自然姿态：</strong>余弦定理的结果被钳在 <code>[0.2, 0.98]</code>。所以视觉上的腿永远保留一点弯曲，不会像一根拉直的尺子，也不会折成反向关节。</li></ul><div class="callout"><b>重要：</b>knee 只存在于 renderer。它不参与碰撞、不承重、不反推足端；正式渲染可以很漂亮，运动内核仍保持“一个足端粒子”的简单与确定。</div></div>
+        </div>
+      </section>
+
+      <section id="palette">
+        <div class="section-head"><div class="section-no">05 / 09</div><div><div class="kicker">Palette / Silhouette</div><h2>颜色不是“涂满模型”，而是给剪影分配稀缺信号</h2><p class="section-intro">雨世界式的识别感来自大面积单色剪影，颜色只在眼睛、头、足端、尾尖、羽梢或甲片上出现。颜色分区同时也是几何融合策略。</p></div></div>
+        <div class="palette-box"><div class="swatches"><div class="swatch" style="background:#0d100f"><span>silhouette black</span></div><div class="swatch" style="background:#efae61"><span>effect color</span></div><div class="swatch" style="background:#92e6c0"><span>support accent</span></div><div class="swatch" style="background:#f28ca8"><span>breed signal</span></div></div><p><strong>整只生物不是一套 PBR 材质。</strong> 管件使用 Godot <code>StandardMaterial3D</code> 的 <code>Unshaded</code> 模式与顶点色作为 albedo；颜色沿管站插值，内部的球、管、鳍片、腿在需要融合的地方共享同一近黑色。这样圆片盖住条带、腿插入身体、球团彼此穿透时，接缝不会因为实时光照而变成一圈亮边。</p><p>当前 <code>TubeMeshBuilder</code> 仍可在 CPU 端把约 22% 的包裹漫反射烘进顶点色：它不是实时阴影，只是让截面有一点体积读数；把 <code>ShadeAmount</code> 设为 0，就会回到纯平色。</p></div>
+        <div class="callout"><b>sRGB 的小陷阱：</b>在带 tonemap 的场景里，顶点色若按 linear 方式解释，原本的剪影黑会被抬亮，球和管就会变成两种灰褐色，根部融合失效。Daddy 的正式渲染器显式使用 <code>VertexColorIsSrgb = true</code>，保证管根顶点色和球体 AlbedoColor 在同一颜色空间；其他已经按旧观感调好的验证件暂时保留自己的调色。</div>
+      </section>
+
+      <section id="species">
+        <div class="section-head"><div class="section-no">06 / 09</div><div><div class="kicker">Four visual grammars</div><h2>大多数怪物共享管线，但身体不只有一种画法</h2><p class="section-intro">共享的是“读状态 → 组织曲线 → 生成几何 → 上色”的思想。不同物种在“身体如何占据空间”这一步，选择了四种策略。</p></div></div>
+        <div class="species-tabs">
+          <div class="tab-list" role="tablist" aria-label="物种渲染策略">
+            <button class="tab active" data-species="lizard" role="tab" aria-selected="true">LIZARD / 扫管</button>
+            <button class="tab" data-species="centipede" role="tab" aria-selected="false">CENTIPEDE / 节片</button>
+            <button class="tab" data-species="vulture" role="tab" aria-selected="false">VULTURE / 替换</button>
+            <button class="tab" data-species="daddy" role="tab" aria-selected="false">DADDY / 球团</button>
+          </div>
+          <article class="species-panel" data-panel="lizard"><div class="species-mark"><svg viewBox="0 0 400 190"><path d="M45 102 C125 52 171 82 223 109 S299 147 355 81" fill="none" stroke="#101612" stroke-width="53" stroke-linecap="round"/><path d="M45 102 C125 52 171 82 223 109 S299 147 355 81" fill="none" stroke="#335b47" stroke-width="28" stroke-linecap="round"/><path d="M90 93L69 165M117 87L139 171M244 123L222 175M270 124L300 162" stroke="#efae61" stroke-width="7" stroke-linecap="round"/></svg></div><div class="species-copy"><h3>蜥蜴：一条连续的身尾管</h3><p>最典型的“去球感”案例。头前伸、脊柱和尾链进入同一组控制点，最后用一个扫管器连续覆盖身体与尾巴。物理 chunk 的球形只保留为运动骨架，背刺、头、眼和足端色是附加的识别层。</p><dl><dt>几何</dt><dd>Catmull–Rom + 10 边截面环</dd><dt>剖面</dt><dd>身躯收窄、尾梢收锥、低速呼吸</dd><dt>颜色</dt><dd>近黑身体 + 品种色头/尾/足端</dd></dl></div></article>
+          <article class="species-panel" data-panel="centipede" hidden><div class="species-mark"><svg viewBox="0 0 400 190"><path d="M40 104 C122 84 220 128 357 84" fill="none" stroke="#101612" stroke-width="40"/><g fill="#e56f3a" stroke="#0b0f0d" stroke-width="4"><ellipse cx="67" cy="99" rx="30" ry="22"/><ellipse cx="119" cy="99" rx="30" ry="22"/><ellipse cx="171" cy="111" rx="30" ry="22"/><ellipse cx="223" cy="120" rx="30" ry="22"/><ellipse cx="275" cy="112" rx="30" ry="22"/><ellipse cx="327" cy="95" rx="30" ry="22"/></g><path d="M65 120L44 172M92 120L107 172M168 132L148 180M198 132L216 180M276 132L257 176M305 118L323 169" stroke="#0e1611" stroke-width="5"/></svg></div><div class="species-copy"><h3>蜈蚣：暗底管 + 背甲节片</h3><p>先用一根近黑的连续底管把节间连起来，再把每个 chunk 变成略短、略扁的椭球甲片。甲片之间露出的暗底管自然形成节间暗环，不需要另外画缝。每节的真实 SupportNormal 经低通后负责 3D 定向，替代 2D 里的假 roll。</p><dl><dt>几何</dt><dd>全链扫管 + 每节独立背甲</dd><dt>识别</dt><dd>亮甲片 / 暗节间 / 外拱腿</dd><dt>附肢</dt><dd>两端触须使用渲染侧摆相位</dd></dl></div></article>
+          <article class="species-panel" data-panel="vulture" hidden><div class="species-mark"><svg viewBox="0 0 400 190"><ellipse cx="193" cy="104" rx="73" ry="42" fill="#171d20"/><path d="M149 100 Q83 67 38 42M149 113 Q78 119 32 150M237 100 Q309 65 364 39M237 117 Q311 120 372 151" fill="none" stroke="#253e37" stroke-width="13" stroke-linecap="round"/><g stroke="#efae61" stroke-width="4"><path d="M78 70L29 34M92 79L42 29M109 88L67 31M296 75L352 31M313 86L370 39M330 99L383 59"/></g><circle cx="194" cy="63" r="23" fill="#e8dfcf"/></svg></div><div class="species-copy"><h3>秃鹫：用一个替换件盖住刚架</h3><p>秃鹫的四个躯干 chunk 形成 K4 风筝刚架，但屏幕上不把四个球画出来，而是用一个带完整正交基的椭球躯干覆盖它们。脖子和翅臂仍然扫管，羽毛则是沿翅链分布的刀片扇。</p><dl><dt>躯干</dt><dd>替换派：一件椭球网格</dd><dt>翅膀</dt><dd>翅臂剖面随 FlyingMode 收放</dd><dt>羽毛</dt><dd>根黑梢亮、前密后疏、方向/长度低通</dd></dl></div></article>
+          <article class="species-panel" data-panel="daddy" hidden><div class="species-mark"><svg viewBox="0 0 400 190"><g fill="#10110d"><circle cx="178" cy="86" r="43"/><circle cx="224" cy="69" r="35"/><circle cx="236" cy="116" r="45"/><circle cx="160" cy="129" r="35"/></g><g stroke="#efae61" stroke-width="5" stroke-linecap="round"><path d="M170 82L190 102M190 82L170 102M217 62L232 77M232 62L217 77"/><path d="M193 125 C260 148 287 135 363 169M158 145 C128 158 94 162 56 173"/></g></svg></div><div class="species-copy"><h3>长腿爸爸：同色球团的联集错觉</h3><p>它不强行把身体焊成一张 SDF。多个球体共享同一张近黑 unshaded 材质，并将显示半径放大到 <code>1.1r + 0.05m</code>，球间的内部棱线就会被同色和互穿隐藏。触手从球心起笔，根部保持纯黑，之后才极克制地渐染。</p><dl><dt>身体</dt><dd>重叠球团 / 同材质 / 无 metaball</dd><dt>细节</dt><dd>外向 X 眼、seed 固定疣珠</dd><dt>下垂</dt><dd>渲染侧 Verlet 垂索与死腿</dd></dl></div></article>
+        </div>
+      </section>
+
+      <section id="life">
+        <div class="section-head"><div class="section-no">07 / 09</div><div><div class="kicker">Cosmetic state</div><h2>生命感来自“系统开关”，不是一段死亡动画</h2><p class="section-intro">真正有趣的地方，是许多小动作都不需要新的动画资产。它们只是渲染侧状态在不同条件下打开或关闭。</p></div></div>
+        <div class="life-grid">
+          <article class="life-item"><b>BREATH</b><h3>停下才会呼吸</h3><p>呼吸幅度乘上 <code>pow(1 − runSpeed, 2)</code>。跑得越快，身体越像一个稳定的运动器官；停下后，前胸才出现细小的慢起伏。</p></article>
+          <article class="life-item"><b>SEED</b><h3>出生时决定个体差异</h3><p>装饰普查使用稳定 seed：眼睛相位、疣珠位置、垂索数量、羽毛磨损都在出生时冻结。相同 seed 重跑，视觉个体仍然相同。</p></article>
+          <article class="life-item"><b>LAG</b><h3>附肢不要瞬间同步</h3><p>秃鹫羽毛方向与长度使用低通追目标；蜈蚣的 up 沿链平滑；Daddy 的垂索用 Verlet。轻微滞后比“每帧精准贴合”更像有重量。</p></article>
+          <article class="life-item"><b>DEATH</b><h3>死亡是关闭伺服</h3><p>关闭腿的主动追点、头部伺服和呼吸，保留重力、阻尼和距离约束，身体自然垂下。姿态的坍塌来自系统少做一点事。</p></article>
+        </div>
+      </section>
+
+      <section id="boundary">
+        <div class="section-head"><div class="section-no">08 / 09</div><div><div class="kicker">Boundary / Performance</div><h2>渲染层很自由，但有三条不能越过的线</h2><p class="section-intro">这些约束确保“变漂亮”不会悄悄改变运动行为，也让正式渲染可以被安全地移植回主项目。</p></div></div>
+        <table>
+          <thead><tr><th>层</th><th>负责什么</th><th>不负责什么</th></tr></thead>
+          <tbody>
+            <tr><td>ProcAnim.Core</td><td>chunk 位置、连接、足端、支撑法线、物种运动状态</td><td>不认识 mesh、材质、颜色和膝盖</td></tr>
+            <tr><td>FormalRenderer</td><td>读取插值位置，组织控制点，生成身体/腿/装饰</td><td>不写回内核、不参与碰撞、不进物理哈希</td></tr>
+            <tr><td>Cosmetic state</td><td>呼吸相位、稳定 up、bend pole、羽毛滞后、垂索</td><td>不成为 AI 或运动的隐藏输入</td></tr>
+            <tr><td>Material / Palette</td><td>近黑剪影、品种色、顶点色、轻微烘焙明暗</td><td>不依靠复杂实时光照来修补几何接缝</td></tr>
+          </tbody>
+        </table>
+        <div class="cards-3" style="margin-top:24px">
+          <article class="card"><span class="tag">line 01</span><h3>V 键是对照实验</h3><p>沙盒同时保留 debug 白盒：每个 chunk 一个球，连接和腿是线。切到正式模式，才能看见哪些视觉层是“解释”而不是“新的物理”。</p></article>
+          <article class="card"><span class="tag">line 02</span><h3>CPU 重建是有意的</h3><p>当前验证实现以 <code>ImmediateMesh</code> 每帧清面并重发三角形；单只生物几百个顶点，优先换取可读、可调、可验证。不是 shader 蒙皮，也不是 metaball 管线。</p></article>
+          <article class="card"><span class="tag">line 03</span><h3>不为“消球”重做碰撞</h3><p>物理仍用原来的球和真实地形查询。渲染管只是视觉表面，不能拿它替代碰撞网格；这一点正是运动与美术解耦的价值。</p></article>
+        </div>
+        <pre><code>// 正式渲染器的共同形状：读，不写
+void Draw(float alpha, float dt)
+{
+    Vector3 pos = chunk.LerpPos(alpha);  // 画面插值
+    // points → SplineSampler → TubeMeshBuilder
+    // cosmetics stay here; Core never sees them
+}</code></pre>
+      </section>
+
+      <section id="sources">
+        <div class="section-head"><div class="section-no">09 / 09</div><div><div class="kicker">Trace it in the repository</div><h2>如果你想继续往下读，先看这几处</h2><p class="section-intro">这篇文章不是抽象的美术宣言，而是对当前代码和渲染研究文档的导读。最短的阅读路径是：先看共享基建，再看蜥蜴，最后对照一个策略完全不同的 Daddy。</p></div></div>
+        <div class="file-list">
+          <div class="file"><b>docs/rainworld_render_research.md</b><span>渲染层真相源：RW 反编译取证、五个通用手法、十物种策略、Godot 架构与验收状态。</span></div>
+          <div class="file"><b>scripts/render/SplineSampler.cs</b><span>控制点如何密化为 TubeStation；Catmull–Rom、smoothstep 半径和颜色。</span></div>
+          <div class="file"><b>scripts/render/TubeMeshBuilder.cs</b><span>平行传输 frame、截面 ring、三角形、端帽、鳍片、羽毛刀片和顶点色。</span></div>
+          <div class="file"><b>scripts/render/TwoBoneIk.cs</b><span>渲染期两骨 IK；余弦钳制与 pole 的退化回退。</span></div>
+          <div class="file"><b>scripts/render/LizardFormalRenderer.cs</b><span>最完整的典型案例：身尾连续扫管、显示半径、呼吸、尾色、背刺、头和腿。</span></div>
+          <div class="file"><b>scripts/render/CentipedeFormalRenderer.cs</b><span>多节极端：暗底管、逐节甲片、真实 SupportNormal、腿与两端触须。</span></div>
+          <div class="file"><b>scripts/render/VultureFormalRenderer.cs</b><span>替换派躯干、K4 正交基、翅臂剖面、羽毛扇与逐羽滞后。</span></div>
+          <div class="file"><b>scripts/render/DaddyLongLegsFormalRenderer.cs</b><span>球团联集、X 眼、根部融合、seed 疣珠与渲染侧垂索；独立沙盒接入。</span></div>
+        </div>
+        <div class="callout" style="margin-top:28px"><b>建议的观察方式：</b>运行沙盒时切换正式/白盒视图；Daddy 沙盒支持 <code>--daddy-formal=off</code> 对照，正式视图还可配合截图与跟随相机。你会发现最关键的变化不是“球变圆了”，而是身体开始拥有一条稳定的视觉语言：曲线、厚薄、颜色稀缺、接缝消失，以及附肢有一点自己的时间。</div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="wrap footer"><strong>PROC / ANIM LAB</strong> · 这篇导读对应仓库当前的正式渲染验证轮。运动内核、物种控制器与渲染层的边界，以仓库内源码和文档为准。</footer>
+
+  <script>
+    (() => {
+      const progress = document.querySelector('.progress');
+      const updateProgress = () => {
+        const max = document.documentElement.scrollHeight - innerHeight;
+        progress.style.transform = `scaleX(${max > 0 ? scrollY / max : 0})`;
+      };
+      addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+
+      const stepButtons = [...document.querySelectorAll('.step-button')];
+      const details = [...document.querySelectorAll('.step-detail')];
+      stepButtons.forEach(button => button.addEventListener('click', () => {
+        const id = button.dataset.step;
+        stepButtons.forEach(b => {
+          const active = b === button;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        details.forEach(detail => { detail.hidden = detail.dataset.detail !== id; });
+      }));
+
+      const tabs = [...document.querySelectorAll('.tab')];
+      const panels = [...document.querySelectorAll('.species-panel')];
+      tabs.forEach(tab => tab.addEventListener('click', () => {
+        const id = tab.dataset.species;
+        tabs.forEach(t => {
+          const active = t === tab;
+          t.classList.toggle('active', active);
+          t.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        panels.forEach(panel => { panel.hidden = panel.dataset.panel !== id; });
+      }));
+
+      const tocLinks = [...document.querySelectorAll('.toc a')];
+      const sections = tocLinks.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          tocLinks.forEach(link => link.classList.toggle('active', link.getAttribute('href') === `#${entry.target.id}`));
+        });
+      }, { rootMargin: '-18% 0px -68% 0px', threshold: 0 });
+      sections.forEach(section => observer.observe(section));
+    })();
+  </script>
+</body>
+</html>
