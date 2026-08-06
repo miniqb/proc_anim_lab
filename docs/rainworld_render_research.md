@@ -226,8 +226,7 @@ RW 是侧视 2D，"深度"全是假的，但每个 hack 都指名了 3D 里该�
   A+B 的低配变体；Deer/Daddy 的联集策略独特但风险低（同色 unshaded 联集在 Godot 里是
   已知成立的），且鹿角生成器移植是独立小项目；人形等主项目造型裁决（Gate D）后再做正式皮。
 
-## 5. 实施状态（2026-08-05 技术验证轮已落地；同日追加 DaddyLongLegs；
-## 2026-08-06 追加 Spider + Humanoid）
+## 5. 实施状态（2026-08-05 技术验证轮已落地；同日追加 DaddyLongLegs；2026-08-06 追加 Spider + Humanoid）
 
 六个验证件已实现于 `scripts/render/`（游戏程序集，依赖 Godot，不进 `core/`）：
 

@@ -15,14 +15,15 @@
 3. **宿主 tick 里装 0.025s 累加器**驱动选定物种控制器的 `Tick`，渲染读
    `LerpPos(插值分数)`（§3）；回归先跑对应的 `core/smoke` / `core/spider_smoke`
    / `core/cicada_smoke` / `core/tentacle_plant_smoke` / `core/deer_smoke`
+   / `core/daddy_long_legs_smoke` / `core/dropbug_smoke`
    （秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
 
 ### 1.1 目录分层与命名空间（`core/`）
 
-内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；九个物种后端互为平级、
-只共享底座（唯一例外见下表脚注）。
+内核按**依赖方向**分层，命名空间跟随目录。上层可依赖下层，反向不行；十个物种后端互为平级、
+只共享底座（唯一例外见下方白名单）。
 
 ```
 core/
@@ -39,10 +40,11 @@ core/
 │   ├── vulture/        ProcAnim.Core.Species.Vulture
 │   ├── tentacle_plant/ ProcAnim.Core.Species.TentaclePlant
 │   ├── deer/           ProcAnim.Core.Species.Deer
-│   └── daddy_long_legs/ ProcAnim.Core.Species.DaddyLongLegs
+│   ├── daddy_long_legs/ ProcAnim.Core.Species.DaddyLongLegs
+│   └── dropbug/        ProcAnim.Core.Species.DropBug
 ├── godot/              ProcAnim.Core.Terrain        引擎适配器（**归宿主程序集**，见 §1.2）
 └── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/
-    daddy_long_legs_smoke/                         无引擎回归工程
+    daddy_long_legs_smoke/ dropbug_smoke/           无引擎回归工程
 ```
 
 两处**有意的目录 ≠ 命名空间**：`godot/` 的适配器实现 `Terrain` 的接口却不属于内核程序集，
@@ -96,6 +98,9 @@ core/
 | `species/daddy_long_legs/DaddyLongLegsLocomotionController.cs` | 无前向完整图球团控制器：整链支撑汇总、移动期 1.2× / 停驶后至多 1g 的连续重力回补、方向抓点推进、职责预算、换步与确定性卡住退化 | DaddyLongLegs.Act |
 | `species/daddy_long_legs/DaddyLongLegsParams.cs` / `DaddyLongLegsMorphology.cs` | 独立预设参数与按 seed 冻结的可变球/触手形态、材料 frame landmark | DaddyLongLegs 构造的随机出生形态 |
 | `species/daddy_long_legs/DaddyLongLegsFactory.cs` / `DaddyLongLegsTargetContracts.cs` | brother/daddy/terror 三稳定 ID、无状态确定性装配，以及按触手编号的纯值外部目标/效果接缝 | DaddyLongLegs / DaddyTentacle + 3D 宿主扩展 |
+| `species/dropbug/DropBugLocomotionController.cs` | 掉落虫控制器：三节短链自撑、站稳计数与前后不对称重力、运行时收放静息长度的悬挂态、弹道俯冲、蓄力扑击、越障抬升与确定性卡住抖动 | DropBug.Act + DropBugAI 的运动子集 |
+| `species/dropbug/DropBugLeg.cs` | **纯图形件**腿：步频随头部实际位移驱动，静止严格为零；不回传力、不计支撑（反编译实证腿为 `Limb[2,2]` 图形层） | DropBugGraphics |
+| `species/dropbug/DropBugParams.cs` / `DropBugFactory.cs` | 掉落虫独立参数表与三节短链装配；original/nimble/bulky 三稳定 ID（未知 ID 快速失败） | DropBug 构造 |
 | `species/vulture/VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
 | `species/vulture/VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
 | `species/vulture/VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
@@ -108,6 +113,7 @@ core/
 | `tentacle_plant_smoke/` | 拟态草独立无引擎回归（装配、三面游荡、攻击时序、目标效果、生命周期与确定性） | — |
 | `deer_smoke/` | 鹿独立无引擎回归（装配、恒重力支撑、多节腿步态、地形、生命周期、确定性与机制消融） | — |
 | `daddy_long_legs_smoke/` | DaddyLongLegs 独立无引擎回归（seed 形态、整链支撑、职责/换步、全向地形、打断、外部够取、生命周期、确定性与机制消融） | — |
+| `dropbug_smoke/` | DropBug 独立无引擎回归（装配、前后不对称重力、悬挂收放与击飞冷却、俯冲、蓄力、越障、卡住、负重、表现腿、生命周期、确定性与九机制消融） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -415,6 +421,44 @@ DaddyLongLegsLocomotionController daddy =
 - 参数校验还证明最大触手数下的最短初始长度分配可装配，并要求最短可能生成的 `LinkLength`
   严格大于球壳/自避最小间距；这两个条件是后缀恢复候选可验证的装配前提。
 
+### 2.9 掉落虫装配契约（DropBugLocomotionController）
+
+```csharp
+DropBugParams p = DropBugFactory.ById("dropbug/original");  // 或 Original/Nimble/Bulky
+DropBugLocomotionController bug = DropBugFactory.CreateController(origin, forward, p);
+```
+
+- 身体固定为**三节短链**：头 / 中 / 尾（6/8/6px 换算），头-中、中-尾 Rigid + 头-尾 PushOnly
+  防对折，`WeightA` 按质量反比（≙ RW `weight -1`），外加**仅运动时注入**的自撑力对。
+- 三个稳定 ID 为 `dropbug/original|nimble|bulky`；未知 ID **快速失败**（不静默回落）。
+- **腿是纯图形件**：`DropBugLeg` 的步频按头部实际位移比例驱动、静止严格为零，**不回传力、
+  不计支撑**。这是反编译实证（原作腿为 `Limb[2,2]` 图形层），不是本项目的简化。
+- **本后端有三点此前九个后端都没有的机制**，回迁时需特别注意：
+  1. **运行时形变**：悬挂时三条连接的**静息长度**按 `HangFactor` 插值收缩（12→5 / 14→2 /
+     8→0 px），中/尾停止碰撞埋入锚面，退出瞬时恢复。`RestLength` 是既有公开可变字段，
+     **共享层零配合**——但这意味着宿主不能假设连接静息长度在生命周期内恒定。
+  2. **弹道攻击**：脱悬俯冲先削速再施 21/16px 方向功率冲量；腾空期间持续头朝目标、中尾反向
+     修正；高于目标 6.25m 且距 8.75m 内加水平修正；触地即停 + 20 tick 冷却。
+  3. **前后不对称支撑**：站稳（`footingCounter > 10`，失稳 −3/tick、宽限帽 35）时前两节
+     ×0.8 阻尼 + **全额**抵消重力，尾节只抵消 `Lerp(0.5, 1, stuck)` 且**无阻尼**（尾巴自然
+     下垂）；倒退行走时尾节按前节处理。
+- **悬挂点 3D 判据**（≙ 原作「空 tile + 上方 2 实心 + 下方空 + floorAltitude ≥6 tile」）：
+  法线向下 ≥cos45° + 实体厚度探针 0.3m + 法向净空 0.6m + 世界竖直落差 ≥3m。贴附半径 1m +
+  最后 1.25m 爬升辅助；**更高的锚由宿主给邻近可达位**（不移植原作的天花板攀爬）。
+- **`Launch` 会设 40 tick 悬挂重贴附冷却**（≙ 原作 stun 窗口内 `Consious=false` 挡住重贴附）。
+  没有它，≤0.30 m/tick 的击飞会被吸附伺服整个吃掉（2026-08-04 外部评审 P1）。
+- 地面蓄力扑击：`charging +1/15`（头 `+c²`、中 `−4c` px），可及 =
+  `LerpMap(dot(扑向, 身体轴), −0.1, 0.8, 0, 300px, 0.4)`——**侧对显著缩短**，目标出可及即
+  逐 tick 放弃。越障抬升按「前进受阻且头落在中段后面」的原作字面条件**涌现**（实测点火于
+  反转朝向）。卡住抖动 = 30 tick 窗口净位移 + 整数模数伪随机（原作 `Random` 的确定性等价）。
+- **显式跨 tick 状态只有四个**：`HangFactor` / `PounceCharge` / `Diving` / `AttackCooldown`。
+  其余（站 / 走 / 坠 / 倒退 / 越障）全部涌现，没有 locomotion 模式枚举。
+- 控制器另暴露八个 `Enable*` 机制开关（`EnableTailGravityAsymmetry` / `EnableFootingGrace` /
+  `EnableHangMorph` / `EnableDiveSteering` / `EnablePounceReachGate` / `EnableObstacleHop` /
+  `EnableStuckShake` / `EnableBackwardsWalk`），**默认全 true，仅供 smoke 消融红灯使用**——
+  宿主不要在运行时改动它们（会改变哈希）。
+- 完整 DLL 数值、3D 取舍与有意偏离原作的清单见 [`dropbug_controller.md`](dropbug_controller.md)。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -685,6 +729,29 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   与恢复历史并恢复出生支撑，`Launch` 清恢复暂态并释放地形、
   清出生支撑但保留外部目标快照和 `MoveTarget`，之后靠连续支撑与职责预算自然恢复；专项 lifecycle
   smoke 会先制造单条 stun 和外部目标，再直接断言 `Teleport` 已清 stun 且下一 tick 发布 Released。
+
+### 4.1e 掉落虫（DropBugLocomotionController）的输入与观测差异
+
+三旋钮同名同义（`MoveDir` / `RunSpeed` / 可选 `MoveTarget` + `AtMoveTarget`），新增的都是
+「伏击者」专属：
+
+- `CarriedMass`（float）：宿主叼着的猎物质量，连续影响推进与站稳；不是布尔状态。
+- `AttackTarget`（`DropBugAttackTarget?` = 点 + 每 tick 速度）：可**固定或逐 tick 随动**。
+  俯冲与扑击都读它；它只是纯值快照，真实实体、伤害与命中判定归 gameplay 权威。
+- `TryAssignHangAnchor(in TerrainHit, ITerrainQuery)` / `ClearHangAnchor()`：宿主显式给悬挂
+  锚。返回 false 时 `LastHangRejection`（`DropBugHangRejection`）说明是七个判据中的哪一条挡
+  下的——**不要重试同一个锚**。
+- `ReleaseHangDive()`：脱悬俯冲。`TryStartPounce()` / `CancelPounce()`：地面蓄力扑击。
+  `PounceReach(direction)` 是**只读查询**，宿主可在起跳前问「这个方向够不够得着」——侧对方向
+  的可及距离显著短于正对。
+- `Shift` / `Teleport` / `Launch` 与其它移动后端同名同义。**`Launch` 额外设 40 tick 悬挂
+  重贴附冷却**（见 §2.9）；悬挂中 `Teleport` 不弹飞。
+- 观测面：`Footing` / `FootingCounter`、`HangFactor` / `Hanging` / `HangState` / `HangAnchor` /
+  `HangRegrabDelay`、`PounceCharge` / `ChargingPounce`、`Jumping` / `Diving` /
+  `AttackCooldown` / `LastDiveLandingTick`、`MovingBackwards` / `Sitting`、`StuckSignal` /
+  `StuckShake`、`RunCycle`（步频）、`TravelDir` / `Forward` / `Up` / `Right`，以及
+  `Legs`（**纯表现**，不要拿它反推支撑）。另有 `PounceLeapSerial` / `PounceAbandonSerial` /
+  `DiveSerial` / `HopSerial` 四个只读事件流水号，供宿主检测「事件确实发生过」。
 
 ### 4.2 人形（HumanoidLocomotionController）的输入面差异
 
@@ -957,11 +1024,13 @@ dotnet run --project core/deer_smoke
 #    idle-landing-stability、idle-support-neutrality、residual-terrain）验证门会红。
 dotnet run --project core/daddy_long_legs_smoke
 
-# ⑦ 长腿爸爸 Godot 矩阵：39 配置覆盖普通与 12-body 形态的双跑/40vs400Hz、微扰、
-#    三预设四种 seed 形态、平地/深休息起步/点按、三 seed 高站姿→水平移动高度保持、坡/墙/
+# ⑦ 长腿爸爸 Godot 矩阵：40 配置覆盖普通与 12-body 形态的双跑/40vs400Hz、微扰、
+#    三预设四种 seed 形态、平地/深休息起步/点按、三 seed 高站姿→水平移动高度保持、
+#    sparse-gait 稀疏形态饥饿阀、坡/墙/
 #    静止墙边/天花板/内外角、打断接管、五 seed 卡住脱困、外部够取、击飞与生命周期；另有
-#    二十四个无引擎及三个 Godot 预期红灯消融。course 整体隔离在 z=-48m，
+#    合计 30 个预期红灯消融（27 无引擎 + 3 Godot）。course 整体隔离在 z=-48m，
 #    从约 17.2° 斜坡上表面出生，不与 flat/idle-start 的长触手查询域重叠。
+#    判定以脚本结尾横幅为准（当前：40 configurations + 30 ablations）。
 ./tools/run_daddy_long_legs_matrix.sh
 
 # ⑧ 蜘蛛 Godot 矩阵：40/400Hz、微扰、小/大标准路线、大蜘蛛直线步态、
@@ -980,11 +1049,23 @@ dotnet run --project core/daddy_long_legs_smoke
 #    摆动腿真实弓向、粗糙错高、休息、击飞、MoveTarget 与生命周期；退出码聚合八个预期红灯注入。
 ./tools/run_deer_matrix.sh
 
-# ⑫ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ⑫ 掉落虫无引擎 smoke：21 门全真断言——装配与未知 ID 快速失败、前后不对称重力、
+#    失稳宽限、行走/头领航/失稳注力比、18° 坡、越障点火、倒退接近、悬挂判定七分支、
+#    悬挂收放（团缩/静止/静息长度/碰撞开关）、退出与悬挂中 Teleport 不弹飞、
+#    悬挂中击飞 40 tick 重贴附冷却、俯冲、蓄力（后坐/侧对可及/逃逸放弃）、卡住抖动、
+#    负重梯度、表现腿、生命周期、查询预算与 2mm 残余穿透门；九个机制各含消融红灯。
+dotnet run --project core/dropbug_smoke
+
+# ⑬ 掉落虫 Godot 矩阵：25 配置 = walk 双跑/40vs400Hz/微扰 + slope/hop/stuck/backward/
+#    hang/hang-exit/hang-launch/dive/pounce/pounce-abandon/carry/launch/lifecycle +
+#    nimble/bulky 变体各覆盖 walk/hang/dive/pounce（pounce 起跳窗口按预设蓄力时长参数化）。
+./tools/run_dropbug_matrix.sh
+
+# ⑭ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ⑬ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑮ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
@@ -1006,7 +1087,7 @@ Step 侧面当墙）。另逐 tick 断言碰撞后结构恢复没有留下 >2mm 
 头—SpineFollower 前向构型、全身轴与展开姿态必须在 25 tick 内恢复；中段局部轴相对头部局部轴的
 最大角度领先、连续领先 tick 与过 60° 对齐阈值的时间差只作诊断输出，尚不以任意审美阈值判红。
 （2026-07-30 重跑：两条配置的诊断项均已归零、恢复 7/6 tick——RearBrace 轮的顺带结果，
-历史对照见 [`known_issue_three_chunk_turn_response.md`](known_issue_three_chunk_turn_response.md)。）
+历史对照见 [`archive/known_issue_three_chunk_turn_response.md`](archive/known_issue_three_chunk_turn_response.md)。）
 
 蜈蚣纯 .NET smoke 的 short/long 双跑 bit-exact 基线为 `655A21496C00E86A` /
 `59CBCF993DF8ACD8`；解析课程覆盖地面、18°斜坡、内角墙、外角墙顶与天花板；固定
@@ -1042,12 +1123,13 @@ DaddyLongLegs 的本轮地形卡腿专项覆盖：物理半径裁边的 tick-end
 同步清槽、同一安全窗不二次释放、下一窗口由其它腿接管，并在起步夹具重新置位 pending；真实
 触手 tick 会在控制器检查前把计时归零。Godot `wall/corner/outer/ceiling/stuck` 另用真实 Jolt
 统计逐边与逐触手阻塞 run，并要求终态无阻断边、残余穿透与查询预算同时通过。三个正式预算为
-`1700/2900/4050`，公式下限为 `1658/2870/4021`。2026-08-04 完整实跑的 Daddy 无引擎/
-Godot flat 基线为 `C6AE88A2B807488E` / `B8F1A06E5BBEBB7C`，全矩阵查询峰值为
-`1629/4050`；地形路线最长阻断 episode 为 10 tick，全部终态阻断边为 0、tick-end 穿透为 `0m`。
-Daddy 的 39 项 Godot 配置 + 27 个预期红灯消融全绿；六套 Godot 矩阵合计 144 项
-（45+16+9+17+18+39）全部 GREEN，既有 105 项仍命中原固定哈希和行为门。后续仍以各脚本钉死
-常量和 PASS 输出为真相源，不能用这份快照替代重跑。
+`1700/2900/4050`，公式下限为 `1658/2870/4021`。2026-08-05 失速-回冲修复轮完整实跑的 Daddy
+无引擎 / Godot flat 基线为 `47F9584427FCD54A` / `FCC938B3D329B276`（微扰
+`9657299AD24335D4`），全矩阵查询峰值为 `1667/4050`；地形路线最长相邻边/整触手阻断 episode
+为 9 tick，全部终态阻断边为 0、tick-end 穿透为 `0m`。Daddy 的 40 项 Godot 配置 + 30 个预期
+红灯消融（27 无引擎 + 3 Godot）全绿；**七套 Godot 矩阵合计 170 项**
+（45+16+9+17+18+40+25）全部 GREEN。后续仍以各脚本钉死常量和 PASS 输出为真相源，
+**不能用这份快照替代重跑**。
 
 可执行基线真相源分别位于：
 
@@ -1059,8 +1141,11 @@ Daddy 的 39 项 Godot 配置 + 27 个预期红灯消融全绿；六套 Godot �
 - Deer：`tools/run_deer_matrix.sh` 与 `core/deer_smoke/Program.cs`；
 - DaddyLongLegs：`tools/run_daddy_long_legs_matrix.sh` 与
   `core/daddy_long_legs_smoke/Program.cs`；
+- DropBug：`tools/run_dropbug_matrix.sh` 与 `core/dropbug_smoke/Program.cs`；
 - Humanoid：`tools/run_matrix.sh`（HASH_HUMANOID_* 六条）与 `core/smoke/Program.cs`
-  的 `HumanoidExpectedHash`。
+  的 `HumanoidExpectedHash`；
+- Vulture：`tools/run_matrix.sh`（vulture 四配置）与 `core/smoke/Program.cs`
+  的 `ExpectedVultureHash`。
 
 有意改变某一后端行为时只更新对应真相源；共享原语改动则全部重新审计，不能用批量改哈希
 代替行为断言。文档数字只作当前状态快照。
@@ -1071,7 +1156,7 @@ Daddy 的 39 项 Godot 配置 + 27 个预期红灯消融全绿；六套 Godot �
 `--headless --scene …` + PASS 标记；其 ClockProbe 已验证过「两次构建 40 步轨迹逐 float 一致」，
 确定性标准同构）。建议：对应物种的 `core/*_smoke` 原样带走（拟态草为
 `core/tentacle_plant_smoke`，鹿为 `core/deer_smoke`，长腿爸爸为
-`core/daddy_long_legs_smoke`，均为纯 .NET 秒级回归），另加一条
+`core/daddy_long_legs_smoke`，掉落虫为 `core/dropbug_smoke`，均为纯 .NET 秒级回归），另加一条
 `tech_validation/m10_motion/` 风格的场景探针跑真实地形（等价本仓库 `--determinism` 模式）。
 
 ## 8. 迁移路线与集成姿态（主项目对接面调研结论，2026-07）
