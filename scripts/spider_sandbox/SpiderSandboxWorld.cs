@@ -41,6 +41,18 @@ public partial class SpiderSandboxWorld : Node3D
     private const float MaxReachDeficitLimit = 0.005f;
     private const int MaxSideRecoveryRunLimit = 35;
     private const int TurnLeadTicks = 120;
+    // 转弯场地下界。快巡航品种（spider-lean 实测 0.063m/tick）120 tick 引导段会从
+    // x=11 一路走到 x≈3.4——已经钻进坡道板下：坡道底面在 x≈2.3~4.5 只离地 0~0.7m，
+    // 急转时脚会抓上坡底楔缝顶（法线 (0.309,-0.951,0)），支撑法线被非地面抓点污染。
+    // x=7.2 时任何品种的足端+射线可达半径（≤0.88m）对坡道（该处底面已高 1.29m）与
+    // WallX 的 +X 面（x=6.2）全部出清；spider-small/large 的 120 tick 引导段分别停在
+    // x≈7.47/7.92，从不触及此下界，行为与既有基线逐位一致。
+    private const float TurnArenaMinX = 7.2f;
+    // gait 路线的油门（--gait-throttle，默认 1 = gait-large 既有行为逐位不变）。
+    // 快巡航品种全油门下 24m 地板给不出「t≥80 起连续 ≥200 tick 稳定直行」的跑道
+    // （spider-lean 0.08m/tick 需要 22.4m+），按品种降油门是把观察窗塞回跑道的
+    // 品种缩放变体；步态门自身的比值阈值不随油门改动。
+    private float _gaitThrottle = 1f;
     private const int TurnDriveBudgetTicks = 260;
     private const float TurnDriveDistance = 3f;
     private const float TurnLaneToleranceRatio = 0.02f;
@@ -583,7 +595,7 @@ public partial class SpiderSandboxWorld : Node3D
                 DriveCourse();
                 break;
             case Route.Gait:
-                SetDrive(Vector3.Left, 1f);
+                SetDrive(Vector3.Left, _gaitThrottle);
                 break;
             case Route.NarrowWall:
                 DriveNarrowWall();
@@ -628,7 +640,8 @@ public partial class SpiderSandboxWorld : Node3D
     {
         if (_routePhase == 0)
         {
-            if (_tick <= TurnLeadTicks)
+            if (_tick <= TurnLeadTicks
+                && _controller.Primary.Pos.X > TurnArenaMinX)
             {
                 SetDrive(Vector3.Left, 0.55f);
                 return;
@@ -2508,6 +2521,16 @@ public partial class SpiderSandboxWorld : Node3D
                         _ => throw new FormatException(
                             "turn 只接受 left、right 或 around"),
                     };
+                }
+                else if (arg.StartsWith("--gait-throttle="))
+                {
+                    _gaitThrottle = float.Parse(
+                        arg["--gait-throttle=".Length..], inv);
+                    if (!float.IsFinite(_gaitThrottle)
+                        || _gaitThrottle <= 0f || _gaitThrottle > 1f)
+                    {
+                        throw new FormatException("gait-throttle 必须在 (0,1] 内");
+                    }
                 }
                 else if (arg.StartsWith("--spawn="))
                 {

@@ -111,6 +111,12 @@ public sealed class SpiderLeg
 	public float UpperLength = 0.3f;
 	public float LowerLength = 0.32f;
 
+	/// <summary>
+	/// 膝点单 tick 位移预算（腿总长倍数）；0 = 关闭，保持精确两球解的原始 pole 路径。
+	/// 语义见 <see cref="SpiderBreedParams.KneeStepBudgetRatio"/>。
+	/// </summary>
+	public float KneeStepBudgetRatio;
+
 	/// <summary>足端最大可达距离占上下腿总长的比例；小于 1 保证始终留有可见弯折。</summary>
 	public float MaxReachFactor = 0.96f;
 
@@ -364,6 +370,7 @@ public sealed class SpiderLeg
 
 		IntegrateHunt(ctx);
 		ConnectToRoot();
+		LimitNearRootWhip();
 		PushOutOfTerrain(ctx);
 		EnsureReachableAfterTerrain(ctx);
 		UpdateTargetSurfaceContact();
@@ -877,6 +884,53 @@ public sealed class SpiderLeg
 		Vel *= AirFriction;
 	}
 
+	// 近根鞭甩区：足端离根低于腿总长的这个比例时，腿向量角速率开始受钳。
+	private const float WhipZoneRatio = 0.5f;
+	// 鞭甩区内腿向量单 tick 变化弦长上限（相对当前平均腿向量长；0.62 ≈ 36°/tick）。
+	private const float WhipChordRatio = 0.62f;
+
+	/// <summary>
+	/// 近根角速率钳制（仅 <see cref="KneeStepBudgetRatio"/> 开启的品种参与）。足端贴近
+	/// 腿根时（落地减速把身体单 tick 甩 0.25m、或无目标足端绕根被拖拽），相对腿向量的
+	/// 单 tick 位移可与 d 同量级，腿轴随之近乎反转，膝点作为 ~u 长的刚性杠杆被迫沿两球
+	/// 交线圆瞬移接近整段腿长——这不是 pole 选择问题，精确 IK 的最小可行膝位移就超门。
+	/// 唯一出路是限制输入：只在 d &lt; WhipZoneRatio×腿总长 的近根区，把腿向量单 tick
+	/// 变化弦长钳到 WhipChordRatio×平均腿向量长（≈36°/tick，正常摆动都发生在大 d 区、
+	/// 相对位移远小于 d，不会触碰）。足端不反推身体，随后的地形阶段照常修穿透。
+	/// </summary>
+	private void LimitNearRootWhip()
+	{
+		if (KneeStepBudgetRatio <= 0f)
+		{
+			return;
+		}
+		Vector3 lastRelative = LastPos - LastRootPos;
+		Vector3 relative = Pos - RootPos;
+		float lastLength = lastRelative.Length();
+		float length = relative.Length();
+		if (lastLength <= 1e-6f || length <= 1e-6f)
+		{
+			return;
+		}
+		float upper = Mathf.Max(UpperLength, 1e-4f);
+		float lower = Mathf.Max(LowerLength, 1e-4f);
+		if (Mathf.Min(lastLength, length) >= (upper + lower) * WhipZoneRatio)
+		{
+			return;
+		}
+		Vector3 change = relative - lastRelative;
+		float changeLength = change.Length();
+		float cap = WhipChordRatio * 0.5f * (lastLength + length);
+		if (changeLength <= cap)
+		{
+			return;
+		}
+		Vector3 corrected = lastRelative + change * (cap / changeLength);
+		Vector3 shift = RootPos + corrected - Pos;
+		Pos += shift;
+		Vel += shift;
+	}
+
 	/// <summary>
 	/// 足端只被根部单侧拉住，不反推身体。上限小于上下腿总长，确保 IK 不会完全拉直；
 	/// 下限处理上下腿不等长时的几何不可解区。
@@ -1111,15 +1165,76 @@ public sealed class SpiderLeg
 			}
 			pole = SafeNormal(previous.Lerp(poleTarget, PoleSmoothing), previous);
 		}
-		BendPole = pole;
-
 		float along = (upper * upper - lower * lower + solvedDistance * solvedDistance)
 			/ (2f * solvedDistance);
 		float heightSq = Mathf.Max(0f, upper * upper - along * along);
 		float height = Mathf.Sqrt(heightSq);
+		if (KneeStepBudgetRatio > 0f && _hasSolvedIk)
+		{
+			pole = ApplyKneeStepBudget(axis, along, height, pole);
+		}
+		BendPole = pole;
 		KneePos = RootPos + axis * along + pole * height;
 		_lastIkAxis = axis;
 		_hasSolvedIk = true;
+	}
+
+	/// <summary>
+	/// 在保持两段骨长精确成立的前提下钳制膝点单 tick 位移。解出的膝点只自由在
+	/// 「绕腿轴、半径 height 的圆」上（圆上任意角都满足上/下段长度）；剧烈 tick
+	/// （腿轴近乎反转、足端贴近腿根）时平滑 pole 会让膝点沿圆瞬移接近整段腿长。
+	/// 这里先取圆上离上一 tick 膝点最近的弯折角，再在预算弧内尽量转回平滑 pole；
+	/// 预算装不下的剩余位移是腿根/足端自身运动强加的，按可行最小值输出。
+	/// </summary>
+	private Vector3 ApplyKneeStepBudget(Vector3 axis, float along, float height,
+		Vector3 smoothedPole)
+	{
+		float upper = Mathf.Max(UpperLength, 1e-4f);
+		float lower = Mathf.Max(LowerLength, 1e-4f);
+		float budget = KneeStepBudgetRatio * (upper + lower);
+		Vector3 lastLocal = LastKneePos - LastRootPos;
+		Vector3 candidate = axis * along + smoothedPole * height;
+		if ((candidate - lastLocal).LengthSquared() <= budget * budget)
+		{
+			return smoothedPole;
+		}
+
+		Vector3 planar = lastLocal - axis * lastLocal.Dot(axis);
+		float planarLength = planar.Length();
+		float axial = along - lastLocal.Dot(axis);
+		float doubled = 2f * height * planarLength;
+		if (planarLength < 1e-6f || doubled < 1e-10f)
+		{
+			// 上一膝点几乎落在腿轴上（或本 tick 完全伸直）：圆上各角与它近等距，
+			// 角度选择改变不了位移量，保留平滑 pole。
+			return smoothedPole;
+		}
+		Vector3 nearPole = planar / planarLength;
+
+		// 圆上距上一膝点的平方距离 D²(φ) = axial² + height² + planar² − doubled·cosφ，
+		// φ 为与最近角 nearPole 的夹角，D 随 φ∈[0,π] 单调增。
+		float baseSq = axial * axial + height * height
+			+ planarLength * planarLength;
+		if (baseSq - doubled >= budget * budget)
+		{
+			// 最近角也超预算：位移由腿根/足端运动强加，取可行最小值。
+			return nearPole;
+		}
+		float cosBudget = Mathf.Clamp(
+			(baseSq - budget * budget) / doubled, -1f, 1f);
+		float budgetAngle = Mathf.Acos(cosBudget);
+		float smoothAngle = Mathf.Acos(
+			Mathf.Clamp(nearPole.Dot(smoothedPole), -1f, 1f));
+		if (smoothAngle <= budgetAngle)
+		{
+			return smoothedPole;
+		}
+
+		Vector3 tangent = axis.Cross(nearPole);
+		float sign = tangent.Dot(smoothedPole) >= 0f ? 1f : -1f;
+		Vector3 rotated = nearPole * Mathf.Cos(budgetAngle)
+			+ tangent * (sign * Mathf.Sin(budgetAngle));
+		return SafeNormal(rotated, nearPole);
 	}
 
 	private Vector3 ParallelTransportPole(Vector3 pole, Vector3 oldAxis, Vector3 newAxis,

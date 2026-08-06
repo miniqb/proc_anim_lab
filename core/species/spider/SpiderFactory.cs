@@ -158,6 +158,16 @@ public static class SpiderFactory
     ///    会让第 4 对的死区达 0.19m（腿长 30%），地形 MTD 往内推、可达约束往外推，
     ///    <c>EnsureReachableAfterTerrain</c> 的四次交替投影不收敛，足端被兜底瞬移
     ///    0.9m（实测 course 路线膝跳变 105% > 88% 门）。保留「股节 ≥ 胫节」的原作朝向。
+    ///
+    /// 2026-08-06 场景门修复轮后 7 条场景路线 + gait 全绿（长腿轻身的三个结构性问题
+    /// 与对应修复见 <see cref="SpiderBreedParams.KneeStepBudgetRatio"/>、
+    /// <c>SpiderLeg.LimitNearRootWhip</c>、沙盒 <c>TurnArenaMinX</c>/<c>--gait-throttle</c>
+    /// 与下方 touchdownLeadRatios 注释；CLAUDE.md 同轮段落有完整链路）。复现：七条场景
+    /// 路线与既有两只共用命令（<c>--breed=spider-lean --route=course|turn|narrow-wall|
+    /// wall-l|wall-ceiling</c>）；gait 为
+    /// <c>--route=gait --spawn=11,0.55,8 --gait-throttle=0.6 --determinism=300</c>
+    /// （快巡航品种在 24m 地板上给不出全油门 200 tick 观察窗，降油门是品种缩放变体）。
+    /// 本预设仍不进回归矩阵；矩阵化前先重跑上述八条确认全绿。
     /// </summary>
     public static SpiderBreedParams LeanSpider()
     {
@@ -180,6 +190,14 @@ public static class SpiderFactory
             RideHeight = 0.26f,
             StallReleaseTicks = 16,
             ConstraintIterations = 4,
+            // 长腿 + 轻小身体的结构性问题：足端贴近腿根（d 低至 0.10~0.33，远小于
+            // MaxReach 0.63~0.67）时，身体被约束甩动一次（实测 rootStep 0.24~0.26）
+            // 就让腿轴单 tick 旋转 90°~130°，膝点作为 ~0.55L 的刚性杠杆沿圆瞬移
+            // 0.9~1.04 倍腿长（course 实测）。余弦钳制管不住轴旋转（事发 tick 的
+            // cos 全程在 0.61~0.75，[0.2,0.98] 带内），只能钳膝点位移本身。
+            // 0.72 < turn 路线的 0.82 与通用 0.88 门，且高于全部路线的有机峰值
+            // （wall-l 0.698）。既有两只保持 0（关闭），膝解算逐位不变。
+            KneeStepBudgetRatio = 0.72f,
         };
         // 头胸与腹：两球跨度 0.085+0.10+0.115 = 0.30m ≈ 原作单球直径 0.31m。
         p.BodySegments.Add(new BodySegmentSpec
@@ -206,7 +224,13 @@ public static class SpiderFactory
         // 但收回已验证可行带。
         float[] fanAngles = { 56f, 20f, -20f, -56f };
         float[] longitudinalOffsets = { 0.05f, 0.02f, -0.01f, -0.04f };
-        float[] touchdownLeadRatios = { 0.55f, 0.48f, 0.40f, 0.33f };
+        // AEP lead 不沿用 large 的前大后小递减（0.55..0.35）：冻结世界 AEP 在摆动+抓握的
+        // ~7 tick 里被身体前进吃掉约「7×速度÷MaxReach」的相对超前量，lean 巡航快、
+        // 腿长归一化后衰减 ≈0.6~0.9，后两对若沿用 0.40/0.33 会让落点恒在腿根之后，
+        // gait 电池实测后腿平均复位只剩 0.04×腿长、微步 92%（落地即再抬的极限环）。
+        // 抬到 0.45/0.48 后 gait（0.6 油门）rear 复位 0.288、微步 0，7 条场景路线余量
+        // 同步改善（course 膝跳 0.72→0.67）。
+        float[] touchdownLeadRatios = { 0.55f, 0.48f, 0.45f, 0.48f };
         for (int pair = 0; pair < 4; pair++)
         {
             p.LegPairs.Add(new LegPairSpec
@@ -458,6 +482,7 @@ public static class SpiderFactory
                     FeetDown = spec.FeetDown,
                     PairLateral = spec.PairLateral,
                     ProbeReach = spec.ProbeReach,
+                    KneeStepBudgetRatio = p.KneeStepBudgetRatio,
                 };
                 pair[sideIndex].InitializePose(forward, support);
                 controller.Legs.Add(pair[sideIndex]);

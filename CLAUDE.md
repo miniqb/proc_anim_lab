@@ -215,6 +215,31 @@
 > --turn=left|right|around` 另以真实 RootPos 腿槽覆盖小/大六项；最坏 large-around 在
 > 55 tick 后不再跨身，92 tick 内恢复站距平衡，零 pole 翻面。既有直行步态、
 > 小/大窄墙、墙—墙 L 角和墙→天花板路线继续通过。
+>
+> **spider-lean 场景门修复轮（2026-08-06）**：`spider-lean`（b40b4cc，按原作群居小蜘蛛
+> size=0.6 换算的长腿轻身预设）从交接时的 5/7 修到 7 条场景路线 + gait 全绿，既有
+> 小/大 16 项矩阵哈希与 spider_smoke 逐位不变。三个根因全部与交接单初判不同：
+> ① course 膝跳 104% 的元凶不是缺余弦钳制（事发 tick 的 cos 全程在 [0.2,0.98] 带内
+> 不咬合），而是**足端贴近腿根时腿轴单 tick 近乎反转**（落地减速 rootStep 0.25 + 足端
+> 反向 0.40，相对位移 ≥ d）——膝点被两球交线圆强制甩 0.9~1.04L。修复 = 核心两件
+> opt-in（`SpiderBreedParams.KneeStepBudgetRatio`，默认 0 = 既有品种膝解算逐位不变；
+> KneePos/BendPole 在 FoldSpiderLegs 进哈希，opt-in 是硬要求）：膝点连续性预算
+> （膝自由度只在绕腿轴的圆上，圆上任意角都精确满足两段骨长 → 先取离上一 tick 膝点
+> 最近角、预算弧内转回平滑 pole，ikError 恒 0）+ 近根鞭甩钳制（d < 0.5 腿长时腿向量
+> 单 tick 变化弦长 ≤ 0.62×平均长 ≈ 36°/tick，正常摆动在大 d 区不触碰）。course 膝跳
+> 1.036→0.666，finalInwardGrip 自愈归零。
+> ② turn-right supportUp 0.891 是**场地污染不是姿态问题**：lean 巡航 0.063m/tick，
+> 120 tick 引导段从 x=11 走到 x≈3.4，整只钻进坡道板下（坡底面在 x≈2.3~4.5 只离地
+> 0~0.7m），脚抓上坡底楔缝顶（法线 (0.309,−0.951,0)＝Ramp 底面）。修复 = 沙盒
+> `TurnArenaMinX=7.2` 引导段下界（small/large 实测停在 7.47/7.92 从不触及，哈希不变；
+> 7.2 时任何品种足端+射线可达半径 ≤0.88m 对坡道与 WallX 全部出清）。
+> ③ gait 对 lean 的问题除跑道外还有**冻结 AEP 衰减**：摆动+抓握 ~7 tick × 巡航速度
+> ÷ 腿长归一化 ≈ 0.6~0.9 超前量损失，后两对 lead 0.40/0.33 被吃光 → 落点恒在腿根后、
+> rear 复位 0.04L、微步 92%（落地即再抬极限环，A/B 证实与新钳制无关、b40b4cc 即有）。
+> 修复 = 沙盒 `--gait-throttle`（默认 1 = gait-large 逐位不变）+ lean 后两对 lead 提到
+> 0.45/0.48；`--route=gait --spawn=11,0.55,8 --gait-throttle=0.6 --determinism=300` 下
+> rear 复位 0.288、微步 0、紧急步 0，全部 gait 门 PASS。lean 仍不进矩阵（矩阵化留待
+> 下一轮），七路线复现命令见 `SpiderFactory.LeanSpider()` 文档注释。
 > **M6 Cicada 产物（2026-07-30）**：新增 `CicadaParams` / `CicadaFactory` /
 > `CicadaLocomotionController`，与 Lizard 后端只共享 Body、连接和 `ITerrainQuery`。双 chunk
 > 身体按 RW 尺寸换算，固定序采用 `Body.Tick → Cicada Act`；支持完整 3D 输入、弱悬停锚、

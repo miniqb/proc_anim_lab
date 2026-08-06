@@ -175,4 +175,15 @@ public sealed class SpiderBreedParams
 
     /// <summary>身体每 tick 的刚性距离约束松弛次数。</summary>
     public int ConstraintIterations = 4;
+
+    /// <summary>
+    /// 膝点连续性预算：单 tick 内膝点相对腿根的位移上限，单位为腿总长（上段+下段）
+    /// 的倍数；0 = 关闭（默认，既有品种的膝解算路径逐位不变）。两段 IK 的膝点被
+    /// 腿根/足端唯一确定到「绕腿轴的圆」上，而圆上任意弯折角都精确满足两段骨长；
+    /// 长腿品种在剧烈 tick（身体被约束甩动、足端贴近腿根时腿轴单 tick 近乎反转）
+    /// 会让膝点沿圆瞬移接近整段腿长。开启后仅调整圆上的弯折角：先取靠近上一 tick
+    /// 膝点的可行角，再在预算内尽量转回平滑 pole 目标；预算装不下的剩余位移来自
+    /// 腿根/足端自身运动，无法在精确 IK 内消除，按可行最小值输出。
+    /// </summary>
+    public float KneeStepBudgetRatio;
 }
