@@ -431,7 +431,8 @@
 > 评审修复轮其余 12 套按各自钉死基线复跑 GREEN。数值表、3D 取舍与偏离清单见
 > `docs/dropbug_controller.md`。
 >
-> **正式渲染层技术验证轮（2026-08-05，Lizard + Centipede + Vulture；同日追加 DaddyLongLegs）**：
+> **正式渲染层技术验证轮（2026-08-05，Lizard + Centipede + Vulture；同日追加 DaddyLongLegs；
+> 2026-08-06 追加 Spider + Humanoid）**：
 > 反编译全部十个
 > 物种 Graphics 类 + `GraphicsModule`/`TriangleMesh`/`RopeGraphic` 渲染基建，提炼 RW
 > "去球感"手法词汇表并落地 3D 验证件，真相源 =
@@ -439,22 +440,38 @@
 > `scripts/render/`（游戏程序集，不进 core）：共享基建（`SplineSampler` Catmull-Rom /
 > `TubeMeshBuilder` 平行传输扫管 + 鳍片 + 羽毛刀片 + 细分八面体小瘤 / `TwoBoneIk` 余弦
 > 钳制 [0.2,0.98]）+
-> 四个 `IFormalRenderer`（蜥蜴身尾连续扫管·显示半径与物理解耦·背刺·足端识别色；蜈蚣
+> 六个 `IFormalRenderer`（蜥蜴身尾连续扫管·显示半径与物理解耦·背刺·足端识别色；蜈蚣
 > 暗底管 + 逐节真实 SupportNormal 定向背甲 + 甲片间隙即节间暗环；秃鹫 K4 正交基替换派
 > 躯干 + 羽毛刀片扇·逐羽滞后低通；长腿爸爸共享平黑材质球团免 metaball 融合 + 双笔画
 > X 眼·邻球渲染半径遮埋门 + 黑根渐染触手·BacktrackFrom 断管 + seed 冻结离轴疣珠 +
-> 渲染侧 verlet 垂索/死腿）。`FormalRendererFactory` 按适配器分派，未覆盖物种
+> 渲染侧 verlet 垂索/死腿；**蜘蛛**三点 Bezier 变径体管（腹剖面 = 沿弧长椭圆叶 + 1.6×R
+> 尾展 = 修长椭腹，细腰/尾锥由椭圆两端自然给出；tailEnd/呼吸/毛链弹性全部收硬去 Q 弹）·
+> pedicel 细腰双叶剪影·内核
+> Root/Knee/Foot 两段 IK 直接消费成股/膝瘤/胫/爪尖四件·verlet 密细腹毛黑根亮尖线性渐变 +
+> 贴体四件套（锥台链锚定/排斥·肉身剖面避后极·薄壳钳制·40/60 后掠外梳——球面/球并集
+> 锚定会在细腰/尾锥斜向悬空毛根，四轮实测详见渲染研究 §5）·渲染侧 tailEnd/呼吸，
+> spider-small 黄毛/large Spitter 红毛/lean 全黑近无毛，
+> 不移植 deadLeg（腿真实承力）与 flip；**人形拾荒者**五点脊柱背凸腰点驼背扫管·近黑竖长
+> 头椭球 + 头色牙刀片刺出轮廓 + 满饱和对比色斜吊眼（眨眼/瞳孔/昏迷半睁）+ seed 冻结
+> eartlers 分支模板 dominance 定尺寸·脖管体→头顶点色渐变·TwoBoneIk 肘膝 + 深色手套手瘤·
+> 持物/投掷画长矛钉 MainHandPos/Dir，scavenger 土黄/brute 暗棕巨角红缝眼/waif 灰绿
+> 冰瞳追视）。`FormalRendererFactory` 按适配器分派（Lizard/Centipede/Vulture/Humanoid；
+> Daddy/Spider 走各自专用沙盒），未覆盖物种
 > 回落白盒；沙盒 V 键切换、`--formal=off`。视觉验证回路 = `--screenshot=path[@tick]` +
-> `--camfollow=ox,oy,oz`/`--cam=…` + `--autowalk=dx,dz`（渲染旁路，不进物理/哈希）；
+> `--camfollow=ox,oy,oz`/`--cam=…` + `--autowalk=dx,dz`（渲染旁路，不进物理/哈希；
+> `--autowalk` 含人形分支）；
 > Daddy 专用沙盒同构复刻（`--daddy-screenshot/--daddy-cam/--daddy-camfollow/`
-> `--daddy-formal=off`，V 键同义，正式视图下地形调试线随白盒隐藏）。
+> `--daddy-formal=off`，V 键同义，正式视图下地形调试线随白盒隐藏）；蜘蛛专用沙盒同构
+> 接线但沿无前缀旗标名（参数空间独立），正式视图同样压地形调试线。
 > **sRGB 顶点色教训**：tonemap 环境下 `StandardMaterial3D` 顶点色默认按线性解读，剪影黑
 > 被抬亮 ≈4×；Daddy 走 `TubeMeshBuilder.Build(srgbVertexColors:true)` 与球体 AlbedoColor
-> 同空间（管根融球的前提），既有三物种在线性解读下调色定型、翻转需重调（遗留）。
+> 同空间（管根融球的前提），Spider/Humanoid 两个新件同走 true 在所见空间调色；既有三物种
+> 在线性解读下调色定型、翻转需重调（遗留）。
 > 渲染层对内核**只读**（化妆状态渲染侧私有：呼吸/bend pole/逐节 up/逐羽方向长度低通/
-> 垂索 verlet/疣珠普查），
+> 垂索 verlet/疣珠普查/蛛毛与尾粒子/表情标量与眨眼 PRNG），
 > 落地前后 45 项主矩阵 GREEN、default 哈希逐位命中基线；Daddy 落地后 40 项专项矩阵
-> GREEN、全部哈希基线不变。遗留打磨与后续物种拼装清单见渲染研究文档 §5。
+> GREEN；Spider+Humanoid 落地后蜘蛛专项 16 项与主矩阵 45 项 GREEN、全部哈希基线不变。
+> 遗留打磨与后续物种拼装清单见渲染研究文档 §5。
 >
 > **RotationChunk 机制（M5 后追加，2026-07；≙ RW BodyChunk.rotationChunk 全套语义，反编译穷尽核实：全程序集 30 处 rotationChunk 引用 + 38 行 Rotation 读取）**：`BodyChunk.RotationChunk` 朝向参照 + 派生 `Rotation = (Pos−参照.Pos).normalized`（退化照抄 RW：null → Up ≙ 显式回落 (0,1)，两点近重合（模长 ≤1e-5 = Unity kEpsilon）→ 零向量 ≙ Unity normalized 原语义，消费端自行回退）；建 `ChunkConnection` 时两端自动互绑（≙ RW 构造副作用，后建覆盖、不分连接类型）；工厂装配完**显式钉定**脊柱（≙ RW Deer 构造后重申指向的先例）：头 → 髋（Rotation = 头髋长基线 = 全身轴前向）、中段 → 后一节（本段轴；3 节脊柱时即髋 ≙ RW 中→髋，四节以上不退化成跨关节长弦）、髋 → 头（指向后方，消费侧翻转）——不学 RW Lizard 靠「防折叠连接恰好最后建」的顺序巧合（我们的尾链建在最后，巧合会让髋参照尾根，软尾摆动污染步向）。消费端 = `LizardLocomotionController.TickLimbs` 每锚点步进方向（≙ LizardLimb `a = DirVec(rotationChunk→connection)` 后与目标 Lerp 0.4；髋锚翻转 ≙ `connection.index==2` 的 `a *= -1`，按锚点判定不写死索引）：头/髋锚 = 脊柱长基线轴，**与旧全局 stepDir 按 IEEE 逐位相等**（负号与除法可交换）——default/sprinter/heavy/wall/stand/carrot 六条矩阵哈希 + smoke 基线改动后逐位未动，自带对照组；唯 hexapod（中段锚腿对改跟本段朝向）按设计漂移换新基线。拓扑不进 `DeterminismHasher`（纯装配期引用）；smoke `[CORE-ROTATION]` 结构断言钉住互绑/覆盖/钉定不变量。出生摆位的世界 Z 侧向仅是一次性相位种子（出生脊柱竖叠、朝向退化竖直），运行时脚位全由每锚点 stepDir 接管。
 >

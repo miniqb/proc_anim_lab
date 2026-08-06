@@ -3,7 +3,8 @@ using ProcAnimLab.Sandbox;
 namespace ProcAnimLab.Render;
 
 /// <summary>正式渲染器分派：按物种适配器创建对应渲染器；未覆盖的物种返回 null（沙盒回落
-/// debug 白盒渲染）。技术验证顺序：Lizard → Centipede → Vulture（渲染研究 §4/§5）。</summary>
+/// debug 白盒渲染）。技术验证顺序：Lizard → Centipede → Vulture → Humanoid
+/// （渲染研究 §4/§5；Daddy/Spider 各有专用沙盒，不走本工厂）。</summary>
 internal static class FormalRendererFactory
 {
     public static IFormalRenderer? TryCreate(ISandboxCreatureAdapter creature) => creature switch
@@ -15,6 +16,9 @@ internal static class FormalRendererFactory
         VultureSandboxCreatureAdapter vulture =>
             new VultureFormalRenderer(vulture.Controller, vulture.Breed.Name,
                 vulture.Breed.FeathersPerWing),
+        HumanoidSandboxCreatureAdapter humanoid =>
+            new HumanoidFormalRenderer(humanoid.Controller, humanoid.DisplayName,
+                humanoid.Driver),
         _ => null,
     };
 }

@@ -96,6 +96,15 @@ public partial class SpiderSandboxWorld : Node3D
     private RayDebugDraw _rayDebug = null!;
     private Vector3 _gravityPerTick;
 
+    // —— 正式渲染 + 视觉验证回路（渲染旁路：不进物理/哈希；与主沙盒同名旗标）——
+    private ProcAnimLab.Render.IFormalRenderer? _formalRenderer;
+    private bool _formalView = true;       // --formal=off 或 V 键关闭
+    private string? _screenshotPath;       // --screenshot=path[@tick]：截图后退出
+    private long _screenshotTick = 90;
+    private Vector3? _autoWalkDir;         // --autowalk=dx,dz：交互模式恒定行走（配截图）
+    private (Vector3 Pos, Vector3 LookAt)? _camOverride; // --cam=px,py,pz,lx,ly,lz
+    private Vector3? _camFollowOffset;     // --camfollow=ox,oy,oz：相机跟随身体注视
+
     private Route _route = Route.Course;
     private TurnKind _turnKind = TurnKind.Left;
     private Vector3 _spawn = new(0f, 0.55f, 0f);
@@ -304,8 +313,31 @@ public partial class SpiderSandboxWorld : Node3D
             _breedUi.SyncSelection(Array.FindIndex(breeds, candidate => candidate.Name == _breed.Name));
         }
 
+        if (_camOverride is { } cam)
+        {
+            _camera.Position = cam.Pos;
+            _camera.LookAt(cam.LookAt, Vector3.Up);
+            _camYaw = _camera.Rotation.Y;
+            _camPitch = _camera.Rotation.X;
+        }
+
         GD.Print($"[SPIDER-SANDBOX] ready tps={Engine.PhysicsTicksPerSecond} " +
                  $"breed={_breed.Name} route={_route} determinism={(_determinismTicks > 0 ? "on" : "off")}");
+    }
+
+    private void RebuildFormalRenderer()
+    {
+        _formalRenderer?.Clear();
+        _formalRenderer = new ProcAnimLab.Render.SpiderFormalRenderer(_controller, _breed.Name);
+        _formalRenderer.Build(this);
+        ApplyRenderView();
+    }
+
+    private void ApplyRenderView()
+    {
+        bool formalOn = _formalRenderer is not null && _formalView;
+        _renderer.SetVisible(!formalOn);
+        _formalRenderer?.SetVisible(formalOn);
     }
 
     private void SpawnSpider(SpiderBreedParams breed, Vector3 origin)
@@ -321,6 +353,7 @@ public partial class SpiderSandboxWorld : Node3D
         _drag.Release();
         _renderer.Clear();
         _renderer.Build(this, _controller);
+        RebuildFormalRenderer();
         _previousPoles.Clear();
         _sideRecoveryRuns.Clear();
         foreach (SpiderLeg leg in _controller.Legs)
@@ -481,6 +514,14 @@ public partial class SpiderSandboxWorld : Node3D
 
     private void SampleInteractiveInput()
     {
+        if (_autoWalkDir is { } auto)
+        {
+            // --autowalk：截图/视觉验证用的恒定行走，优先于键鼠。
+            _controller.MoveTarget = null;
+            _controller.MoveDir = auto.LengthSquared() < 1e-10f ? Vector3.Zero : auto.Normalized();
+            _controller.RunSpeed = auto.LengthSquared() < 1e-10f ? 0f : 1f;
+            return;
+        }
         if (WantCameraFly)
         {
             _controller.MoveDir = Vector3.Zero;
@@ -2274,9 +2315,48 @@ public partial class SpiderSandboxWorld : Node3D
             return;
         }
         UpdateCameraFly((float)delta);
-        _renderer.Draw((float)Engine.GetPhysicsInterpolationFraction());
+        float alpha = (float)Engine.GetPhysicsInterpolationFraction();
+        if (_camFollowOffset is { } camOffset)
+        {
+            // 截图/视觉验证的跟踪相机：钉在身体质心偏移处注视质心（纯渲染，不进物理）。
+            Vector3 focus = _controller.Primary.LerpPos(alpha)
+                .Lerp(_controller.Rear.LerpPos(alpha), 0.5f);
+            _camera.Position = focus + camOffset;
+            _camera.LookAt(focus, Vector3.Up);
+        }
+        bool formalOn = _formalRenderer is not null && _formalView;
+        if (formalOn)
+        {
+            _formalRenderer!.Draw(alpha, (float)delta);
+        }
+        else
+        {
+            _renderer.Draw(alpha);
+        }
+        // 地形调试线在正式视图下隐藏，但 Draw 必须每帧调用（首帧 ClearSurfaces——跳过
+        // 会把上一帧线框永久留在屏上，daddy 轮教训）；临时压 Enabled 并还原 F3 状态。
+        bool terrainEnabled = _rayDebug.Enabled;
+        _rayDebug.Enabled = terrainEnabled && !formalOn;
         _rayDebug.Draw(_camera, _controller.Primary.Pos,
             _controller.LastMoveTargetKind, _controller.LastMoveTarget);
+        _rayDebug.Enabled = terrainEnabled;
+        MaybeCaptureScreenshot();
+    }
+
+    /// <summary>--screenshot 视觉验证回路：到达指定 tick 后保存视口帧并退出。
+    /// 渲染专用旁路——不触碰物理与哈希；headless 下图像为空，别在矩阵里用。</summary>
+    private void MaybeCaptureScreenshot()
+    {
+        if (_screenshotPath is null || _tick < _screenshotTick)
+        {
+            return;
+        }
+        Image img = GetViewport().GetTexture().GetImage();
+        Error err = img.SavePng(_screenshotPath);
+        GD.Print($"[SPIDER-SANDBOX] screenshot {(err == Error.Ok ? "saved" : $"FAILED ({err})")}: " +
+            $"{_screenshotPath} (tick {_tick})");
+        _screenshotPath = null;
+        GetTree().Quit(err == Error.Ok ? 0 : 3);
     }
 
     private bool WantCameraFly =>
@@ -2339,6 +2419,13 @@ public partial class SpiderSandboxWorld : Node3D
         {
             _rayDebug.Enabled = !_rayDebug.Enabled;
             GD.Print($"[SPIDER-SANDBOX] ray debug {(_rayDebug.Enabled ? "on" : "off")}");
+            return;
+        }
+        if (key.PhysicalKeycode == Key.V)
+        {
+            _formalView = !_formalView;
+            ApplyRenderView();
+            GD.Print($"[SPIDER-SANDBOX] formal render {(_formalView ? "on" : "off")}");
             return;
         }
         if (key.PhysicalKeycode < Key.Key1 || key.PhysicalKeycode > Key.Key3)
@@ -2444,6 +2531,49 @@ public partial class SpiderSandboxWorld : Node3D
                 else if (arg.StartsWith("--yank="))
                 {
                     _yankTick = long.Parse(arg["--yank=".Length..], inv);
+                }
+                else if (arg.StartsWith("--screenshot="))
+                {
+                    // path[@tick]：LastIndexOf 容忍路径里出现 @。
+                    string spec = arg["--screenshot=".Length..];
+                    int at = spec.LastIndexOf('@');
+                    if (at > 0)
+                    {
+                        _screenshotPath = spec[..at];
+                        _screenshotTick = long.Parse(spec[(at + 1)..], inv);
+                    }
+                    else
+                    {
+                        _screenshotPath = spec;
+                    }
+                }
+                else if (arg.StartsWith("--cam="))
+                {
+                    string[] v = arg["--cam=".Length..].Split(',');
+                    if (v.Length != 6) throw new FormatException("cam 需要 px,py,pz,lx,ly,lz");
+                    _camOverride = (
+                        new Vector3(float.Parse(v[0], inv), float.Parse(v[1], inv),
+                            float.Parse(v[2], inv)),
+                        new Vector3(float.Parse(v[3], inv), float.Parse(v[4], inv),
+                            float.Parse(v[5], inv)));
+                }
+                else if (arg.StartsWith("--camfollow="))
+                {
+                    string[] v = arg["--camfollow=".Length..].Split(',');
+                    if (v.Length != 3) throw new FormatException("camfollow 需要 ox,oy,oz");
+                    _camFollowOffset = new Vector3(float.Parse(v[0], inv),
+                        float.Parse(v[1], inv), float.Parse(v[2], inv));
+                }
+                else if (arg.StartsWith("--autowalk="))
+                {
+                    string[] v = arg["--autowalk=".Length..].Split(',');
+                    if (v.Length != 2) throw new FormatException("autowalk 需要 dx,dz");
+                    _autoWalkDir = new Vector3(float.Parse(v[0], inv), 0f,
+                        float.Parse(v[1], inv));
+                }
+                else if (arg == "--formal=off")
+                {
+                    _formalView = false;
                 }
                 else
                 {

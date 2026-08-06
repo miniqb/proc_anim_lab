@@ -115,6 +115,30 @@ public sealed class SpiderBodyRenderer
         _lineNode = null;
     }
 
+    /// <summary>整体显隐（正式渲染 V 键切换用）：只切可见性，Draw 照常推进——切回白盒时
+    /// 位置/配色立即是新鲜的。</summary>
+    public void SetVisible(bool visible)
+    {
+        foreach ((_, MeshInstance3D node) in _chunks)
+        {
+            if (GodotObject.IsInstanceValid(node))
+            {
+                node.Visible = visible;
+            }
+        }
+        foreach ((_, MeshInstance3D node) in _feet)
+        {
+            if (GodotObject.IsInstanceValid(node))
+            {
+                node.Visible = visible;
+            }
+        }
+        if (_lineNode is not null && GodotObject.IsInstanceValid(_lineNode))
+        {
+            _lineNode.Visible = visible;
+        }
+    }
+
     public void Draw(float interpolation)
     {
         if (_controller is null)

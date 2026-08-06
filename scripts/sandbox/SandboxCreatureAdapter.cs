@@ -326,6 +326,9 @@ internal sealed class HumanoidSandboxCreatureAdapter : ISandboxCreatureAdapter
 
     public HumanoidLocomotionController Controller => _driver.Controller;
 
+    /// <summary>正式渲染器需要驱动器的宿主态观测（飞行道具位置）；只读传递。</summary>
+    internal HumanoidSandboxDriver Driver => _driver;
+
     public string StableId => $"humanoid/{_driver.Breed.Name}";
     public string DisplayName => _driver.Breed.Name;
     public Body Body => Controller.Body;

@@ -149,8 +149,44 @@ public sealed class HumanoidRenderer
 		_controller = null;
 	}
 
+	/// <summary>整体显隐（正式渲染 V 键切换用）：只切可见性，Draw 照常推进——切回白盒时
+	/// 位置/配色立即是新鲜的。撑点/道具球有各自的逐帧 Visible 写入，由 Draw 侧的
+	/// visibleOverride 联动（见 Draw 注释）。</summary>
+	public void SetVisible(bool visible)
+	{
+		_visible = visible;
+		foreach ((_, MeshInstance3D node) in _spheres)
+		{
+			if (GodotObject.IsInstanceValid(node))
+			{
+				node.Visible = visible;
+			}
+		}
+		foreach ((_, MeshInstance3D node) in _feet)
+		{
+			if (GodotObject.IsInstanceValid(node))
+			{
+				node.Visible = visible;
+			}
+		}
+		foreach ((_, MeshInstance3D node) in _hands)
+		{
+			if (GodotObject.IsInstanceValid(node))
+			{
+				node.Visible = visible;
+			}
+		}
+		if (_lineNode is not null && GodotObject.IsInstanceValid(_lineNode))
+		{
+			_lineNode.Visible = visible;
+		}
+	}
+
+	private bool _visible = true;
+
 	/// <summary>thrownProp = 交互投掷后的飞行道具位置（null = 无）；
-	/// showKnuckle = KnucklePos 撑点球是否可见（挂 F3 射线调试开关——物理层抽象量属调试观测）。</summary>
+	/// showKnuckle = KnucklePos 撑点球是否可见（挂 F3 射线调试开关——物理层抽象量属调试观测）。
+	/// 撑点/道具球的逐帧 Visible 写入会与 SetVisible 状态求与——白盒隐藏时不闪现。</summary>
 	public void Draw(float t, Vector3? thrownProp, bool showKnuckle)
 	{
 		if (_controller is null)
@@ -186,7 +222,7 @@ public sealed class HumanoidRenderer
 
 		if (_knuckleNode is not null)
 		{
-			_knuckleNode.Visible = showKnuckle && _controller.KnucklePos is not null;
+			_knuckleNode.Visible = _visible && showKnuckle && _controller.KnucklePos is not null;
 			if (_controller.KnucklePos is { } kp)
 			{
 				_knuckleNode.Position = kp;
@@ -194,7 +230,7 @@ public sealed class HumanoidRenderer
 		}
 		if (_propNode is not null)
 		{
-			bool showProp = thrownProp is not null || _controller.Carrying;
+			bool showProp = _visible && (thrownProp is not null || _controller.Carrying);
 			_propNode.Visible = showProp;
 			if (thrownProp is { } prop)
 			{

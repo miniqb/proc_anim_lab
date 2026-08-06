@@ -226,9 +226,10 @@ RW 是侧视 2D，"深度"全是假的，但每个 hack 都指名了 3D 里该�
   A+B 的低配变体；Deer/Daddy 的联集策略独特但风险低（同色 unshaded 联集在 Godot 里是
   已知成立的），且鹿角生成器移植是独立小项目；人形等主项目造型裁决（Gate D）后再做正式皮。
 
-## 5. 实施状态（2026-08-05 技术验证轮已落地；同日追加 DaddyLongLegs）
+## 5. 实施状态（2026-08-05 技术验证轮已落地；同日追加 DaddyLongLegs；
+## 2026-08-06 追加 Spider + Humanoid）
 
-四个验证件已实现于 `scripts/render/`（游戏程序集，依赖 Godot，不进 `core/`）：
+六个验证件已实现于 `scripts/render/`（游戏程序集，依赖 Godot，不进 `core/`）：
 
 - **共享基建**：`SplineSampler`（Catmull-Rom + smoothstep 剖面过渡）、`TubeMeshBuilder`
   （ImmediateMesh 每帧重发 + 平行传输 frame + CPU 包裹漫反射烘顶点色 + AddFin 鳍片 +
@@ -270,26 +271,93 @@ RW 是侧视 2D，"深度"全是假的，但每个 hack 都指名了 3D 里该�
     球写同一数值 → 屏幕同色。既有三物种的调色在线性解读下定型，翻转需整体重调（遗留）。
   - 三预设调色：daddy=黄橙 X 眼+橄榄黄梢（按用户参考图），terror=RW 大型正统蓝，
     brother=橄榄+棕橙眼（≙ 小型 plain）。
+- **SpiderFormalRenderer**（≙ BigSpiderGraphics；蜘蛛专用沙盒，不走 FormalRendererFactory；
+  逐行取证 = scratchpad spider_scav_render/bigspider_graphics.md）：
+  - **身体**：头前伸点→腹（双控制点）→渲染侧 tailEnd verlet 粒子的三点 Bezier 变径扫管
+    （≙ MakeLongMesh(7)；半径剖面**有意偏离**原作 `Sin(Pow(f,0.75)π)` 单峰——那个剖面在
+    3D 读作扁圆栗子，2026-08 按用户示意图改为**沿弧长的椭圆叶**：中心 f=0.62、半宽 0.36，
+    修长椭腹的细腰谷与尾收锥由椭圆两端自然给出），头叶瓣以第二峰并进同一条剖面（RW 独立
+    头椭圆 sprite 的单管等价）。tailEnd 挂腹后 1.6×腹半径 = 椭腹轴向长度来源（圆栗子时代
+    取 0.75×，拉远会拖成尖喙——椭圆剖面下该教训不再适用）；tailEnd 追踪与呼吸幅度全部
+    收硬（高阻尼 0.55 + 强回中 + 呼吸 ±2mm/毛鼓张 ±8%——软弹簧参数让后腹 Q 弹地晃，
+    用户实测不适合蜘蛛，微漂只保留「活物」底噪）。
+  - **腿**：内核两段 IK 姿态（Root/Knee/Foot **直接消费**——蜘蛛后端本就为此输出膝点）
+    画成股节/膝结小瘤/胫节/爪尖四件（≙ 屏幕三段贴图 1.5×/1.2×/1.2× 粗细梯度；直线管 +
+    膝瘤保锐利折角——Catmull-Rom 会把节肢感的硬关节磨圆）；股节起点沉向体轴 30% 点融根
+    （≙ 全腿肩点聚拢画法）；逐腿个体粗细 seed 冻结（≙ legsThickness 0.7~1.1）。
+  - **腹毛**：verlet 密细链阵（≙ scales 系统；密度按 2D 半圆弧→3D 球面换算 48/64/14——
+    稀疏粗毛的单根远侧遮挡弧读作悬空逗号，密细毛读作绒毯），线性黑根亮尖渐变（≙ RW
+    ApplyPalette 原式；曾用 pow(t,1.4) 压暗中段，横穿轮廓段在灰背景上隐形 = 假悬空）。
+    **贴体四件套**（悬空毛四轮实测逐层逼出）：① 根锚距 = 对本帧剖面**锥台链**二分求交再
+    微沉融根——球面与站球并集都会在细腰/尾锥的斜向鼓包上悬空 5~7cm（锥台链才是 loft 的
+    正确近似）；锚剖面只收**腹叶主导**且半径 ≥30% 峰值的「肉身」站——细尾管排除（锚上
+    近隐形细管 = 悬在肥腹旁），头叶瓣排除（前倾毛向的射线打中头叶 = 毛垂在脸前，RW 鳞毛
+    长腹背不长头脸），毛向普查另避开正后极（back ≥ −0.86）；② 自由节对锥台链穿透排斥（贴体耷拉读成花纹）；
+    ③ 整链贴体薄壳钳制（离面高度 ≤ 0.02+0.06t²，根紧梢松）——远侧毛弓离体面太高时弧根
+    被身体遮挡、只露弧梢 = 悬空逗号，壳内可见段永远连着轮廓线；④ 外梳方向 40% 径向 +
+    60% 表面切向后方（≙ RW 鳞毛整体向后掠）：后掠毛在远侧沿轮廓线方向伸出，且天然给出
+    参考图的「屁股毛边」。毛链同时承担 JaggedSquare 毛边职责。
+  - **螯肢**：头前一对短管 sin 蠕动（≙ mandibles RNV 抖），根部微染 accent。
+  - 有意偏离：不移植 deadLeg（RW 腿纯图形可装瘫，本项目腿真实承力会与迈步矛盾）、
+    不移植 flip/膝压平（2D 滚转伪装）。三预设：small=黄毛基准 / large=Spitter 红毛 /
+    lean=群居小蜘蛛气质（近乎无毛全黑细腿）。
+- **HumanoidFormalRenderer**（≙ ScavengerGraphics；主沙盒 FormalRendererFactory 分派；
+  逐行取证 = scratchpad spider_scav_render/scavenger_graphics.md）：
+  - **躯干**：五点脊柱扫管（头/脖/胸/**背凸腰点**/髋 ≙ drawPositions[5,2]）——驼背「?」
+    剪影的几何本体 = 腰点沿背侧法线外推 `Lerp(5,15,narrowWaist)` 的 3D 直译；宽度剖面
+    吃 fatness/narrowWaist 基因（沙漏楔）。背饰 = 脊背 UV 鳞片刀片阵（≙ LizardScale 复用，
+    dominance 定大小，sin 微摆）。尾 = 渲染侧 verlet 短锥链（0~4 节）。
+  - **头脸（怪异感核心）**：近黑竖长椭球（≙ light 0.05~0.2 生而近黑 + 头永不亮过身体
+    硬规则）+ **头色牙刀片**从脸下缘辐射刺出头轮廓（≙ TeethSprite——颅骨下颚锯齿而非
+    白牙，20%/颗缺牙、aggression→长牙）+ 微小满饱和对比色眼（斜吊向共同汇聚点
+    ≙ eyesAngle、眨眼抹零、昏迷 0.5 半睁死鱼眼、sympathy 个体带追视瞳孔）+
+    **eartlers 鹿角须**（≙ 2~4 对手工分支模板：主支上弯/分叉/鬓角/后枕，头局部系镜像展开、
+    dominance 定尺寸 `Lerp(15,35)px`、角尖染饰色）。头朝向 ≙ HeadDir 但**必须压掉竖直
+    分量**——本项目头挂胸上方 0.55m（RW 2D 头在前），照抄权重会仰面、牙横长（实测）。
+  - **脖管**：根粗头细中段掐一口 + **顶点色体→头渐变**（≙ 脖 customColor mesh——近黑头
+    从彩色身体上长出来不突兀的全部秘密）。
+  - **四肢**：Limb/Arm 无膝肘输出——渲染侧 TwoBoneIk + 私有 pole（臂=外后上肘、
+    腿=前向蹲膝）；臂细竿（≙ 0.75~2.75px）从肘起向头色渐变、手深色瘤（≙ handsHeadColor
+    手套 + HandB 抓握二态双瘤）；腿粗随体格（重型庞躯配牙签腿脱节，实测）；摆动腿脚板
+    方向混入本腿姿态（硬指行进向会悬空外飘成小旗，实测）。
+  - **表情标量**：blink/eyesOpen 状态机（nervous→勤眨、energy→睁速）+ 神经质待机微颤，
+    渲染侧私有 PRNG/sin，不进哈希。持物/投掷道具画**长矛**钉 MainHandPos/Dir
+    （≙ grasp 0 硬钉；飞行矛朝向 = 渲染侧前帧差分）。
+  - 三预设档案（性格 6 元组 + 手工定档色，形状基因仍 seed 冻结）：scavenger=土黄身黑脸
+    黄绿眼；brute=暗棕重型（dominance/aggression 高→巨黑角+长牙+缝眼红瞳）；
+    waif=灰绿瘦小（sympathy/nervous 高→大眼冰瞳追视+勤眨+微颤）。
+  - 两个新渲染器都走 `srgbVertexColors:true`（Daddy 轮教训：新件直接在所见空间调色）。
 
 沙盒集成：V 键切换正式/白盒；`--formal=off` 起动白盒；视觉验证回路 =
 `--screenshot=path[@tick]` + `--camfollow=ox,oy,oz`（跟踪相机）/`--cam=…`（定点）+
 `--autowalk=dx,dz`（恒定行走）。Daddy 专用沙盒同构复刻这套旗标（前缀制：
 `--daddy-screenshot/--daddy-cam/--daddy-camfollow/--daddy-formal=off`，V 键同义；正式视图下
 地形查询调试线随白盒一起隐藏——`RayDebugDraw.Draw` 每帧必须照常调用清面，只临时压
-Enabled）。验收：45 配置主矩阵含渲染层 GREEN、default 哈希逐位命中基线（渲染只读实证）；
-Daddy 落地后 40 配置专项矩阵 GREEN、全部哈希基线不变；截图对照 RW 参考图（蜥蜴 heavy vs
-绿蜥、蜈蚣 short/long vs 橙/红蜈蚣、秃鹫 fly vs 展翅参考、daddy vs 黄色长腿爸爸）均达到
-剪影级相似。
+Enabled）。**蜘蛛专用沙盒**同构接线但沿主沙盒**无前缀**旗标名（其参数空间独立），
+`--camfollow` 注视 Primary/Rear 中点、正式视图同样压地形调试线；**人形**在主沙盒经
+`FormalRendererFactory` 分派（`HumanoidSandboxCreatureAdapter` case），`_Process` 人形
+早退分支内做与主路径同构的正式/白盒仲裁，`HumanoidRenderer`/`SpiderBodyRenderer` 补
+`SetVisible` 纳入 `ApplyRenderView`；`--autowalk` 补人形分支支持；持矛截图可用
+`--route=hact --determinism=900 --screenshot=…@560`（窗口化 determinism 照常渲染，
+截图在持物窗口内）。验收：45 配置主矩阵（含人形 8 项）GREEN、哈希逐位命中基线
+（渲染只读实证）；蜘蛛专项 16 配置 GREEN、13 条钉死哈希全中；Daddy 40 配置不受本轮影响。
+截图对照 RW 参考图（蜥蜴 heavy vs 绿蜥、蜈蚣 short/long vs 橙/红蜈蚣、秃鹫 fly vs
+展翅参考、daddy vs 黄色长腿爸爸、spider-lean vs 黑蜘蛛剪影、scavenger vs 沙褐/暗色拾荒者）
+均达到剪影级相似。
 
 **遗留打磨项**：羽毛升级为完整弹簧粒子（折翼过渡相扇面分组散开）、蜥蜴走路 bob/头件形状
 （楔形头+眼位）、蜈蚣甲片高光游走、肩盾/飘带 verlet、死亡 Dangle 表现、低保真后处理
 （抖动+量化+降采样）联调、既有三物种切换 sRGB 顶点色空间后整体重调色、Daddy 假瞳孔
-（BulgeVertex 球面包裹瞳点）与眼睛看向目标。后续物种按 §2 速查表以既有基建拼装。
+（BulgeVertex 球面包裹瞳点）与眼睛看向目标、蜘蛛蓄力抖动通道（本项目暂无咬击意图量）、
+人形 ShockReaction 复合表情宏与 bristle 炸毛 verlet（待恐惧/激动观测量）、人形腹面浅色
+胸口补丁（bellyColor chest patch）、waif 长脖比例复核。后续物种按 §2 速查表以既有基建拼装。
 
 ## 6. 附录：本轮取证的完整行号索引
 
 十份逐类分析（sprite 清单/身体几何/肢体/配色/打磨/去球感手法/3D 映射/行号）与基建分析
-归档于会话 scratchpad`rw_render_research/`；关键行号已内联于上文各节。反编译源
+归档于会话 scratchpad`rw_render_research/`；Spider/Scavenger 轮的两份逐行取证
+（BigSpiderGraphics 719 行 / ScavengerGraphics 2492 行 + 5 个 ScavengerCosmetic 类）
+归档于会话 scratchpad`spider_scav_render/`；关键行号已内联于上文各节。反编译源
 `~/workspace/others/rw_decomp/`：本轮新增 CentipedeGraphics / BigSpiderGraphics /
 CicadaGraphics / DeerGraphics / TentaclePlantGraphics / GraphicsModule / TriangleMesh /
 Centipede / BigSpider / Cicada（连同既有 LizardGraphics / ScavengerGraphics /

@@ -370,7 +370,7 @@ public partial class SandboxWorld : Node3D
         _drag.Release();
         _humanoid.Spawn(this, breed, origin, ConstraintIterations, _bodies);
         _creature = new HumanoidSandboxCreatureAdapter(_humanoid);
-        RebuildFormalRenderer(); // 人形暂无正式渲染：清掉跨物种残留并回落专用渲染
+        RebuildFormalRenderer();
     }
 
     /// <summary>跨物种切换离开人形时的整体拆除：专用渲染节点与驱动器一起清。</summary>
@@ -393,11 +393,13 @@ public partial class SandboxWorld : Node3D
         ApplyRenderView();
     }
 
-    /// <summary>正式/白盒双渲染的显隐仲裁：正式渲染就绪且开启时白盒整体隐藏（Draw 也跳过）。</summary>
+    /// <summary>正式/白盒双渲染的显隐仲裁：正式渲染就绪且开启时白盒整体隐藏（Draw 也跳过）。
+    /// 人形的白盒是独立 HumanoidRenderer，一并仲裁。</summary>
     private void ApplyRenderView()
     {
         bool formalOn = _formalRenderer is not null && _formalView;
         _renderer.SetVisible(!formalOn);
+        _humanoid?.Renderer.SetVisible(!formalOn);
         _formalRenderer?.SetVisible(formalOn);
     }
 
@@ -596,7 +598,17 @@ public partial class SandboxWorld : Node3D
         {
             _drag.SampleInput(_camera, _bodies);
             _drag.ApplyDragForce();
-            driver.SampleWalkInput(_camera, _rayDebug, WantCameraFly);
+            if (_autoWalkDir is { } autoDir)
+            {
+                // --autowalk：截图/视觉验证的恒定行走，人形分支与蜥蜴路径同语义。
+                driver.Controller.MoveTarget = null;
+                driver.Controller.MoveDir = autoDir;
+                driver.Controller.RunSpeed = 1f;
+            }
+            else
+            {
+                driver.SampleWalkInput(_camera, _rayDebug, WantCameraFly);
+            }
         }
         else
         {
@@ -2716,8 +2728,16 @@ public partial class SandboxWorld : Node3D
         }
         if (_humanoid is not null)
         {
-            _humanoid.Renderer.Draw((float)Engine.GetPhysicsInterpolationFraction(), _humanoid.ThrownProp,
-                _rayDebug.Enabled);
+            float humanoidAlpha = (float)Engine.GetPhysicsInterpolationFraction();
+            if (_formalRenderer is { } humanoidFormal && _formalView)
+            {
+                humanoidFormal.Draw(humanoidAlpha, (float)delta);
+            }
+            else
+            {
+                _humanoid.Renderer.Draw(humanoidAlpha, _humanoid.ThrownProp,
+                    _rayDebug.Enabled);
+            }
             _rayDebug.Draw(_camera);
             MaybeCaptureScreenshot();
             return;
