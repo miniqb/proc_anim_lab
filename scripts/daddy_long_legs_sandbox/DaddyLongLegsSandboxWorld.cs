@@ -32,13 +32,15 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private const int SparseGaitMinimumMoveTicks = 1200;
     private static readonly Vector3 StuckRouteTarget = new(-6.0f, 1.70f, 12f);
 
-    private static readonly string[] RouteNames =
-    {
-        "flat", "idle-start", "height-retention", "sparse-gait", "tap", "course",
-        "wall", "wall-idle",
-        "ceiling", "corner", "outer", "stun", "stuck", "target", "launch", "lifecycle",
-        "maze",
-    };
+    /// <summary>
+    /// 全部路线名。**同时**是 <see cref="DefaultRoute"/> 的 Inspector 下拉项 —— 特性只吃
+    /// 编译期常量，所以真相源做成这个 const，数组从它切出来，下拉框与校验不可能分叉。
+    /// </summary>
+    private const string RouteEnumHint =
+        "flat,idle-start,height-retention,sparse-gait,tap,course,wall,wall-idle," +
+        "ceiling,corner,outer,stun,stuck,target,launch,lifecycle,maze";
+
+    private static readonly string[] RouteNames = RouteEnumHint.Split(',');
 
     /// <summary>迷宫整体远离既有地形（既有 floor 只到 x=32），互不进入对方查询域。</summary>
     private static readonly Vector3 MazeOrigin = new(200f, 0f, 0f);
@@ -50,11 +52,74 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     /// </summary>
     private const int MazeMetricSettleTicks = 40;
 
-    /// <summary>
-    /// 场景级默认路线（留空 = `flat`）。`daddy_long_legs_maze.tscn` 用它把自己钉成迷宫场景；
-    /// `--daddy-route=` 永远覆盖它，所以既有场景与全部矩阵配置不受影响。
-    /// </summary>
-    [Export] public string DefaultRoute = string.Empty;
+    // ======================================================================
+    // 场景级初始参数（编辑器 Inspector 可改，F5 直接跑，不必带命令行）
+    //
+    // **优先级恒为「命令行 > 场景」**：每个导出项的默认值都逐字等于原来的代码默认，
+    // 因此既有场景与全部矩阵配置逐位不变。矩阵每条配置都显式带
+    // `--daddy-route/-preset/-seed/-tps`，场景里改这四项也影响不到回归。
+    //
+    // 刻意**不**导出的：determinism / ablate / perturb / expect-hash / screenshot /
+    // cam / camfollow / path-stall / path-skip。它们只有脚本化回归会用，放进
+    // Inspector 只会制造「场景里悄悄改了一个值导致矩阵飘」的坑。
+    // 生效值每次都打在 `[DADDY-SANDBOX] ready` 那行里，一眼可查。
+    // ======================================================================
+
+    [ExportGroup("Sandbox / Creature")]
+
+    /// <summary>场景默认路线。`daddy_long_legs_maze.tscn` 用它把自己钉成迷宫场景。</summary>
+    [Export(PropertyHint.Enum, RouteEnumHint)]
+    public string DefaultRoute = "flat";
+
+    /// <summary>下拉项手写，校验走 <c>ResolvePreset</c>：加了新预设记得补这里，否则只能命令行选。</summary>
+    [Export(PropertyHint.Enum, "brother,daddy,terror")]
+    public string DefaultPreset = "daddy";
+
+    /// <summary>形态 seed。Godot 不导出 ulong，这里收 long 再转；负数按无效拒绝。</summary>
+    [Export] public long DefaultSeed = 1;
+
+    /// <summary>正式渲染层开关（≙ `--daddy-formal=off` / V 键）。纯渲染，不进 tick 或哈希。</summary>
+    [Export] public bool FormalRender = true;
+
+    /// <summary>宿主物理频率。内核走累加器与它解耦；主仓是 60，想对齐手感就调这里。</summary>
+    [Export(PropertyHint.Range, "40,1000,1")]
+    public int HostPhysicsTps = 40;
+
+    [ExportGroup("Sandbox / Maze Path")]
+
+    /// <summary>寻路结果的两种喂法：`target` 直喂 MoveTarget，`dir` 是 tether 姿态。</summary>
+    [Export(PropertyHint.Enum, "target,dir")]
+    public string PathDrive = "target";
+
+    [Export(PropertyHint.Range, "0.05,8,0.05")]
+    public float PathArriveRadius = 1.10f;
+
+    /// <summary>喂点抬升量。必须 &gt; 0：`AtMoveTarget` 判 3D 距离，地面点永远到不了。</summary>
+    [Export(PropertyHint.Range, "0.05,8,0.05")]
+    public float PathWaypointLift = 1.60f;
+
+    [Export] public bool PathLoop = true;
+
+    /// <summary>出生即自动跑路径（≙ F4）。关掉就纯手动/第一人称观察一个站着的它。</summary>
+    [Export] public bool PathAutoDrive = true;
+
+    /// <summary>路径可视化：蓝色路点串 + 黄色当前目标球（≙ F7）。</summary>
+    [Export] public bool PathMarkers = true;
+
+    [ExportGroup("Sandbox / Maze View")]
+
+    /// <summary>天花板网格（≙ F5）。碰撞体始终存在，这里只管看不看得见。</summary>
+    [Export] public bool MazeCeilingVisible;
+
+    /// <summary>俯视跟随相机（≙ F6）。关掉即自由飞（按住右键）。</summary>
+    [Export] public bool MazeFollowCamera = true;
+
+    /// <summary>出生即进第一人称（≙ Tab）。只在 route=maze 下有意义。</summary>
+    [Export] public bool StartInFirstPerson;
+
+    // 既有导出项。显式给一组而不是用空组收尾：分组只是 Inspector 的展示层，
+    // 但「靠空字符串重置」是我没法在无头下验证的行为，给个真名字则一定正确。
+    [ExportGroup("Sandbox / Host Tuning")]
 
     [Export] public float GravityMps2 = 36f;
     [Export] public float CameraFlySpeed = 9f;
@@ -89,18 +154,20 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 
     // 正式渲染层（与主沙盒同构：V 键切换，白盒回落；纯渲染，不进 tick/哈希）。
     private ProcAnimLab.Render.IFormalRenderer? _formalRenderer;
-    private bool _formalView = true; // --daddy-formal=off 或 V 键关闭
+    private bool _formalView; // ← FormalRender / --daddy-formal=off / V 键
     private string? _screenshotPath; // --daddy-screenshot=path[@tick]：截图后退出
     private long _screenshotTick = 90;
     private (Vector3 Pos, Vector3 LookAt)? _camOverride; // --daddy-cam=px,py,pz,lx,ly,lz
     private Vector3? _camFollowOffset; // --daddy-camfollow=ox,oy,oz：相机=插值质心+偏移
 
-    // CLI / deterministic host configuration.
+    // 生效配置。带「← 导出项」标记的**不写内联初值**：初值的唯一真相源是对应的
+    // [Export]，由 ApplySceneDefaults 无条件灌入（命令行随后覆盖）。两处各写一份默认值
+    // 迟早会分叉，而分叉后赢的是导出项，读代码的人会被内联初值骗。
     private int _determinismTicks;
-    private int _requestedTps = 40;
-    private string _presetName = "daddy";
-    private string _route = "flat";
-    private ulong _stableSeed = 1UL;
+    private int _requestedTps;              // ← HostPhysicsTps
+    private string _presetName = string.Empty; // ← DefaultPreset
+    private string _route = string.Empty;      // ← DefaultRoute
+    private ulong _stableSeed;              // ← DefaultSeed
     private float _perturb;
     private ulong? _expectHash;
     private string _ablation = "none";
@@ -112,15 +179,15 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private enum PathDriveMode { Target, Dir }
 
     private DaddyLongLegsMazeBuilder? _maze;
-    private PathDriveMode _pathDriveMode = PathDriveMode.Target;
-    private float _pathArriveRadius = 1.10f;
-    private float _pathHeight = 1.60f;
-    private bool _pathLoop = true;
+    private PathDriveMode _pathDriveMode;    // ← PathDrive
+    private float _pathArriveRadius;         // ← PathArriveRadius
+    private float _pathHeight;               // ← PathWaypointLift
+    private bool _pathLoop;                  // ← PathLoop
     private int _pathStallTicks = 400;
     private int _pathSkipTicks = 1200;
-    private bool _pathAutoDrive = true;
-    private bool _mazeCeilingVisible;
-    private bool _mazeFollowCamera = true;
+    private bool _pathAutoDrive;             // ← PathAutoDrive
+    private bool _mazeCeilingVisible;        // ← MazeCeilingVisible
+    private bool _mazeFollowCamera;          // ← MazeFollowCamera
     private int _pathWaypoint;
     private int _pathWaypointTicks;
     private int _pathReached;
@@ -133,7 +200,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private float _pathMinimumBodyHeight = float.PositiveInfinity;
     private float _pathMaximumBodyHeight = float.NegativeInfinity;
     private Vector3? _pathActiveTarget;
-    private bool _pathMarkersVisible = true;
+    private bool _pathMarkersVisible;        // ← PathMarkers
 
     // ---- 第一人称观察模式（route=maze + 交互模式专用）----
     /// <summary>
@@ -144,7 +211,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 
     private DaddyLongLegsSandboxPlayer? _player;
     private bool _playerMode;
-    private bool _wantPlayerMode;
+    private bool _wantPlayerMode;            // ← StartInFirstPerson
 
     // Host-owned movable target used by ExternalReach.
     private bool _debugTargetActive;
@@ -367,7 +434,8 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         if (!ParseArguments())
         {
             _fatal = true;
-            GD.Print("[DADDY-RESULT] FAIL: invalid command-line arguments");
+            GD.Print("[DADDY-RESULT] FAIL: invalid scene or command-line configuration"
+                     + " (see the [DADDY-CLI] error above)");
             GetTree().Quit(2);
             return;
         }
@@ -3002,20 +3070,79 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         AddChild(_debugTargetMarker);
     }
 
+    /// <summary>
+    /// 把 Inspector 里的场景级初始参数灌进运行期字段。**必须在命令行解析之前调用**——
+    /// 命令行是覆盖层，谁后写谁赢。每项都做与命令行同等的校验，非法值直接让场景启动失败，
+    /// 而不是悄悄回落到默认（悄悄回落会让人以为参数生效了）。
+    /// </summary>
+    private bool ApplySceneDefaults()
+    {
+        string route = DefaultRoute.ToLowerInvariant();
+        if (Array.IndexOf(RouteNames, route) < 0)
+        {
+            GD.PushError($"[DADDY-CLI] scene DefaultRoute '{DefaultRoute}' is not a known route");
+            return false;
+        }
+        _route = route;
+
+        string preset = DefaultPreset.ToLowerInvariant();
+        try
+        {
+            _ = ResolvePreset(preset);
+        }
+        catch (Exception error)
+        {
+            GD.PushError($"[DADDY-CLI] scene DefaultPreset '{DefaultPreset}': {error.Message}");
+            return false;
+        }
+        _presetName = preset;
+
+        if (DefaultSeed < 0)
+        {
+            GD.PushError($"[DADDY-CLI] scene DefaultSeed must not be negative (got {DefaultSeed})");
+            return false;
+        }
+        _stableSeed = (ulong)DefaultSeed;
+
+        if (HostPhysicsTps < 40 || HostPhysicsTps > 1000)
+        {
+            GD.PushError($"[DADDY-CLI] scene HostPhysicsTps must be in [40,1000] (got {HostPhysicsTps})");
+            return false;
+        }
+        _requestedTps = HostPhysicsTps;
+
+        switch (PathDrive.ToLowerInvariant())
+        {
+            case "target": _pathDriveMode = PathDriveMode.Target; break;
+            case "dir": _pathDriveMode = PathDriveMode.Dir; break;
+            default:
+                GD.PushError($"[DADDY-CLI] scene PathDrive must be 'target' or 'dir' (got '{PathDrive}')");
+                return false;
+        }
+
+        if (!float.IsFinite(PathArriveRadius) || PathArriveRadius <= 0f
+            || !float.IsFinite(PathWaypointLift) || PathWaypointLift <= 0f)
+        {
+            GD.PushError("[DADDY-CLI] scene PathArriveRadius / PathWaypointLift must be positive");
+            return false;
+        }
+        _pathArriveRadius = PathArriveRadius;
+        _pathHeight = PathWaypointLift;
+
+        _formalView = FormalRender;
+        _pathLoop = PathLoop;
+        _pathAutoDrive = PathAutoDrive;
+        _pathMarkersVisible = PathMarkers;
+        _mazeCeilingVisible = MazeCeilingVisible;
+        _mazeFollowCamera = MazeFollowCamera;
+        _wantPlayerMode = StartInFirstPerson;
+        return true;
+    }
+
     private bool ParseArguments()
     {
-        // 场景级默认路线：让「双击场景直接进那条路线」成立，不必每次手带 --daddy-route=。
-        // 留空 = 沿用代码默认（flat），因此既有场景行为逐位不变；命令行永远优先。
-        if (!string.IsNullOrEmpty(DefaultRoute))
-        {
-            string scenic = DefaultRoute.ToLowerInvariant();
-            if (Array.IndexOf(RouteNames, scenic) < 0)
-            {
-                GD.PushError($"[DADDY-CLI] scene DefaultRoute '{DefaultRoute}' is not a known route");
-                return false;
-            }
-            _route = scenic;
-        }
+        if (!ApplySceneDefaults())
+            return false;
 
         foreach (string argument in OS.GetCmdlineUserArgs())
         {
@@ -3086,7 +3213,8 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 }
                 else if (argument.StartsWith("--daddy-path-loop=", StringComparison.Ordinal))
                 {
-                    _pathLoop = argument["--daddy-path-loop=".Length..] == "on";
+                    _pathLoop = ParseOnOff(
+                        argument["--daddy-path-loop=".Length..], "--daddy-path-loop");
                 }
                 else if (argument.StartsWith("--daddy-path-stall=", StringComparison.Ordinal))
                 {
@@ -3100,21 +3228,33 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                         argument["--daddy-path-skip=".Length..], CultureInfo.InvariantCulture);
                     if (_pathSkipTicks < 1) throw new FormatException("path skip must be >= 1");
                 }
-                else if (argument == "--daddy-maze-ceiling=on")
+                // 这几个开关**两个方向都要能写**：场景导出项现在可以把它们置成任意一边，
+                // 单向 flag（只有 =on）会让命令行没法把场景设的值扳回来。
+                else if (argument.StartsWith("--daddy-maze-ceiling=", StringComparison.Ordinal))
                 {
-                    _mazeCeilingVisible = true;
+                    _mazeCeilingVisible = ParseOnOff(
+                        argument["--daddy-maze-ceiling=".Length..], "--daddy-maze-ceiling");
                 }
-                else if (argument == "--daddy-maze-camera=free")
+                else if (argument.StartsWith("--daddy-maze-camera=", StringComparison.Ordinal))
                 {
-                    _mazeFollowCamera = false;
+                    string mode = argument["--daddy-maze-camera=".Length..];
+                    _mazeFollowCamera = mode switch
+                    {
+                        "free" => false,
+                        "follow" => true,
+                        _ => throw new FormatException(
+                            "--daddy-maze-camera must be 'free' or 'follow'"),
+                    };
                 }
                 else if (argument.StartsWith("--daddy-path-markers=", StringComparison.Ordinal))
                 {
-                    _pathMarkersVisible = argument["--daddy-path-markers=".Length..] != "off";
+                    _pathMarkersVisible = ParseOnOff(
+                        argument["--daddy-path-markers=".Length..], "--daddy-path-markers");
                 }
-                else if (argument == "--daddy-player=on")
+                else if (argument.StartsWith("--daddy-player=", StringComparison.Ordinal))
                 {
-                    _wantPlayerMode = true;
+                    _wantPlayerMode = ParseOnOff(
+                        argument["--daddy-player=".Length..], "--daddy-player");
                 }
                 else if (argument.StartsWith("--daddy-screenshot=", StringComparison.Ordinal))
                 {
@@ -3157,9 +3297,10 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                         float.Parse(parts[1], CultureInfo.InvariantCulture),
                         float.Parse(parts[2], CultureInfo.InvariantCulture));
                 }
-                else if (argument == "--daddy-formal=off")
+                else if (argument.StartsWith("--daddy-formal=", StringComparison.Ordinal))
                 {
-                    _formalView = false;
+                    _formalView = ParseOnOff(
+                        argument["--daddy-formal=".Length..], "--daddy-formal");
                 }
                 else if (argument.StartsWith("--daddy-", StringComparison.Ordinal))
                 {
@@ -3207,6 +3348,14 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         }
         return true;
     }
+
+    /// <summary>on/off 布尔开关。拼错**不静默**：静默会让人以为参数生效了。</summary>
+    private static bool ParseOnOff(string text, string flag) => text switch
+    {
+        "on" => true,
+        "off" => false,
+        _ => throw new FormatException($"{flag} must be 'on' or 'off'"),
+    };
 
     private static float ParsePositive(string text, string flag)
     {

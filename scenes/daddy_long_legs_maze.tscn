@@ -8,6 +8,10 @@
 ; 因此本场景只在 route=maze 下有意义——用 --daddy-route= 切到别的路线会没有地面。
 ; 需要白盒地形请开 daddy_long_legs_sandbox.tscn。
 ;
+; 根节点上只钉两项，其余全走脚本导出项的默认值；要改初始参数直接在 Inspector 里改
+; （Sandbox / Creature、Sandbox / Maze Path、Sandbox / Maze View 三组），命令行永远优先。
+; PathDrive=dir 是 tether 姿态：迷宫实测比 target 直喂更稳，也是回迁推荐默认。
+;
 ; 注意：Godot 编辑器保存场景会丢掉这些注释；同样的说明在
 ; docs/daddy_long_legs_controller.md §7.1 里有一份。
 
@@ -24,6 +28,7 @@ tonemap_mode = 2
 [node name="DaddyLongLegsMazeWorld" type="Node3D"]
 script = ExtResource("1_world")
 DefaultRoute = "maze"
+PathDrive = "dir"
 
 [node name="Camera3D" type="Camera3D" parent="."]
 position = Vector3(186, 12, 24)

@@ -747,19 +747,54 @@ Deer 有 `CurrentRideHeight` 可读，**Daddy 的站高是涌现量、没有可�
 | 场景 | 用途 |
 |---|---|
 | `scenes/daddy_long_legs_sandbox.tscn` | 白盒回归场景，**全部矩阵配置的宿主**。含平地/墙/顶/course 几何，默认 `route=flat`。**未被本轮改动** |
-| `scenes/daddy_long_legs_maze.tscn` | 迷宫观察场景。`DefaultRoute="maze"`，双击即进，不必带 `--daddy-route=`。**刻意不放 Terrain**（迷宫运行期自建在 x=+200，自成一体），所以切到别的路线会没有地面 |
+| `scenes/daddy_long_legs_maze.tscn` | 迷宫观察场景。根节点只钉 `DefaultRoute="maze"` + `PathDrive="dir"`，编辑器 F5 直接跑。**刻意不放 Terrain**（迷宫运行期自建在 x=+200，自成一体），所以切到别的路线会没有地面 |
 
-场景级 `[Export] DefaultRoute` 留空即沿用代码默认，`--daddy-route=` 永远覆盖它 —— 因此既有
-场景与 40+30 配置逐位不变（实测：老场景 `--daddy-route=maze` 与新场景不带任何 flag，
-1200 tick 同为 `72ED9A2B4D10A534`）。
+#### 初始参数：Inspector 导出项（编辑器）↔ 命令行
+
+观察类参数在脚本上以 `[Export]` 公开，分 **Sandbox / Creature**、**Sandbox / Maze Path**、
+**Sandbox / Maze View** 三组；编辑器里改完 F5 即跑，不必碰命令行。
+
+| 导出项 | 默认 | 等价命令行 |
+|---|---|---|
+| `DefaultRoute` | `flat` | `--daddy-route=` |
+| `DefaultPreset` | `daddy` | `--daddy-preset=` |
+| `DefaultSeed` | `1` | `--daddy-seed=` |
+| `FormalRender` | `true` | `--daddy-formal=on\|off` |
+| `HostPhysicsTps` | `40` | `--daddy-tps=`（主仓是 60） |
+| `PathDrive` | `target` | `--daddy-path-drive=` |
+| `PathArriveRadius` | `1.10` | `--daddy-path-arrive=` |
+| `PathWaypointLift` | `1.60` | `--daddy-path-height=` |
+| `PathLoop` / `PathAutoDrive` / `PathMarkers` | `true` ×3 | `--daddy-path-loop=on\|off` / （只有 F4） / `--daddy-path-markers=on\|off` |
+| `MazeCeilingVisible` / `MazeFollowCamera` | `false` / `true` | `--daddy-maze-ceiling=on\|off` / `--daddy-maze-camera=free\|follow` |
+| `StartInFirstPerson` | `false` | `--daddy-player=on\|off` |
+
+所有 on/off 类开关都是**双向**的（原来 `--daddy-formal` / `--daddy-maze-ceiling` /
+`--daddy-player` 只能往一个方向写）：场景导出项现在能把它们置成任意一边，单向开关会让
+命令行扳不回来。拼错的值**直接报错退出**，不静默当成 false。
+
+三条规矩：
+
+1. **优先级恒为「命令行 > 场景」**，每个导出项的默认值逐字等于原来的代码默认。矩阵每条
+   配置都显式带 `--daddy-route/-preset/-seed/-tps`，所以场景里怎么改都影响不到回归
+   （实测：老场景 `--daddy-route=maze --daddy-path-drive=dir` 与新场景不带任何 flag，
+   1200 tick 同为 `72ED9A2B4D10A534`；老场景不带 flag 仍是 flat/daddy/seed1/tps40）。
+2. **初值的唯一真相源是导出项**：对应私有字段**不写内联初值**（`ApplySceneDefaults` 无条件
+   灌入）。两处各写一份默认值迟早分叉，而分叉后赢的是导出项，读代码的人会被内联初值骗。
+3. **非法值直接让场景启动失败**（`[DADDY-CLI]` 报错 + `[DADDY-RESULT] FAIL` + exit 2），
+   不悄悄回落——悄悄回落会让人以为参数生效了。
+
+**刻意不导出**：`determinism` / `ablate` / `perturb` / `expect-hash` / `screenshot` /
+`cam` / `camfollow` / `path-stall` / `path-skip`。它们只有脚本化回归会用，放进 Inspector
+只会制造「场景里悄悄改了一个值导致矩阵飘」的坑。生效值每次都打在 `[DADDY-SANDBOX] ready`
+那行，一眼可查。
 
 **用法**：
 
 ```bash
-# 交互观察（F4 自动路径开关 / F5 天花板 / F6 跟随相机 / F7 路径标记 / Tab 第一人称）
+# 交互观察：编辑器里打开 daddy_long_legs_maze.tscn 按 F5 即可，下面是等价的命令行
+# （F4 自动路径 / F5 天花板 / F6 跟随相机 / F7 路径标记 / Tab 第一人称 / R 重新落位）
 /Applications/Godot_mono.app/Contents/MacOS/Godot --path . \
-  --log-file /private/tmp/godot_codex.log scenes/daddy_long_legs_maze.tscn -- \
-  --daddy-preset=daddy --daddy-seed=1
+  --log-file /private/tmp/godot_codex.log scenes/daddy_long_legs_maze.tscn
 
 # 无头量化（[DADDY-MAZE-METRIC] 是主要产物；[DADDY-PATH] stall 打印推进链路各环）
 $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 40 \
@@ -767,11 +802,8 @@ $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 4
   --daddy-route=maze --daddy-preset=daddy --daddy-seed=1 --daddy-path-drive=dir
 ```
 
-其余开关：`--daddy-path-arrive=<m>`（到点半径，默认 1.10）、`--daddy-path-height=<m>`
-（喂点抬升，默认 1.60）、`--daddy-path-loop=on|off`、`--daddy-path-stall=<tick>` /
-`--daddy-path-skip=<tick>`（卡住报告 / 跳点阈值，默认 400 / 1200）、
-`--daddy-maze-ceiling=on`、`--daddy-maze-camera=free`、
-`--daddy-path-markers=off`（关路径可视化）、`--daddy-player=on`（直接进第一人称）。
+只有命令行有的：`--daddy-path-stall=<tick>` / `--daddy-path-skip=<tick>`
+（卡住报告 / 跳点阈值，默认 400 / 1200）。
 
 **尚未做**：没进 `run_daddy_long_legs_matrix.sh`。布局一改哈希就换，而布局按设计还要随
 体型判断迭代。定型后加基线的方式与既有路线相同（`DADDY_UPDATE_HASHES=1` 收集，再钉进脚本）。
