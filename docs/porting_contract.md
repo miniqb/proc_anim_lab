@@ -687,6 +687,13 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   `MoveTargetArriveRadius`。`MoveDir` 是完整 3D 世界方向，但只表达运动意图：身体没有 head、hips、
   forward 或 world-up 姿态，控制器也不会为它补一根隐式前向轴。`MoveTarget` 以质量加权
   `BodyCenter` 到宿主直喂点的 3D 距离判定；仍只接受邻近可达点，到点后宿主负责换点或清空。
+- **导航路径点必须由宿主先抬到身体高度再喂**：`AtMoveTarget` 判的是 `BodyCenter` 到喂点的
+  3D 距离，而 `NavigationAgent3D` / 导航网格给的是**地面点**。直接喂地面点，3D 距离恒等于当前
+  站立高度，到点信号永远不触发、宿主的换点循环整条卡死。这与 §4.1c 对鹿点名的是同一个坑，
+  但 Deer 有 `CurrentRideHeight` 可读、Daddy **没有**——它的站高是涌现量，宿主必须自己给一个
+  抬升常量（本仓 `route=maze` 用半个房间净高，主仓尺度实测可用）。若改用 `MoveDir` 的 tether
+  姿态（§8.3），换点判据归宿主，用水平距离即可，不吃这条限制——本仓迷宫实测 tether 姿态在
+  狭窄几何里比直喂更稳（最慢路点 67 vs 207 tick，卡住峰值 5 vs 31），回迁默认应选它。
 - 连续支撑观测为 `RawSupport`（各 Locomotion task 触手 `sqrt(贴面比例)` 并对到达落点加权后，
   按全部触手数归一化）、`UnconditionalSupport`（Create/Teleport 后从 1 每 tick 减 `.025`）、
   `ContinuousSupport=max(RawSupport^.21,UnconditionalSupport)`（原作是 `.30`；项目为连续 3D
@@ -918,6 +925,10 @@ public readonly struct TerrainHit { Vector3 Point; Vector3 Normal; ulong Collide
      的被动只读/物理 tick 规范。接线时必须确认该层覆盖目标物种需要碰撞的所有
      静态阻挡；若墙/台阶在另一静态层，就把它并入 `CollisionMask`，不得为 Deer
      只查导航可站立面。参考实现已内建 `CollisionMask` 属性 + `SetExclusions(rids)`。
+   - **玩家绝不能落进这个掩码**。玩家是动态物，本条已含，但它是最容易接错的一个：
+     玩家若被地形查询打到，触手会把他当**地形**抓住——没有抓取语义、不会拽、
+     `TargetEffects` 一条都不产生，表现却很像「抓住了」。玩家只能走 §4.3 的目标快照。
+     Lab 的第一人称观察模式就是按这条布的线：人在层 2、地形查询掩码恒 1，两者不相交。
    - 查询参数对象**复用实例**（参考实现即此；射线参数/球形参数/球 shape 各一份常驻。
      `IntersectRay/GetRestInfo` 返回的 Dictionary 是引擎 API 固有分配，无非分配变体）。
 6. **同 tick 内幂等**：同参重复查询须同结果（内核不缓存，一 tick 会多次查询）。

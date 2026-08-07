@@ -37,7 +37,24 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         "flat", "idle-start", "height-retention", "sparse-gait", "tap", "course",
         "wall", "wall-idle",
         "ceiling", "corner", "outer", "stun", "stuck", "target", "launch", "lifecycle",
+        "maze",
     };
+
+    /// <summary>迷宫整体远离既有地形（既有 floor 只到 x=32），互不进入对方查询域。</summary>
+    private static readonly Vector3 MazeOrigin = new(200f, 0f, 0f);
+
+    /// <summary>
+    /// 迷宫是**封闭出生**：构造暂态把段排到 .34L 时会穿进墙/顶，首个 locomotion tick 才用
+    /// 一根 ray 收回可及长度。这段展开暂态不计入残余穿透/接触统计，避免把出生几何
+    /// 当成运行期缺陷。其余路线不受影响（它们在开放地形出生）。
+    /// </summary>
+    private const int MazeMetricSettleTicks = 40;
+
+    /// <summary>
+    /// 场景级默认路线（留空 = `flat`）。`daddy_long_legs_maze.tscn` 用它把自己钉成迷宫场景；
+    /// `--daddy-route=` 永远覆盖它，所以既有场景与全部矩阵配置不受影响。
+    /// </summary>
+    [Export] public string DefaultRoute = string.Empty;
 
     [Export] public float GravityMps2 = 36f;
     [Export] public float CameraFlySpeed = 9f;
@@ -89,6 +106,45 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private string _ablation = "none";
     private int _routeDirection = 1;
     private int _routeWaypoint;
+
+    // ---- 迷宫路径驱动（route=maze）----
+    /// <summary>寻路结果的两种喂法；见 <see cref="DriveMazePath"/> 的注释。</summary>
+    private enum PathDriveMode { Target, Dir }
+
+    private DaddyLongLegsMazeBuilder? _maze;
+    private PathDriveMode _pathDriveMode = PathDriveMode.Target;
+    private float _pathArriveRadius = 1.10f;
+    private float _pathHeight = 1.60f;
+    private bool _pathLoop = true;
+    private int _pathStallTicks = 400;
+    private int _pathSkipTicks = 1200;
+    private bool _pathAutoDrive = true;
+    private bool _mazeCeilingVisible;
+    private bool _mazeFollowCamera = true;
+    private int _pathWaypoint;
+    private int _pathWaypointTicks;
+    private int _pathReached;
+    private int _pathSkipped;
+    private int _pathLaps;
+    private int _pathStalls;
+    private int _pathMaximumWaypointTicks;
+    private int _pathMovingTicks;
+    private float _pathTravel;
+    private float _pathMinimumBodyHeight = float.PositiveInfinity;
+    private float _pathMaximumBodyHeight = float.NegativeInfinity;
+    private Vector3? _pathActiveTarget;
+    private bool _pathMarkersVisible = true;
+
+    // ---- 第一人称观察模式（route=maze + 交互模式专用）----
+    /// <summary>
+    /// 出生退到「离生物最近的路点 + N」上：生物顺着路点序号前进，所以那是它的**前方**，
+    /// 一进来就是「人站在通道里，看它朝自己走过来」。4 个路点 ≈ 12m ≈ 5 秒。
+    /// </summary>
+    private const int PlayerSpawnLead = 4;
+
+    private DaddyLongLegsSandboxPlayer? _player;
+    private bool _playerMode;
+    private bool _wantPlayerMode;
 
     // Host-owned movable target used by ExternalReach.
     private bool _debugTargetActive;
@@ -289,7 +345,10 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
     private bool _lifecycleExternalRetained;
 
     private bool Deterministic => _determinismTicks > 0;
-    private bool WantCameraFly => Input.IsMouseButtonPressed(MouseButton.Right)
+
+    /// <summary>第一人称模式下鼠标归玩家：右键不再是自由飞（也顺带关掉拖拽体块）。</summary>
+    private bool WantCameraFly => !_playerMode
+        && Input.IsMouseButtonPressed(MouseButton.Right)
         && !Input.IsPhysicalKeyPressed(Key.Shift);
 
     public override void _Ready()
@@ -326,7 +385,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         _presets = DaddyLongLegsFactory.AllPresets();
         _preset = ResolvePreset(_presetName);
         ApplyAblation(_preset, _ablation);
-        _spawn = SpawnForRoute(_route);
+        if (_route == "maze" && !BuildMaze())
+            return;
+        _spawn = _maze?.SpawnPosition ?? SpawnForRoute(_route);
         SpawnDaddy(_spawn, _preset, _stableSeed);
 
         _renderer = new DaddyLongLegsRenderer();
@@ -362,6 +423,15 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             _hud.SyncPreset(Array.FindIndex(_presets, p => p.StableId == _preset.StableId));
         }
 
+        if (_maze is not null && _camOverride is null && _camFollowOffset is null
+            && _mazeFollowCamera)
+        {
+            // 迷宫有顶：默认藏天花板网格（碰撞保留）+ 俯视跟随，否则镜头只看得到板底。
+            _camFollowOffset = new Vector3(0f, 15f, 13f);
+        }
+        _maze?.SetCeilingVisible(_mazeCeilingVisible);
+        _maze?.SetPathMarkersVisible(_pathMarkersVisible);
+
         _camera.LookAt(_controller.BodyCenter, Vector3.Up);
         _cameraYaw = _camera.Rotation.Y;
         _cameraPitch = _camera.Rotation.X;
@@ -372,6 +442,8 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             _cameraYaw = _camera.Rotation.Y;
             _cameraPitch = _camera.Rotation.X;
         }
+        if (_wantPlayerMode)
+            TogglePlayerMode();
         GD.Print($"[DADDY-SANDBOX] ready tps={Engine.PhysicsTicksPerSecond} " +
                  $"preset={_preset.StableId} seed={_stableSeed} route={_route} " +
                  $"ablate={_ablation} " +
@@ -444,10 +516,17 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             DriveDeterministicRoute();
         else
         {
-            SampleInteractiveMovement();
+            // 交互模式下迷宫默认自动跑路径（F4 关），但手上一按 WASD 就即时接管；
+            // 松手后从当前路点继续，方便「跟一段 → 手动怼一下 → 放回去接着跑」。
+            // 第一人称模式下 WASD 归玩家，生物照常自动跑（手动接管入口暂时让位）。
+            if (_maze is not null && _pathAutoDrive
+                && (_playerMode || (!HasManualMoveInput() && !WantCameraFly)))
+                DriveMazePath();
+            else
+                SampleInteractiveMovement();
             ProcessPendingMoveTargetPick();
             MoveDebugTargetFromKeys();
-            if (!WantCameraFly)
+            if (!WantCameraFly && !_playerMode)
             {
                 _drag.SampleInput(_camera, new[] { _controller.Body });
                 _drag.ApplyDragForce();
@@ -471,6 +550,11 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         }
     }
 
+    private static bool HasManualMoveInput() =>
+        Input.IsPhysicalKeyPressed(Key.W) || Input.IsPhysicalKeyPressed(Key.S)
+        || Input.IsPhysicalKeyPressed(Key.A) || Input.IsPhysicalKeyPressed(Key.D)
+        || Input.IsPhysicalKeyPressed(Key.E) || Input.IsPhysicalKeyPressed(Key.Q);
+
     private void SampleInteractiveMovement()
     {
         if (WantCameraFly)
@@ -481,12 +565,16 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         }
 
         Vector3 direction = Vector3.Zero;
-        if (Input.IsPhysicalKeyPressed(Key.W)) direction += Vector3.Forward;
-        if (Input.IsPhysicalKeyPressed(Key.S)) direction += Vector3.Back;
-        if (Input.IsPhysicalKeyPressed(Key.A)) direction += Vector3.Left;
-        if (Input.IsPhysicalKeyPressed(Key.D)) direction += Vector3.Right;
-        if (Input.IsPhysicalKeyPressed(Key.E)) direction += Vector3.Up;
-        if (Input.IsPhysicalKeyPressed(Key.Q)) direction += Vector3.Down;
+        // 第一人称模式下这些键属于玩家，生物侧一律当作没有手动输入。
+        if (!_playerMode)
+        {
+            if (Input.IsPhysicalKeyPressed(Key.W)) direction += Vector3.Forward;
+            if (Input.IsPhysicalKeyPressed(Key.S)) direction += Vector3.Back;
+            if (Input.IsPhysicalKeyPressed(Key.A)) direction += Vector3.Left;
+            if (Input.IsPhysicalKeyPressed(Key.D)) direction += Vector3.Right;
+            if (Input.IsPhysicalKeyPressed(Key.E)) direction += Vector3.Up;
+            if (Input.IsPhysicalKeyPressed(Key.Q)) direction += Vector3.Down;
+        }
 
         if (direction.LengthSquared() > 1e-10f)
         {
@@ -592,6 +680,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 break;
             case "lifecycle":
                 DriveLifecycle();
+                break;
+            case "maze":
+                DriveMazePath();
                 break;
         }
     }
@@ -961,6 +1052,163 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         }
     }
 
+    // ---- 迷宫路径驱动 ----
+    //
+    // 这是「寻路结果怎么喂给 Daddy」的参考实现。内核不做寻路（契约 §8 明确非目标），
+    // 它只接受**邻近可达点**；主仓的 NavigationAgent3D 产出的就是这样一串点，所以这里
+    // 用一条预规划的逐格路径代替寻路器，先把驱动接缝本身跑通。
+    //
+    // 两种喂法都实现，用 --daddy-path-drive 切换——它们对应回迁契约里的两条真实路线：
+    //
+    //   target（默认）：写 MoveTarget，读 AtMoveTarget 换点。≙ 契约 §4「路径点直喂」，
+    //                   也是 RW 寻路器给 FollowConnection 逐格递进的原始形态。
+    //   dir           ：写 MoveDir/RunSpeed，到点判定完全归宿主。≙ 契约 §4.1 tether
+    //                   姿态 1（身体追权威根），主仓接线时最可能先用这条。
+    //
+    // 关键接缝细节：Daddy 的 AtMoveTarget 判的是**质量加权 BodyCenter 到喂点的 3D 距离**，
+    // 而寻路器给的是地面点。直接喂地面点，3D 距离恒等于站立高度，到点信号永远不触发。
+    // 因此喂点必须先沿重力反向抬 PathHeight——这正是契约 §4.1c 对鹿点名的同一个坑，
+    // Daddy 没有 RideHeight 可读（站高是涌现量），只能由宿主给。
+    private void DriveMazePath()
+    {
+        if (_maze is null || _maze.Waypoints.Count == 0)
+            return;
+
+        if (_pathWaypoint >= _maze.Waypoints.Count)
+        {
+            if (!_pathLoop)
+            {
+                _controller.MoveTarget = null;
+                _controller.MoveDir = Vector3.Zero;
+                _controller.RunSpeed = 0f;
+                _pathActiveTarget = null;
+                return;
+            }
+            _pathWaypoint = 0;
+            _pathLaps++;
+            GD.Print($"[DADDY-PATH] lap {_pathLaps} complete tick={_tick} " +
+                     $"reached={_pathReached} skipped={_pathSkipped}");
+        }
+
+        Vector3 target = _maze.Waypoints[_pathWaypoint] + Vector3.Up * _pathHeight;
+        _pathActiveTarget = target;
+        _pathWaypointTicks++;
+
+        if (_pathDriveMode == PathDriveMode.Target)
+        {
+            _controller.MoveTargetArriveRadius = _pathArriveRadius;
+            _controller.MoveTarget = target;
+            _controller.MoveDir = Vector3.Zero;
+            _controller.RunSpeed = 1f;
+            if (_controller.AtMoveTarget)
+            {
+                AdvanceMazeWaypoint(skipped: false);
+                return;
+            }
+        }
+        else
+        {
+            // tether 姿态：只给方向意图，换点判据归宿主。这里用水平距离，因为导航路径点
+            // 是地面语义；竖直分量交给内核的支撑/重力自己解决，不进换点判据。
+            Vector3 delta = target - _controller.BodyCenter;
+            Vector3 horizontal = new(delta.X, 0f, delta.Z);
+            float horizontalDistance = horizontal.Length();
+            _controller.MoveTarget = null;
+            _controller.MoveDir = delta.LengthSquared() > 1e-10f ? delta.Normalized() : Vector3.Zero;
+            // ≙ 契约 §4.1「RunSpeed 按距离饱和」：接近路点时收油门，避免冲过头再回摆。
+            _controller.RunSpeed = Mathf.Clamp(
+                horizontalDistance / Math.Max(1e-3f, _pathArriveRadius * 2f), 0f, 1f);
+            if (horizontalDistance <= _pathArriveRadius)
+            {
+                AdvanceMazeWaypoint(skipped: false);
+                return;
+            }
+        }
+
+        // 卡住看门狗：先报告、后跳点。报告是主要产物（要看的就是它在哪一格过不去）；
+        // 跳点只为让整条路线跑完，不掩盖问题——跳点数单独进 metric。
+        if (_pathWaypointTicks == _pathStallTicks)
+        {
+            _pathStalls++;
+            Vector3 center = _controller.BodyCenter;
+            // 卡住时最需要看的是推进链路的哪一环断了：raw/directional 支撑、耦合后的
+            // DriveScale、到达腿数与在途步数。原地高频换步 + directional≈0 是
+            // 「腿全落在身后」的签名，与几何真卡死（步数为 0）完全不同。
+            GD.Print($"[DADDY-PATH] stall tick={_tick} waypoint={_pathWaypoint} " +
+                     $"held={_pathWaypointTicks} dist={center.DistanceTo(target):F2}m " +
+                     $"body=({center.X:F2},{center.Y:F2},{center.Z:F2}) " +
+                     $"raw={_controller.RawSupport:F3} eff={_controller.EffectiveSupport:F3} " +
+                     $"directional={_controller.DirectionalSupport:F3} " +
+                     $"drive={_controller.DriveScale:F3} " +
+                     $"arrived={_controller.ArrivedTentacleCount}/" +
+                     $"{_controller.LocomotionTentacleCount} " +
+                     $"inflight={_controller.InFlightStepCount} " +
+                     $"steps={_controller.StepReleaseSerial} " +
+                     $"stuck={_controller.StuckCounter} detour={_controller.StuckDetourActive}");
+        }
+        if (_pathWaypointTicks >= _pathSkipTicks)
+            AdvanceMazeWaypoint(skipped: true);
+    }
+
+    private void AdvanceMazeWaypoint(bool skipped)
+    {
+        if (skipped)
+            _pathSkipped++;
+        else
+            _pathReached++;
+        _waypointsReached++;
+        _pathMaximumWaypointTicks = Math.Max(_pathMaximumWaypointTicks, _pathWaypointTicks);
+        _pathWaypointTicks = 0;
+        _pathWaypoint++;
+        if (skipped)
+        {
+            GD.Print($"[DADDY-PATH] skip tick={_tick} waypoint={_pathWaypoint - 1} " +
+                     $"after {_pathSkipTicks} ticks");
+        }
+    }
+
+    private void TrackMazeMetrics(Vector3 previousCenter)
+    {
+        if (_maze is null)
+            return;
+        Vector3 center = _controller.BodyCenter;
+        Vector3 step = center - previousCenter;
+        _pathTravel += new Vector3(step.X, 0f, step.Z).Length();
+        if (_controller.HasMoveIntent)
+            _pathMovingTicks++;
+        if (_tick <= MazeMetricSettleTicks)
+            return;
+        float height = center.Y - _maze.Origin.Y;
+        _pathMinimumBodyHeight = Math.Min(_pathMinimumBodyHeight, height);
+        _pathMaximumBodyHeight = Math.Max(_pathMaximumBodyHeight, height);
+    }
+
+    private void ValidateMaze(List<string> failures)
+    {
+        if (_maze is null)
+        {
+            failures.Add("maze route ran without a maze");
+            return;
+        }
+        if (_pathReached < 1)
+        {
+            failures.Add($"maze path reached 0 waypoint(s) genuinely " +
+                         $"(skipped {_pathSkipped}, held up to {_pathMaximumWaypointTicks} ticks)");
+        }
+        // 身体必须留在房间净空里：穿出天花板或掉出楼板都说明地形约束真的漏了，
+        // 这与「走得慢/走不动」是两回事，后者只看 metric 不判红。
+        float ceiling = DaddyLongLegsMazeBuilder.RoomHeight;
+        if (_pathMaximumBodyHeight > ceiling + 0.5f)
+        {
+            failures.Add($"body center rose {_pathMaximumBodyHeight:F2}m above the maze floor, " +
+                         $"past the {ceiling:F2}m ceiling");
+        }
+        if (_pathMinimumBodyHeight < -0.5f)
+        {
+            failures.Add($"body center sank to {_pathMinimumBodyHeight:F2}m, below the maze floor");
+        }
+    }
+
     private void FeedExternalTarget()
     {
         if (!_debugTargetActive || _externalTentacle < 0
@@ -1042,6 +1290,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         bool upwardContactThisTick = false;
         bool positiveXContactThisTick = false;
         float tickTravel = center.DistanceTo(_lastCenter);
+        TrackMazeMetrics(_lastCenter);
         _lastCenter = center;
         _travel += tickTravel;
         _maximumDisplacement = Math.Max(_maximumDisplacement, center.DistanceTo(_initialCenter));
@@ -1914,6 +2163,24 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                  $"mountedRuns={_maximumWallMountedRun}/{_maximumCeilingMountedRun}/" +
                  $"{_maximumOuterTopRun}/{_maximumOuterWallRun}");
 
+        if (_maze is not null)
+        {
+            // 迷宫路线的核心产物就是这一行：走了多远、多快、卡在哪、身体高度落在净空的哪一段。
+            float movingSeconds = _pathMovingTicks * (float)TickDt;
+            float averageSpeed = movingSeconds > 1e-3f ? _pathTravel / movingSeconds : 0f;
+            GD.Print($"[DADDY-MAZE-METRIC] drive={_pathDriveMode} " +
+                     $"arrive={_pathArriveRadius:F2}m lift={_pathHeight:F2}m " +
+                     $"waypoints={_pathReached}/{_maze.Waypoints.Count} laps={_pathLaps} " +
+                     $"skipped={_pathSkipped} stalls={_pathStalls} " +
+                     $"slowestWaypoint={_pathMaximumWaypointTicks}tick " +
+                     $"horizTravel={_pathTravel:F2}m movingTicks={_pathMovingTicks} " +
+                     $"avgSpeed={averageSpeed:F3}m/s " +
+                     $"bodyHeight={_pathMinimumBodyHeight:F2}..{_pathMaximumBodyHeight:F2}m " +
+                     $"(room {DaddyLongLegsMazeBuilder.RoomHeight:F2}m) " +
+                     $"stuck={_maximumStuckCounter} detours={_maximumStuckEpisodeSerial} " +
+                     $"steps={_maximumStepReleaseSerial}");
+        }
+
         var failures = new List<string>();
         ValidateGeneral(failures);
         switch (_route)
@@ -2111,6 +2378,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 if (!_lifecycleExternalRetained) failures.Add("Launch did not retain external target assignment");
                 if (!_sawAtMoveTarget) failures.Add("MoveTarget arrival signal was never observed");
                 break;
+            case "maze":
+                ValidateMaze(failures);
+                break;
         }
 
         if (_expectHash is { } expected && _hasher.Value != expected)
@@ -2192,6 +2462,10 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 
     private void ObserveResidualPenetration(string part, Vector3 center, float radius)
     {
+        // 迷宫是封闭出生（§MazeMetricSettleTicks）：构造暂态的 .34L 段会先穿进墙/顶，
+        // 首个 locomotion tick 才收回。只跳过这段展开窗，之后照常真断言。
+        if (_maze is not null && _tick <= MazeMetricSettleTicks)
+            return;
         if (!_raycast.SpherePenetration(center, radius, out _, out float depth)
             || depth <= _maximumResidualPenetration)
         {
@@ -2341,8 +2615,9 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             if (_camOverride is null)
                 UpdateShowcaseCamera();
         }
-        else
+        else if (!_playerMode)
         {
+            // 第一人称期间必须整段跳过：它会按 WantCameraFly 反着改 MouseMode，把捕获抢走。
             UpdateCameraFly((float)delta);
         }
 
@@ -2361,6 +2636,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         _debugTargetMarker.Visible = _debugTargetActive;
         if (_debugTargetActive)
             _debugTargetMarker.GlobalPosition = _debugTargetPos;
+        _maze?.SetActiveWaypoint(_pathActiveTarget);
         UpdateHud();
         MaybeCaptureScreenshot();
     }
@@ -2441,7 +2717,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             {
                 ButtonIndex: MouseButton.Right,
                 Pressed: true,
-            } mouse && Input.IsPhysicalKeyPressed(Key.Shift))
+            } mouse && !_playerMode && Input.IsPhysicalKeyPressed(Key.Shift))
         {
             _pendingMoveTargetPick = mouse.Position;
             return;
@@ -2455,7 +2731,35 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             _hud?.ToggleCompact();
         else if (key.PhysicalKeycode == Key.F3)
             _terrain.Enabled = !_terrain.Enabled;
-        else if (key.PhysicalKeycode == Key.Space)
+        else if (key.PhysicalKeycode == Key.F4 && _maze is not null)
+        {
+            _pathAutoDrive = !_pathAutoDrive;
+            if (!_pathAutoDrive)
+                _pathActiveTarget = null;
+            GD.Print($"[DADDY-PATH] auto drive {(_pathAutoDrive ? "on" : "off")}");
+        }
+        else if (key.PhysicalKeycode == Key.F5 && _maze is not null)
+        {
+            _mazeCeilingVisible = !_mazeCeilingVisible;
+            _maze.SetCeilingVisible(_mazeCeilingVisible);
+        }
+        else if (key.PhysicalKeycode == Key.F6 && _maze is not null)
+        {
+            // 跟随相机 ↔ 自由飞（自由飞时 RMB 才有意义）。
+            _camFollowOffset = _camFollowOffset is null ? new Vector3(0f, 15f, 13f) : null;
+            GD.Print($"[DADDY-PATH] follow camera {(_camFollowOffset is null ? "off" : "on")}");
+        }
+        else if (key.PhysicalKeycode == Key.F7 && _maze is not null)
+        {
+            _pathMarkersVisible = !_pathMarkersVisible;
+            _maze.SetPathMarkersVisible(_pathMarkersVisible);
+            GD.Print($"[DADDY-PATH] markers {(_pathMarkersVisible ? "on" : "off")}");
+        }
+        else if (key.PhysicalKeycode == Key.Tab)
+            TogglePlayerMode();
+        else if (key.PhysicalKeycode == Key.R && _playerMode && _player is not null)
+            PlacePlayerNearCreature(_player);
+        else if (key.PhysicalKeycode == Key.Space && !_playerMode)
             _controller.Launch(new Vector3(0.07f, 0.34f, 0.03f));
         else if (key.PhysicalKeycode == Key.T)
             _controller.Teleport(new Vector3(0f, 0.5f, 1.5f));
@@ -2482,6 +2786,64 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             StunInteractiveTentacle(tentacle);
         else if (key.PhysicalKeycode is >= Key.Key1 and <= Key.Key3)
             SelectPreset((int)(key.PhysicalKeycode - Key.Key1));
+    }
+
+    /// <summary>
+    /// 进/出第一人称观察模式（Tab）。生物侧不受影响：路径驱动照跑，只是 WASD / 空格 /
+    /// 鼠标改由玩家消费。人在层 2、内核地形查询掩码恒为 1，所以生物看不见他——
+    /// 这个模式是纯观察工具，不进任何 tick 或观测量。
+    /// </summary>
+    private void TogglePlayerMode()
+    {
+        if (Deterministic)
+            return;
+        if (_maze is null)
+        {
+            GD.Print("[DADDY-PLAYER] first-person mode needs --daddy-route=maze");
+            return;
+        }
+
+        _playerMode = !_playerMode;
+        if (_playerMode && _player is null)
+        {
+            _player = new DaddyLongLegsSandboxPlayer { Name = "SandboxPlayer" };
+            AddChild(_player);
+            PlacePlayerNearCreature(_player);
+        }
+        _player?.SetActive(_playerMode);
+        if (!_playerMode)
+        {
+            _camera.Current = true;
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            _cameraFlying = false;
+        }
+        GD.Print($"[DADDY-PLAYER] first person {(_playerMode ? "on" : "off")}" +
+                 (_player is not null ? $" at {Format(_player.GlobalPosition)}" : string.Empty));
+    }
+
+    /// <summary>
+    /// 把人放到「离生物最近的路点 + <see cref="PlayerSpawnLead"/>」并转向生物。用路点当落点
+    /// 是因为它天然满足两个条件：一定在开放格里，且一定在地面高度（y = 迷宫原点）。
+    /// </summary>
+    private void PlacePlayerNearCreature(DaddyLongLegsSandboxPlayer player)
+    {
+        IReadOnlyList<Vector3> waypoints = _maze!.Waypoints;
+        Vector3 center = _controller.BodyCenter;
+        int nearest = 0;
+        float best = float.PositiveInfinity;
+        for (int i = 0; i < waypoints.Count; i++)
+        {
+            float dx = waypoints[i].X - center.X;
+            float dz = waypoints[i].Z - center.Z;
+            float distance = dx * dx + dz * dz;
+            if (distance >= best)
+                continue;
+            best = distance;
+            nearest = i;
+        }
+
+        int index = (nearest + PlayerSpawnLead) % waypoints.Count;
+        player.Place(waypoints[index], center);
     }
 
     private void StunInteractiveTentacle(int index)
@@ -2595,6 +2957,30 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
             _controller.TickQueryCount, _controller.PeakQueryCount,
             _preset.MaximumTerrainQueriesPerTick, _controller.AtMoveTarget,
             _externalTentacle, _debugTargetPull, string.Join("  ", states));
+        _hud.UpdatePathStatus(MazePathStatusLine());
+    }
+
+    private string MazePathStatusLine()
+    {
+        if (_maze is null)
+            return string.Empty;
+        float height = _controller.BodyCenter.Y - _maze.Origin.Y;
+        float distance = _pathActiveTarget is { } target
+            ? _controller.BodyCenter.DistanceTo(target)
+            : float.NaN;
+        float eye = (_player?.EyePosition.Y ?? _maze.Origin.Y) - _maze.Origin.Y;
+        string person = _playerMode
+            ? $"first person ON (eye {eye,4:F2}m)  WASD walk  Shift sneak  Space jump  " +
+              "R re-place  Tab exit"
+            : "Tab first person";
+        return $"path  {(_pathAutoDrive ? "auto" : "manual (F4)")}  drive {_pathDriveMode}  " +
+               $"waypoint {_pathWaypoint}/{_maze.Waypoints.Count} lap {_pathLaps}  " +
+               $"dist {distance,5:F2}m  held {_pathWaypointTicks}t  " +
+               $"skipped {_pathSkipped}\n" +
+               $"body height {height,5:F2}m / room " +
+               $"{DaddyLongLegsMazeBuilder.RoomHeight:F2}m    " +
+               $"F4 auto  F5 ceiling  F6 camera  F7 markers\n" +
+               person;
     }
 
     private void BuildDebugTargetMarker()
@@ -2618,6 +3004,19 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 
     private bool ParseArguments()
     {
+        // 场景级默认路线：让「双击场景直接进那条路线」成立，不必每次手带 --daddy-route=。
+        // 留空 = 沿用代码默认（flat），因此既有场景行为逐位不变；命令行永远优先。
+        if (!string.IsNullOrEmpty(DefaultRoute))
+        {
+            string scenic = DefaultRoute.ToLowerInvariant();
+            if (Array.IndexOf(RouteNames, scenic) < 0)
+            {
+                GD.PushError($"[DADDY-CLI] scene DefaultRoute '{DefaultRoute}' is not a known route");
+                return false;
+            }
+            _route = scenic;
+        }
+
         foreach (string argument in OS.GetCmdlineUserArgs())
         {
             try
@@ -2664,6 +3063,58 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 {
                     _expectHash = ParseUInt64(
                         argument["--daddy-expect-hash=".Length..], hexadecimalByDefault: true);
+                }
+                else if (argument.StartsWith("--daddy-path-drive=", StringComparison.Ordinal))
+                {
+                    _pathDriveMode = argument["--daddy-path-drive=".Length..] switch
+                    {
+                        "target" => PathDriveMode.Target,
+                        "dir" => PathDriveMode.Dir,
+                        var other => throw new FormatException(
+                            $"--daddy-path-drive 只接受 target|dir（收到 '{other}'）"),
+                    };
+                }
+                else if (argument.StartsWith("--daddy-path-arrive=", StringComparison.Ordinal))
+                {
+                    _pathArriveRadius = ParsePositive(
+                        argument["--daddy-path-arrive=".Length..], "--daddy-path-arrive");
+                }
+                else if (argument.StartsWith("--daddy-path-height=", StringComparison.Ordinal))
+                {
+                    _pathHeight = ParsePositive(
+                        argument["--daddy-path-height=".Length..], "--daddy-path-height");
+                }
+                else if (argument.StartsWith("--daddy-path-loop=", StringComparison.Ordinal))
+                {
+                    _pathLoop = argument["--daddy-path-loop=".Length..] == "on";
+                }
+                else if (argument.StartsWith("--daddy-path-stall=", StringComparison.Ordinal))
+                {
+                    _pathStallTicks = int.Parse(
+                        argument["--daddy-path-stall=".Length..], CultureInfo.InvariantCulture);
+                    if (_pathStallTicks < 1) throw new FormatException("path stall must be >= 1");
+                }
+                else if (argument.StartsWith("--daddy-path-skip=", StringComparison.Ordinal))
+                {
+                    _pathSkipTicks = int.Parse(
+                        argument["--daddy-path-skip=".Length..], CultureInfo.InvariantCulture);
+                    if (_pathSkipTicks < 1) throw new FormatException("path skip must be >= 1");
+                }
+                else if (argument == "--daddy-maze-ceiling=on")
+                {
+                    _mazeCeilingVisible = true;
+                }
+                else if (argument == "--daddy-maze-camera=free")
+                {
+                    _mazeFollowCamera = false;
+                }
+                else if (argument.StartsWith("--daddy-path-markers=", StringComparison.Ordinal))
+                {
+                    _pathMarkersVisible = argument["--daddy-path-markers=".Length..] != "off";
+                }
+                else if (argument == "--daddy-player=on")
+                {
+                    _wantPlayerMode = true;
                 }
                 else if (argument.StartsWith("--daddy-screenshot=", StringComparison.Ordinal))
                 {
@@ -2749,7 +3200,20 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
                 $"{SparseGaitSettleTicks + SparseGaitMinimumMoveTicks} ticks");
             return false;
         }
+        if (_pathSkipTicks < _pathStallTicks)
+        {
+            GD.PushError("[DADDY-CLI] --daddy-path-skip must not be below --daddy-path-stall");
+            return false;
+        }
         return true;
+    }
+
+    private static float ParsePositive(string text, string flag)
+    {
+        float value = float.Parse(text, CultureInfo.InvariantCulture);
+        if (!float.IsFinite(value) || value <= 0f)
+            throw new FormatException($"{flag} must be a finite positive number");
+        return value;
     }
 
     private static string ParseAblation(string name) => name.ToLowerInvariant() switch
@@ -2814,6 +3278,28 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
         "stuck" => new Vector3(-14f, 1.35f, 12f),
         _ => new Vector3(-20f, 1.35f, 0f),
     };
+
+    /// <summary>
+    /// 只在 route=maze 时构建主仓尺度迷宫；其余路线的场景树、地形查询与哈希逐位不变。
+    /// 布局/连通性/路径合法性由 <see cref="DaddyLongLegsMazeBuilder"/> 在构造期真断言，
+    /// 失败直接以退出码 2 结束——跑不通的布局不能伪装成 Daddy 的运动缺陷。
+    /// </summary>
+    private bool BuildMaze()
+    {
+        try
+        {
+            _maze = new DaddyLongLegsMazeBuilder(MazeOrigin);
+            _maze.Build(this);
+            return true;
+        }
+        catch (InvalidOperationException error)
+        {
+            _fatal = true;
+            GD.Print($"[DADDY-RESULT] FAIL: maze layout invalid: {error.Message}");
+            GetTree().Quit(2);
+            return false;
+        }
+    }
 
     private int BestLocomotionTentacle()
     {

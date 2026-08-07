@@ -21,6 +21,7 @@ public sealed class DaddyLongLegsSandboxHud
     private Label _help = null!;
     private string _summaryText = string.Empty;
     private string _tentacleStates = string.Empty;
+    private string _pathText = string.Empty;
     private bool _compact = true;
 
     public void Build(
@@ -194,8 +195,9 @@ public sealed class DaddyLongLegsSandboxHud
         _panel.CustomMinimumSize = new Vector2(_compact ? CompactWidth : FullWidth, 0f);
         _densityButton.Text = _compact ? "Full (F2)" : "Compact (F2)";
         _help.Text = _compact
-            ? "F1 hide/show UI    F2 full/compact    WASD+Q/E move    RMB camera"
+            ? "F1 hide/show UI    F2 full/compact    WASD+Q/E move    RMB camera    Tab first person"
             : "F1  hide/show UI    F2  full/compact\n" +
+              "Tab  first person (route=maze)    F7  path markers on/off\n" +
               "WASD + Q/E  move in 3D    Shift + RMB  feed MoveTarget\n" +
               "Alt/Option, Ctrl, or Cmd + 0..9 (-/= for 10/11)  stun by index\n" +
               "B / N  previous / next seed    Space  Launch\n" +
@@ -206,13 +208,23 @@ public sealed class DaddyLongLegsSandboxHud
         RefreshStatus();
     }
 
+    /// <summary>迷宫路径驱动状态（route=maze 专用；其它路线传空字符串即隐藏该行）。</summary>
+    public void UpdatePathStatus(string text)
+    {
+        _pathText = text;
+        RefreshStatus();
+    }
+
     private void RefreshStatus()
     {
         if (_status is null)
             return;
-        _status.Text = _compact || string.IsNullOrEmpty(_tentacleStates)
-            ? _summaryText
-            : _summaryText + "\ntentacles  " + _tentacleStates;
+        string text = _summaryText;
+        if (!string.IsNullOrEmpty(_pathText))
+            text += "\n" + _pathText;
+        if (!_compact && !string.IsNullOrEmpty(_tentacleStates))
+            text += "\ntentacles  " + _tentacleStates;
+        _status.Text = text;
     }
 
     private static Button AddButton(Container parent, string text, Action callback)
