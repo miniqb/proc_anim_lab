@@ -1,53 +1,41 @@
-[gd_scene format=3]
+[gd_scene format=3 uid="uid://yag1jpniph57"]
 
-; DaddyLongLegs 迷宫观察场景。与 daddy_long_legs_sandbox.tscn 并列、互不影响：
-; 那个是白盒回归场景（平地/墙/顶/course 几何 + 全部矩阵配置的宿主），这个只做
-; 「主仓尺度房间骨架里走路 + 第一人称观察」。
-;
-; 刻意不放 Terrain：迷宫由 DaddyLongLegsMazeBuilder 在运行期建在 x=+200，自成一体。
-; 因此本场景只在 route=maze 下有意义——用 --daddy-route= 切到别的路线会没有地面。
-; 需要白盒地形请开 daddy_long_legs_sandbox.tscn。
-;
-; 根节点上只钉两项，其余全走脚本导出项的默认值；要改初始参数直接在 Inspector 里改
-; （Sandbox / Creature、Sandbox / Maze Path、Sandbox / Maze View 三组），命令行永远优先。
-; PathDrive=dir 是 tether 姿态：迷宫实测比 target 直喂更稳，也是回迁推荐默认。
-;
-; 注意：Godot 编辑器保存场景会丢掉这些注释；同样的说明在
-; docs/daddy_long_legs_controller.md §7.1 里有一份。
-
-[ext_resource type="Script" path="res://scripts/daddy_long_legs_sandbox/DaddyLongLegsSandboxWorld.cs" id="1_world"]
+[ext_resource type="Script" uid="uid://cmu0fr0jnsy4h" path="res://scripts/daddy_long_legs_sandbox/DaddyLongLegsSandboxWorld.cs" id="1_world"]
 
 [sub_resource type="Environment" id="environment"]
 background_mode = 1
-background_color = Color(0.022, 0.027, 0.040, 1)
+background_color = Color(0.022, 0.027, 0.04, 1)
 ambient_light_source = 3
 ambient_light_color = Color(0.55, 0.63, 0.76, 1)
 ambient_light_energy = 0.62
 tonemap_mode = 2
 
-[node name="DaddyLongLegsMazeWorld" type="Node3D"]
+[node name="DaddyLongLegsMazeWorld" type="Node3D" unique_id=1612903540]
 script = ExtResource("1_world")
 DefaultRoute = "maze"
+DefaultPreset = "terror"
+DefaultSeed = 5
 PathDrive = "dir"
+PathMarkers = false
+StartInFirstPerson = true
 
-[node name="Camera3D" type="Camera3D" parent="."]
-position = Vector3(186, 12, 24)
-rotation = Vector3(-0.30, -0.75, 0)
+[node name="Camera3D" type="Camera3D" parent="." unique_id=596574996]
+transform = Transform3D(0.73168886, 0.20143804, -0.6511944, 0, 0.9553365, 0.29552022, 0.6816388, -0.21622884, 0.69900906, 186, 12, 24)
 current = true
 fov = 62.0
 far = 200.0
 
-[node name="KeyLight" type="DirectionalLight3D" parent="."]
-rotation = Vector3(-0.82, -0.58, -0.18)
-light_color = Color(0.80, 0.89, 1, 1)
+[node name="KeyLight" type="DirectionalLight3D" parent="." unique_id=129042419]
+transform = Transform3D(0.75121397, 0.5439634, -0.37387356, -0.122137785, 0.671199, 0.7311458, 0.6486601, -0.50358284, 0.5706526, 0, 0, 0)
+light_color = Color(0.8, 0.89, 1, 1)
 light_energy = 1.25
 shadow_enabled = true
 
-[node name="WarmFill" type="OmniLight3D" parent="."]
-position = Vector3(196, 8, 10)
+[node name="WarmFill" type="OmniLight3D" parent="." unique_id=1276924646]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 196, 8, 10)
 light_color = Color(1, 0.56, 0.34, 1)
 light_energy = 5.0
 omni_range = 28.0
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1366632637]
 environment = SubResource("environment")

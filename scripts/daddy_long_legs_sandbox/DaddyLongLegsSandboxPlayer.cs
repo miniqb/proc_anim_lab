@@ -46,8 +46,44 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
 
     public bool Active { get; private set; }
 
+    /// <summary>
+    /// 束缚门（抓取竞技场用）：true 时吞掉全部玩家输入（鼠标视角、移动、跳跃），但**重力
+    /// 自驱仍在**——空中被抓会自然落回地面，不会悬停；朝向交给世界脚本经
+    /// <see cref="SetLookAngles"/> 驱动。默认 false，迷宫场景行为不变。
+    /// </summary>
+    public bool InputLocked { get; set; }
+
+    /// <summary>
+    /// 全冻结门（拖拽/吞没阶段用）：true 时自驱物理整段停掉（含重力与 MoveAndSlide），
+    /// 位置完全交给世界脚本外部写 <c>GlobalPosition</c>——两者同时跑会互相打架。默认 false。
+    /// </summary>
+    public bool MotionFrozen { get; set; }
+
     /// <summary>相机所在世界位置（HUD 用；相机是子节点，外部不该直接摸）。</summary>
     public Vector3 EyePosition => _camera?.GlobalPosition ?? GlobalPosition;
+
+    /// <summary>相机视线方向（世界系，指向画面深处）。镜头接管的对准判定用。</summary>
+    public Vector3 EyeForward => _camera is not null
+        ? -_camera.GlobalTransform.Basis.Z
+        : -GlobalTransform.Basis.Z;
+
+    /// <summary>身体 yaw（弧度）。镜头接管读取当前值做阻尼插值。</summary>
+    public float Yaw => Rotation.Y;
+
+    /// <summary>相机俯仰（弧度，向上为正）。镜头接管读取当前值做阻尼插值。</summary>
+    public float CameraPitch => _pitch;
+
+    /// <summary>
+    /// 外部镜头接管入口：直接写 yaw + pitch（pitch 仍夹既有限幅）。只在
+    /// <see cref="InputLocked"/> 期间由世界脚本调用；语义与鼠标路径完全一致——
+    /// yaw 落在身体、pitch 落在相机子节点。
+    /// </summary>
+    public void SetLookAngles(float yaw, float pitch)
+    {
+        Rotation = new Vector3(0f, yaw, 0f);
+        _pitch = Mathf.Clamp(pitch, -PitchLimit, PitchLimit);
+        ApplyCameraRotation();
+    }
 
     public override void _Ready()
     {
@@ -132,7 +168,7 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
 
     public override void _Input(InputEvent @event)
     {
-        if (!Active || Input.MouseMode != Input.MouseModeEnum.Captured)
+        if (!Active || InputLocked || Input.MouseMode != Input.MouseModeEnum.Captured)
             return;
         if (@event is not InputEventMouseMotion motion)
             return;
@@ -143,12 +179,23 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
 
     public override void _PhysicsProcess(double delta)
     {
-        if (!Active)
+        if (!Active || MotionFrozen)
             return;
 
         Vector3 velocity = Velocity;
         if (!IsOnFloor())
             velocity += GetGravity() * (float)delta;
+
+        if (InputLocked)
+        {
+            // 束缚下只剩重力自驱：水平分量沿用「无输入即刻停」语义归零，然后照常落地。
+            velocity.X = Mathf.MoveToward(velocity.X, 0f, MoveSpeed);
+            velocity.Z = Mathf.MoveToward(velocity.Z, 0f, MoveSpeed);
+            Velocity = velocity;
+            MoveAndSlide();
+            return;
+        }
+
         if (Input.IsPhysicalKeyPressed(Key.Space) && IsOnFloor())
             velocity.Y = JumpVelocity;
 

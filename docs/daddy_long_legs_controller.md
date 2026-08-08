@@ -835,6 +835,80 @@ $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 4
 高度上挡视线，所以这个开关是配套的。注意 `SetActiveWaypoint` 每帧都会被调用，
 **总开关必须在它里面复读**，否则关掉的球下一帧就被重新点亮。
 
+### 7.2 抓取竞技场：追逐 + 触手抓玩家 + 拔河挣脱（2026-08-08，探索场景，不进矩阵）
+
+**动机**：§7.1.1 的第一人称观察是纯旁观；这一轮把契约 §4.2 的外部目标通道第一次接到
+「玩家可被抓」上，闭环出完整捕食交互：追逐 → 提前伸抓 → 接触锁定 → 束缚拔河 →
+挣脱失能 / 拖入吞食 → 重开。**内核零改动**——玩法全部在宿主层消费既有纯值接缝
+（`TryAssignExternalTarget` / `TargetEffects` / `StunTentacle`），与本文 §6 和
+`DaddyLongLegsTargetContracts` 的「Reached/Held/Released 不代表伤害/吞入」边界一致。
+
+**场景与文件**：`scenes/daddy_long_legs_grab_arena.tscn` + `DaddyLongLegsGrabArenaWorld`
+（独立世界脚本，不复用回归世界的路线机器）+ `DaddyLongLegsGrabArenaBuilder`（单矩形封闭
+房间，净高等常量直接引用 MazeBuilder 的主仓镜像常量，内径默认 30×24m）+
+`DaddyLongLegsGrabHud`。玩家复用 §7.1.1 的 `DaddyLongLegsSandboxPlayer`，本轮给它加了
+默认关闭的 `InputLocked` 束缚门、`MotionFrozen` 全冻结门与 `SetLookAngles` 外部视角入口
+（迷宫行为不变）。两门分档：束缚只吞输入、**重力自驱保留**（空中被抓会自然落回地面，
+不悬停，快照速度照实喂使尖端贴住下落目标）；拖拽/吞没才全冻结（位置由世界脚本外驱写
+`GlobalPosition`，与 `MoveAndSlide` 互斥）。
+本场景只有第一人称；怪物与玩家分列 ±X 两端出生（默认相距 22m，超出任何触手可及）。
+
+**宿主状态机**：`Chase → (Reached) Bound[镜头接管→对准→Struggle] → 成功 Chase / 超时
+Dragging → (视点进质心 EatRadius) Eaten → R 重开`。束缚/拖拽/吞没期间对内核只喂零移动
+意图——生物靠既有支撑闭环原地自持站立，刻意不钉死（§6 生命周期语义不动）。
+
+**挣脱期猛拽**：束缚不是双方钉死的静态拔河——挣脱条出现后，宿主每
+`StruggleTugIntervalSeconds`（默认 1.4s，±25% 确定性抖动 = seed+脉冲序号哈希，无全局随机）
+发起一次朝身体的急拉脉冲：首 tick 最猛、按 0.82/tick 几何衰减放完 `StruggleTugDistance`
+（默认 0.45m；Export 置 0 回到完全钉住）。拽近到 2m（嘴边）只跳过新发起，在途脉冲照常放完；
+竖直分量减半不把人吊起来；位置直写与玩家束缚期重力自驱共存（拖拽阶段先例），快照速度
+含在途脉冲使触手尖端贴住被拽动的目标。
+
+**「尽可能早尝试抓取」的实现**：不是全局定距开关。逐 tick 扫描 `CanAcceptExternalTarget`
+的空闲触手，`锚点到玩家胶囊心距离 ≤ 该触手冻结 Length × GrabStartReachRatio(0.95)` 即发起，
+多条可及取剩余伸展量最大者；超出 `Length × 1.5` 放弃（对齐原作 hunt 放弃距离）。发起后
+ExternalReach 伺服整链直线伸向玩家（触手自动脱离承重，≙ 原作只有 `!neededForLocomotion`
+的腿才捕猎）；**真正锁定只凭 tip 物理接触**（`Reached`：tip 与目标半径和 + 0.20m 判定，
+≙ 原作 `j == tChunks.Length-1` 仅尖端可抓、纯 touch 检测）。terror 档触手冻结长度普遍
+5~15m，所以伸抓远早于贴身，正面回答了「不想因为距离没到而不尝试」。
+
+**原作取证参照**（`~/workspace/others/rw_decomp/DaddyTentacle.cs` / `DaddyLongLegs.cs` /
+`Player.cs`，仅本机参考）：
+
+| 机制 | 原作值 | 本场景取舍 |
+|------|--------|-----------|
+| 猎捕发起距离 | `idealLength + 40px(1m)`，随机猎物、一触手一猎物 | 逐触手 `Length×0.95`，单触手单目标 |
+| 放弃距离 | `idealLength × 1.5` | 同值（`GrabAbortReachRatio=1.5`） |
+| 抓取判定 | 仅 tip chunk、球接触、相对速度门 `Lerp(1,8,sticky)`（sticky 0.75s 满） | 仅 tip 接触（内核 `Reached`）；省略 sticky 粘性门——玩法要的是确定锁定，不是概率摸空 |
+| 挣脱 | MMF remix：每 tick `GraspWiggle/20` 概率松手 + 触手 stun 1~7 tick；wiggle 靠**双轴交替**输入累积 | 确定性拔河：`MashTargetPresses(18)` 次 vs `StruggleTimeLimitSeconds(6)`，单键连打（用户指定）；成功 `StunTentacle(4s)`（内核自动松手 + 软瘫下垂）+ 全局再抓宽限 1.5s |
+| 拖拽 | `vel += slerp(朝身体,沿触手) × LerpMap(路径长, 3,18 → 0.65,0.25 px/tick)/mass` | 内核 pull 效果（`distance×0.12` 封顶 0.10m/tick）宿主逐 tick 累积应用到玩家，收线速度夹在 `DragMinSpeed(1.2)~DragMaxSpeed(6) m/s` |
+| 吞入 | 身体 chunk 碰撞触发，`progression +0.0125/tick`（2s 吞完，1s 处死），按初始距离壳线性收缩 | 视点进质心 `EatRadius(0.45)` 即 Eaten，视点 0.12s 阻尼吸附钉随质心 + HUD 渐暗 |
+
+**镜头接管**：锁定即接管玩家 yaw + 相机 pitch，指数阻尼（`CameraTakeoverSeconds=0.5`）
+转向**插值**身体质心（`InterpolatedBodyCenter`，40Hz 阶梯直接看会抖）；视线夹角
+≤ `AlignStartDegrees(6°)`（或 1.2s 兜底超时）才开始挣脱流程——进度条与倒计时从这一刻
+出现/起跑。挣脱成功当帧玩家已面向怪物，交还控制无跳变；失败则镜头持续锁定直到吞没。
+
+**键位**：Space 连打挣脱（束缚期玩家输入全断，不会误跳；挣脱瞬间若仍按着 Space 会顺势
+跳一下，当受惊反应保留）、M 切 dir/target 追逐喂法、R 重开、F1 状态行、F3 查询线、
+V formal/白盒、Esc 鼠标捕获。全部调参走 Inspector 导出（无命令行参数，纯交互场景）。
+
+**验证状态**：内核零 diff（smoke 哈希不动）+ 40 项矩阵全绿；零输入 headless
+（`--fixed-fps 40 --quit-after 4800`）自动走完 追逐→伸抓→锁定→对准→倒计时超时→拖拽→
+吞没 整条败北链（`[DADDY-ARENA]` 相位日志判定）。挣脱成功路径需真人连打，交互验证。
+
+**已知边界**：玩家对内核地形查询不可见（§7.1.1 的层设计不变），触手"抓住"是外部目标
+距离语义而非碰撞；一次只有一条触手持有玩家（原作可多触手按 bodySize 计够不够"抓牢"，
+留作后续）；挣脱进度无衰减、无双轴交替加成（原作 wiggle 的两个风味点，需要时再加）。
+
+**追逐贴顶与 `GravityCancellationGain` 导出**：3.2m 天花板的封闭房间里，追逐中身体会
+慢慢贴到天花板——这是 §4 移动档 `支撑 × 1.2` 过抵消的有意涌现（开阔无顶下自平衡出巡航
+高度，被矮天花板截断后顶面成为支撑最充分的稳定吸引子），与追逐喂法、dir/target 模式、
+`ChaseHeightOffset` 均无关。A/B 实证：默认 1.2 追逐中 `cancel≈1.02~1.04`、bodyY 1.6→2.65
+贴顶；宿主侧改 1.0 后全程中性、bodyY 0.7~0.97 零上浮（代价是站姿整体变矮）。竞技场把
+该增益挂成场景 Export（默认 1.2 = 内核原值，经 `CreateController(origin, params, seed)`
+重载透传，内核默认与矩阵基线不动），矮房间观感自行调低。
+
 ## 8. 明确边界
 
 - 不实现 AI、路径搜索、伤害、进食、消化、水中运动、房间切换或动态实体权威。

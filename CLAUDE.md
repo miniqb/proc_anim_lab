@@ -4,13 +4,13 @@
 > 系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/)
 > 的怪物系统。**
 >
-> **当前状态（2026-08-07）**：`ProcAnim.Core` 含 **10 个平行物种控制器**
+> **当前状态（2026-08-08）**：`ProcAnim.Core` 含 **10 个平行物种控制器**
 > （Lizard / Humanoid / Spider / Centipede / Cicada / Vulture / TentaclePlant / Deer /
 > DaddyLongLegs / DropBug），各有独立回归；七套 Godot 矩阵合计 **170 项**。M5 内核抽离与
 > 回迁契约完成；正式渲染层已有 **6 个渲染件**（Lizard / Centipede / Vulture / DaddyLongLegs /
-> Spider / Humanoid）。最近一轮：DaddyLongLegs 主仓尺度移动试验 —— 新增 `route=maze`
-> 房间骨架 + 路径驱动两种喂法 + 主仓规格第一人称观察（探索路线，不进矩阵，
-> 见 [daddy_long_legs](docs/daddy_long_legs_controller.md) §7.1）。
+> Spider / Humanoid）。最近一轮：DaddyLongLegs 抓取竞技场 —— 外部目标通道首次接玩家，
+> 闭环「追逐 → 触手提前伸抓 → 束缚连打挣脱 → 拖入吞食 → 重开」，内核零改动
+> （探索场景，不进矩阵，见 [daddy_long_legs](docs/daddy_long_legs_controller.md) §7.2）。
 > 「默认集成姿态」的闭环待主仓接线后验证（契约 §4.1 / §8.3）。
 
 ---
