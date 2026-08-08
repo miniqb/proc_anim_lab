@@ -840,7 +840,7 @@ $GODOT --headless --path . --log-file /private/tmp/godot_codex.log --fixed-fps 4
 **动机**：§7.1.1 的第一人称观察是纯旁观；这一轮把契约 §4.2 的外部目标通道第一次接到
 「玩家可被抓」上，闭环出完整捕食交互：追逐 → 提前伸抓 → 接触锁定 → 束缚拔河 →
 挣脱失能 / 拖入吞食 → 重开。**内核零改动**——玩法全部在宿主层消费既有纯值接缝
-（`TryAssignExternalTarget` / `TargetEffects` / `StunTentacle`），与本文 §6 和
+（`TryAssignExternalTarget` / `TargetEffects`；失能表现后改走同一通道的痛缩，见本节末），与本文 §6 和
 `DaddyLongLegsTargetContracts` 的「Reached/Held/Released 不代表伤害/吞入」边界一致。
 
 **场景与文件**：`scenes/daddy_long_legs_grab_arena.tscn` + `DaddyLongLegsGrabArenaWorld`
@@ -881,7 +881,7 @@ ExternalReach 伺服整链直线伸向玩家（触手自动脱离承重，≙ �
 | 猎捕发起距离 | `idealLength + 40px(1m)`，随机猎物、一触手一猎物 | 逐触手 `Length×0.95`，单触手单目标 |
 | 放弃距离 | `idealLength × 1.5` | 同值（`GrabAbortReachRatio=1.5`） |
 | 抓取判定 | 仅 tip chunk、球接触、相对速度门 `Lerp(1,8,sticky)`（sticky 0.75s 满） | 仅 tip 接触（内核 `Reached`）；省略 sticky 粘性门——玩法要的是确定锁定，不是概率摸空 |
-| 挣脱 | MMF remix：每 tick `GraspWiggle/20` 概率松手 + 触手 stun 1~7 tick；wiggle 靠**双轴交替**输入累积 | 确定性拔河：`MashTargetPresses(18)` 次 vs `StruggleTimeLimitSeconds(6)`，单键连打（用户指定）；成功 `StunTentacle(4s)`（内核自动松手 + 软瘫下垂）+ 全局再抓宽限 1.5s |
+| 挣脱 | MMF remix：每 tick `GraspWiggle/20` 概率松手 + 触手 stun 1~7 tick；wiggle 靠**双轴交替**输入累积 | 确定性拔河：`MashTargetPresses(18)` 次 vs `StruggleTimeLimitSeconds(6)`，单键连打（用户指定）；成功后触手痛缩失能 4s（宿主合成目标抽回蜷缩，见本节末；最初用 `StunTentacle` 软瘫，因 3D 观感改掉）+ 全局再抓宽限 1.5s |
 | 拖拽 | `vel += slerp(朝身体,沿触手) × LerpMap(路径长, 3,18 → 0.65,0.25 px/tick)/mass` | 内核 pull 效果（`distance×0.12` 封顶 0.10m/tick）宿主逐 tick 累积应用到玩家，收线速度夹在 `DragMinSpeed(1.2)~DragMaxSpeed(6) m/s` |
 | 吞入 | 身体 chunk 碰撞触发，`progression +0.0125/tick`（2s 吞完，1s 处死），按初始距离壳线性收缩 | 视点进质心 `EatRadius(0.45)` 即 Eaten，视点 0.12s 阻尼吸附钉随质心 + HUD 渐暗 |
 
@@ -909,6 +909,26 @@ V formal/白盒、Esc 鼠标捕获。全部调参走 Inspector 导出（无命�
 贴顶；宿主侧改 1.0 后全程中性、bodyY 0.7~0.97 零上浮（代价是站姿整体变矮）。竞技场把
 该增益挂成场景 Export（默认 1.2 = 内核原值，经 `CreateController(origin, params, seed)`
 重载透传，内核默认与矩阵基线不动），矮房间观感自行调低。
+
+**挣脱失能从 Stun 软瘫改为「痛缩」（内核零改动）**：症状——`StunTentacle` 的
+`EnableStunLimp` 表现（每 tick `重力 × LimpGravityScale(1.35)`、抓地支撑全清）是纯 Verlet
+自由绳：砸地拖行时链约束/自避/地形解算互相拉扯，原作里读作「瘫软下垂」的忠实还原，在段粗
+贴地的 3D 里读作**一抖一抖的抽搐**。改法——挣脱成功后不再 stun，触手保持 ExternalReach，
+宿主喂**合成目标**：从抓点 SmoothStep（`FlinchRetractSeconds=0.4s`）抽回到锚点下方
+`Length × FlinchTuckLengthRatio(0.2)` 的**垂吊点**（逐 tick 按当前锚点重算跟着身体走；
+主体向下、水平外偏 ×0.35 免得盘进身体，吊点夹在地板上方 0.4m——初版蜷缩点水平外推
+被用户否掉：「举在空中不自然」，改垂着吊），失能总时长沿用 `EscapeTentacleStunSeconds(4s)`，
+到期 `ClearExternalTarget` 自动归队。伺服形状与内核 step-peel 收腿同源（`Anchor.Lerp` 直线
+等分目标），动作天然符合本物种语汇；任务全程不切换——照样不承重，`Reached/Released` 事件被
+宿主 `TentacleIndex` 过滤天然隔离。首版验证暴露两坑：① 单槽状态被第二次挣脱**覆盖**，旧触手
+泄漏在 ExternalReach 里无人喂/清——改多条并行 `FlinchState` 列表（宽限 1.5s < 失能 4s，
+再抓再挣脱必然叠加）；② 长触手（18~19m）悬空盘团被行走身体拖动会触发内核
+`ReleaseTerrainTaskForBacktrack` 收走任务（地形正确性优先，合法路径）——条目降级 `Detached`：
+触手提前归队走路，但**「疼着不抓」保留到期**（抓取候选扫描排除痛缩列表中的触手；否则出现
+「受伤的手 1.5s 后立刻又来抓」）。验证：tip 收敛停在吊点 ±0.1m 内自然摆动（tipY≈0.3~0.4 vs
+锚点 1.8~2.5m，垂在身下不刮地）；两条痛缩并行各按排期恢复（含跨 Eaten 相位）；默认败北链
+tick 级一致；daddy smoke 全绿（内核零 diff 旁证）。垂吊版还消掉了悬空盘团的 detach 触发
+（贴近自然悬挂形态，拓扑审计不再报警，长触手也能疼满全程）。
 
 ## 8. 明确边界
 

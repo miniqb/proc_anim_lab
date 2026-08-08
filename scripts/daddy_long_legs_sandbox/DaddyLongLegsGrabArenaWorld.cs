@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using Godot;
 using ProcAnim.Core.Host;
@@ -43,6 +44,11 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	/// 竖直分量按 <see cref="TugVerticalScale"/> 压扁，拽是横向拖拽、不把人吊起来。</summary>
 	private const float TugDecayRate = 0.82f;
 	private const float TugVerticalScale = 0.5f;
+
+	// 痛缩垂吊：吊点以向下为主、带少量外偏免得盘进身体；吊点不低于地板上方此高度
+	// （本场景房间地板恒为 y=0，探索场景直接用常量，不做地形查询）。
+	private const float FlinchHangSideRatio = 0.35f;
+	private const float FlinchHangFloorClearance = 0.4f;
 
 	// ---- Inspector 导出（本场景纯交互，无命令行参数）----
 
@@ -121,9 +127,17 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	[Export(PropertyHint.Range, "0.3,10,0.1")]
 	public float StruggleTugIntervalSeconds { get; set; } = 1.4f;
 
-	/// <summary>挣脱成功后该触手的失能时长（内核 Stun：自动松手 + 软瘫下垂）。</summary>
+	/// <summary>挣脱成功后该触手的失能总时长（痛缩收回 + 蜷缩保持，结束后自动归队）。</summary>
 	[Export(PropertyHint.Range, "0.5,30,0.5")]
 	public float EscapeTentacleStunSeconds { get; set; } = 4f;
+
+	/// <summary>痛缩收回耗时：触手从抓点抽回身体边所用秒数（失能总时长的前段，越短越像被烫到）。</summary>
+	[Export(PropertyHint.Range, "0.1,2,0.05")]
+	public float FlinchRetractSeconds { get; set; } = 0.4f;
+
+	/// <summary>垂吊点离锚点的下垂距离（该触手冻结长度的比例）：越小吊得越贴身。</summary>
+	[Export(PropertyHint.Range, "0.05,0.6,0.01")]
+	public float FlinchTuckLengthRatio { get; set; } = 0.2f;
 
 	/// <summary>挣脱成功后全局再抓宽限：给玩家拉开距离的时间。</summary>
 	[Export(PropertyHint.Range, "0,30,0.25")]
@@ -190,6 +204,20 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private int _grabTentacle = -1;
 	private long _grabRetryAtTick;
 	private long _regrabGraceUntilTick;
+
+	// 痛缩失能（挣脱成功后借外部目标通道把触手抽回身体蜷缩，替代内核 Stun 软瘫）。
+	// 多条可并行：宽限后再抓再挣脱，会在上一条还没痊愈时叠加第二条。
+	private sealed class FlinchState
+	{
+		public int Tentacle;
+		public long StartTick;
+		public long UntilTick;
+		public Vector3 FromPoint;
+		public Vector3 PrevTarget;
+		public bool Detached; // 内核（地形回溯等）收走了任务：不再喂目标，只保留「疼着不抓」到期
+	}
+
+	private readonly List<FlinchState> _flinches = new();
 
 	// 束缚 / 挣脱
 	private double _takeoverElapsed;
@@ -300,6 +328,10 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			return Fail($"StruggleTugIntervalSeconds must be finite and positive, got {StruggleTugIntervalSeconds}");
 		if (!FinitePositive(EscapeTentacleStunSeconds))
 			return Fail($"EscapeTentacleStunSeconds must be finite and positive, got {EscapeTentacleStunSeconds}");
+		if (!FinitePositive(FlinchRetractSeconds))
+			return Fail($"FlinchRetractSeconds must be finite and positive, got {FlinchRetractSeconds}");
+		if (!FinitePositive(FlinchTuckLengthRatio) || FlinchTuckLengthRatio > 1f)
+			return Fail($"FlinchTuckLengthRatio must be in (0,1], got {FlinchTuckLengthRatio}");
 		if (!float.IsFinite(RegrabGraceSeconds) || RegrabGraceSeconds < 0f)
 			return Fail($"RegrabGraceSeconds must be finite and >= 0, got {RegrabGraceSeconds}");
 		if (!FinitePositive(CameraTakeoverSeconds))
@@ -398,6 +430,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 				break;
 		}
 
+		FlinchTick();
 		FeedGrabSnapshot();
 		_controller.Tick(new TickContext(_gravityPerTick, _terrain, _tick));
 		ApplyTargetEffects();
@@ -476,7 +509,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		for (int i = 0; i < _controller.Tentacles.Count; i++)
 		{
 			DaddyTentacle tentacle = _controller.Tentacles[i];
-			if (!tentacle.CanAcceptExternalTarget)
+			if (!tentacle.CanAcceptExternalTarget || IsFlinching(i))
 				continue;
 			float slack = tentacle.Length * GrabStartReachRatio
 				- tentacle.Anchor.Pos.DistanceTo(grabPoint);
@@ -676,11 +709,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private void EscapeNow(bool byMash)
 	{
 		if (byMash && _grabTentacle >= 0)
-		{
-			int stunTicks = Math.Max(1,
-				(int)MathF.Ceiling(EscapeTentacleStunSeconds * TicksPerSecond));
-			_controller.StunTentacle(_grabTentacle, stunTicks); // 内部自动 ClearExternalTarget
-		}
+			BeginFlinch(_grabTentacle);
 		GD.Print($"[DADDY-ARENA] escape byMash={byMash} mash={_mashCount} " +
 				 $"tentacle={_grabTentacle} t={_tick}");
 		_grabTentacle = -1;
@@ -692,6 +721,98 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_player.InputLocked = false;
 		_player.MotionFrozen = false; // DragTick 安全网也走这里，别把冻结带回 Chase
 		_promptFlashUntilTick = _tick + PromptFlashTicks;
+	}
+
+	/// <summary>
+	/// 挣脱成功的失能表现：不走内核 Stun（EnableStunLimp = 1.35× 重力自由绳，拖地在 3D
+	/// 里读作抽搐），改为占住同一条 ExternalReach 通道喂宿主合成目标——从抓点平滑抽回，
+	/// 垂吊在锚点下方（同内核 step-peel 收腿的伺服形状），到时清目标自动归队。任务全程
+	/// 不切换：照样不承重，且到期前不参与抓取候选（UpdateGrabAttempt 跳过在疼的触手）。
+	/// </summary>
+	private void BeginFlinch(int tentacleIndex)
+	{
+		Vector3 from = PlayerChunkCenter();
+		_flinches.Add(new FlinchState
+		{
+			Tentacle = tentacleIndex,
+			StartTick = _tick,
+			UntilTick = _tick + Math.Max(1,
+				(long)MathF.Ceiling(EscapeTentacleStunSeconds * TicksPerSecond)),
+			FromPoint = from,
+			PrevTarget = from,
+		});
+		GD.Print($"[DADDY-ARENA] flinch start tentacle={tentacleIndex} t={_tick} " +
+				 $"retract={FlinchRetractSeconds:F2}s recover at t={_flinches[^1].UntilTick}");
+	}
+
+	private bool IsFlinching(int tentacleIndex)
+	{
+		foreach (FlinchState flinch in _flinches)
+		{
+			if (flinch.Tentacle == tentacleIndex)
+				return true;
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// 逐 tick 驱动全部痛缩：同 StableId 原地更新合成目标（SmoothStep 从抓点退到垂吊点，
+	/// 垂吊点每 tick 按当前锚点重算、跟着身体走）。内核（地形回溯）收走任务的条目降级为
+	/// Detached：不再喂目标（触手提前归队走路），但「疼着不抓」保留到期。相位无关：
+	/// 束缚/吞没期间上一次的痛缩照常恢复。
+	/// </summary>
+	private void FlinchTick()
+	{
+		for (int n = _flinches.Count - 1; n >= 0; n--)
+		{
+			FlinchState flinch = _flinches[n];
+			DaddyTentacle tentacle = _controller.Tentacles[flinch.Tentacle];
+			if (!flinch.Detached
+				&& (flinch.Tentacle == _grabTentacle
+					|| tentacle.Task != DaddyTentacleTask.ExternalReach))
+			{
+				flinch.Detached = true;
+				GD.Print($"[DADDY-ARENA] flinch detached by core tentacle={flinch.Tentacle} t={_tick}");
+			}
+			if (_tick >= flinch.UntilTick)
+			{
+				if (!flinch.Detached)
+					_controller.ClearExternalTarget(flinch.Tentacle);
+				GD.Print($"[DADDY-ARENA] flinch recovered tentacle={flinch.Tentacle} t={_tick}");
+				_flinches.RemoveAt(n);
+				continue;
+			}
+			if (flinch.Detached)
+				continue;
+			Vector3 anchor = tentacle.Anchor.Pos;
+			Vector3 outward = anchor - _controller.BodyCenter;
+			outward.Y = 0f;
+			Vector3 fallback = flinch.FromPoint - anchor;
+			fallback.Y = 0f;
+			Vector3 side = outward.LengthSquared() > 1e-10f ? outward.Normalized()
+				: fallback.LengthSquared() > 1e-10f ? fallback.Normalized()
+				: Vector3.Forward;
+			// 垂吊：主体向下耷拉、少量水平外偏；吊点托在地板上方，免得伺服目标穿地。
+			float tuckDistance = tentacle.Length * FlinchTuckLengthRatio;
+			Vector3 tuckPoint = anchor
+				+ side * (tuckDistance * FlinchHangSideRatio)
+				+ Vector3.Down * tuckDistance;
+			tuckPoint.Y = MathF.Max(tuckPoint.Y, FlinchHangFloorClearance);
+			long retractTicks = Math.Max(1,
+				(long)MathF.Ceiling(FlinchRetractSeconds * TicksPerSecond));
+			float progress = Mathf.Clamp(
+				(float)(_tick - flinch.StartTick) / retractTicks, 0f, 1f);
+			Vector3 target = flinch.FromPoint.Lerp(tuckPoint, Mathf.SmoothStep(0f, 1f, progress));
+			_controller.TryAssignExternalTarget(flinch.Tentacle,
+				new DaddyLongLegsTargetSnapshot(
+					PlayerTargetId,
+					target,
+					target - flinch.PrevTarget,
+					PlayerChunkRadius,
+					1f,
+					pullTowardBody: false));
+			flinch.PrevTarget = target;
+		}
 	}
 
 	private void BeginDragging()
@@ -763,6 +884,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			_controller.ClearExternalTarget(_grabTentacle);
 			_grabTentacle = -1;
 		}
+		_flinches.Clear(); // controller 即将重建，旧触手引用作废
 		SpawnDaddy();
 		_player.InputLocked = false;
 		_player.MotionFrozen = false;
@@ -883,16 +1005,19 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		string grab = _grabTentacle >= 0
 			? $"{_grabTentacle}({_controller.Tentacles[_grabTentacle].Role})"
 			: "-";
+		string flinch = "";
+		foreach (FlinchState state in _flinches)
+			flinch += $" flinch={state.Tentacle}({(state.UntilTick - _tick) / (float)TicksPerSecond:F1}s)";
 		_hud.SetStatus(
 			$"DADDY GRAB ARENA — phase={_phase} drive={DriveName()} dist={distance:F1}m " +
-			$"grab={grab} mash={_mashCount}/{MashTargetPresses}\n" +
+			$"grab={grab}{flinch} mash={_mashCount}/{MashTargetPresses}\n" +
 			"[M] chase drive  [R] restart  [V] render  [F1] hud  [F3] rays  [Esc] mouse");
 
 		switch (_phase)
 		{
 			case ArenaPhase.Chase:
 				if (_tick < _promptFlashUntilTick)
-					_hud.SetPrompt("BROKE FREE!", "the tentacle is limp for a while — run");
+					_hud.SetPrompt("BROKE FREE!", "the tentacle recoils in pain — run");
 				else
 					_hud.SetPrompt("");
 				_hud.SetBars(false, 0f, 0f);
