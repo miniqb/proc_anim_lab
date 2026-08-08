@@ -39,10 +39,9 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private const int DevourFadeTicks = 32;
 
 	/// <summary>挣脱猛拽脉冲形状：首 tick 速度 = 拽近量 × (1−衰减率)，逐 tick 几何衰减放完；
-	/// 拽近到 <see cref="TugStopDistance"/> 内不再发起（已到嘴边，收尾留给拖拽阶段）；
+	/// 无距离下限——拽到玩家球与任意 body chunk 相交即提前吞没（不等倒计时）；
 	/// 竖直分量按 <see cref="TugVerticalScale"/> 压扁，拽是横向拖拽、不把人吊起来。</summary>
 	private const float TugDecayRate = 0.82f;
-	private const float TugStopDistance = 2.0f;
 	private const float TugVerticalScale = 0.5f;
 
 	// ---- Inspector 导出（本场景纯交互，无命令行参数）----
@@ -573,6 +572,8 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 				if (_struggleActive)
 				{
 					StruggleTugTick();
+					if (_phase != ArenaPhase.Bound)
+						break; // 拽进身体提前吞没，别再触发倒计时判定
 					if (_tick >= _struggleDeadlineTick)
 						BeginDragging();
 				}
@@ -614,8 +615,8 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	/// <summary>
 	/// 挣脱期间歇猛拽：到期发起一次朝身体的急拉脉冲（首 tick 最猛、几何衰减放完
 	/// <see cref="StruggleTugDistance"/>），玩家不再钉在原地。位置直写与玩家自驱重力
-	/// 共存（同拖拽阶段先例）；拽近到 <see cref="TugStopDistance"/> 内只跳过发起，
-	/// 已在途的脉冲照常放完。
+	/// 共存（同拖拽阶段先例）。无距离下限：太近照常拽，一旦玩家球与任意 body chunk
+	/// 相交即视为已被拽进身体，跳过剩余倒计时直接吞没。
 	/// </summary>
 	private void StruggleTugTick()
 	{
@@ -626,19 +627,37 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			if (_tugVel.LengthSquared() <= 1e-8f)
 				_tugVel = Vector3.Zero;
 		}
+		if (TouchesBody())
+		{
+			GD.Print($"[DADDY-ARENA] tugged into body — early devour t={_tick}");
+			EnterEaten();
+			return;
+		}
 		if (StruggleTugDistance <= 0f || _tick < _nextTugAtTick)
 			return;
 		ScheduleNextTug();
 		Vector3 toBody = _controller.BodyCenter - PlayerChunkCenter();
 		float distance = toBody.Length();
-		if (distance <= TugStopDistance)
+		if (distance <= 1e-3f)
 			return;
 		Vector3 direction = toBody / distance;
 		direction.Y *= TugVerticalScale;
 		direction = direction.Normalized();
-		float reach = Mathf.Min(StruggleTugDistance, distance - TugStopDistance);
+		float reach = Mathf.Min(StruggleTugDistance, distance);
 		_tugVel = direction * (reach * (1f - TugDecayRate));
 		GD.Print($"[DADDY-ARENA] tug t={_tick} dist={distance:F1}m pull={reach:F2}m");
+	}
+
+	/// <summary>玩家胶囊球与任意 body chunk 球相交 = 已被拽进身体（比质心距离更贴合球团外形）。</summary>
+	private bool TouchesBody()
+	{
+		Vector3 center = PlayerChunkCenter();
+		foreach (BodyChunk chunk in _controller.Body.Chunks)
+		{
+			if (chunk.Pos.DistanceTo(center) <= chunk.Radius + PlayerChunkRadius)
+				return true;
+		}
+		return false;
 	}
 
 	/// <summary>下一次猛拽排期：平均间隔 ± 25% 抖动（seed + 脉冲序号的确定性哈希，无全局随机）。</summary>
@@ -726,6 +745,9 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	{
 		_phase = ArenaPhase.Eaten;
 		_eatenAtTick = _tick;
+		_struggleActive = false; // 挣脱期拽进身体的提前吞没也走这里：收掉双条
+		_player.MotionFrozen = true; // 从 Bound 直达时自驱物理还开着，钉随身体前必须停掉
+		_player.InputLocked = true;
 		if (_grabTentacle >= 0)
 		{
 			_controller.ClearExternalTarget(_grabTentacle); // 触手收回，猎物已在身体里
