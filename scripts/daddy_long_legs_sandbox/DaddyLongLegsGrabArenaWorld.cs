@@ -248,6 +248,12 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	[Export(PropertyHint.Range, "0,30,0.5")]
 	public float ReattachRetryCooldownSeconds { get; set; } = 2f;
 
+	/// <summary>断口已进牵引半径、但残肢让位失败（运动腿到下限/换步瞬态）时的容忍时长
+	/// （秒）：持续堵塞超过它就按重试冷却暂时降权该断落段、先去接别的手，防止 fetch
+	/// 目标被一根暂时放不出来的残肢无限期挟持。</summary>
+	[Export(PropertyHint.Range, "0.25,10,0.25")]
+	public float ReattachBusyWaitSeconds { get; set; } = 2f;
+
 	// ---- 运行态 ----
 
 	private enum ArenaPhase
@@ -320,6 +326,8 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private readonly List<DaddyLongLegsSeveredPiece> _pieces = new();
 	private readonly List<ReattachState> _tractions = new();
 	private readonly Dictionary<int, long> _reattachRetryAtTick = new();
+	// 断口在半径内但残肢让位失败的连续 tick 数（超过 ReattachBusyWaitSeconds 即降权轮换）。
+	private readonly Dictionary<int, int> _reattachBlockedTicks = new();
 
 	// 束缚 / 挣脱
 	private double _takeoverElapsed;
@@ -483,6 +491,8 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			return Fail($"ReattachTimeoutSeconds must be finite and positive, got {ReattachTimeoutSeconds}");
 		if (!float.IsFinite(ReattachRetryCooldownSeconds) || ReattachRetryCooldownSeconds < 0f)
 			return Fail($"ReattachRetryCooldownSeconds must be finite and >= 0, got {ReattachRetryCooldownSeconds}");
+		if (!FinitePositive(ReattachBusyWaitSeconds))
+			return Fail($"ReattachBusyWaitSeconds must be finite and positive, got {ReattachBusyWaitSeconds}");
 
 		preset.GravityCancellationGain = GravityCancellationGain;
 		_preset = preset;
@@ -1118,6 +1128,16 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		{
 			InterruptTractionFor(tentacleIndex, "stump shot");
 			RemoveFlinchesFor(tentacleIndex);
+			if (tentacleIndex == _grabTentacle)
+			{
+				// 正在伸抓的残肢中弹：先解除抓取占用，痛缩才能真正接管——否则
+				// FeedGrabSnapshot 每 tick 用同 ID 把玩家目标喂回去，痛缩下一 tick
+				// 就被 grab 冲突分支判成 Detached，表现为打了毫无反应。束缚期开枪
+				// 被相位门封死，这里只会在 Chase 的伸抓途中命中。
+				_controller.ClearExternalTarget(tentacleIndex);
+				_grabTentacle = -1;
+				_grabRetryAtTick = _tick + GrabRetryTicks;
+			}
 			BeginFlinch(tentacleIndex, tentacle.Segments[^1].Pos);
 			GD.Print($"[DADDY-ARENA] shot disabled tentacle={tentacleIndex} " +
 					 $"segments={count} t={_tick}");
@@ -1333,10 +1353,35 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			if (FindTraction(index) is not null || !CanTentacleAttemptReattach(index))
 				continue;
 			DaddyTentacle stump = _controller.Tentacles[index];
-			if (!stump.CanAcceptExternalTarget)
-				continue; // 被运动预算征用等：等职责分配器放人
 			if (stump.Anchor.Pos.DistanceTo(piece.BreakEndPosition) > ReattachStartRadius)
+			{
+				_reattachBlockedTicks.Remove(index);
 				continue;
+			}
+			// 征用位是粘性门：分配器只自主释放支撑贡献最差的腿，抓稳在断口旁的残肢
+			// 永远轮不到（实测等分配器放人 = 永久死锁：fetch 停在断手上原地踏步，
+			// 其余断手全部饿死）。断口已在半径内就显式请求让位；让位持续失败
+			// （运动腿到下限/换步瞬态）超时则临时降权该断落段，先去接别的。
+			if (!stump.CanAcceptExternalTarget
+				&& !_controller.TryReleaseTentacleForExternalUse(index))
+			{
+				int blocked = _reattachBlockedTicks.GetValueOrDefault(index) + 1;
+				if (blocked >= Math.Max(1,
+					(int)MathF.Ceiling(ReattachBusyWaitSeconds * TicksPerSecond)))
+				{
+					_reattachBlockedTicks.Remove(index);
+					_reattachRetryAtTick[index] = _tick + Math.Max(0,
+						(long)MathF.Ceiling(ReattachRetryCooldownSeconds * TicksPerSecond));
+					GD.Print($"[DADDY-ARENA] reattach deprioritized tentacle={index} " +
+							 $"(stump busy) t={_tick}");
+				}
+				else
+				{
+					_reattachBlockedTicks[index] = blocked;
+				}
+				continue;
+			}
+			_reattachBlockedTicks.Remove(index);
 			Vector3 breakEnd = piece.BreakEndPosition;
 			if (!_controller.TryAssignExternalTarget(index,
 				new DaddyLongLegsTargetSnapshot(
@@ -1371,6 +1416,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_pieces.Remove(piece);
 		_tractions.Remove(traction);
 		_reattachRetryAtTick.Remove(traction.Tentacle);
+		_reattachBlockedTicks.Remove(traction.Tentacle);
 		GD.Print($"[DADDY-ARENA] reattached tentacle={traction.Tentacle} " +
 				 $"segments={_controller.Tentacles[traction.Tentacle].Segments.Count} t={_tick}");
 	}
@@ -1456,6 +1502,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_pieces.Clear();
 		_tractions.Clear();
 		_reattachRetryAtTick.Clear();
+		_reattachBlockedTicks.Clear();
 		_nextShotAtTick = 0;
 		_tracerTtl = 0f;
 		_hitMarkerTtl = 0f;

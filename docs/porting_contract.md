@@ -731,6 +731,12 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   整实例替换而非原地截断：任意段数本就是构造期自由度，求解器零改动；既有回归从不调用这组
   API，全部确定性基线逐位不变（「冻结多余段」的替代路线会让逐段折叠流漂移全部哈希，已否决）。
   宿主侧渲染件不得跨帧缓存 `DaddyTentacle` 实例引用，必须按编号每帧从 `Tentacles[i]` 现取。
+- **opt-in 让位**：`TryReleaseTentacleForExternalUse(index)` 把一条被运动预算征用
+  （`NeededForLocomotion`）的触手转 Idle，供随后的 `TryAssignExternalTarget` 够取。动机：征用是
+  粘性门（分配器只自主释放支撑贡献最差的腿），「必须是这一条」的外部够取（接断手）会被无限期
+  挡住。只越权征用位，眩晕/起步/隔断/恢复/待释放等瞬态门仍拒绝（还原征用后返回 false，宿主下
+  tick 重试）；配额在下限时按 `AssignBestIdle` 同款守卫预判补位候选，无候选才拒绝。成功走分配器
+  同款记账（`DutyReleaseSerial` + 职责冷却）。既有回归从不调用，基线逐位不变。
 - `TargetEffects[index]` 是每 tick 覆盖的纯值输出：`Reached` / `Held` / `Released` 加建议的
   `PositionCorrection` / `VelocityDelta`。目标实体、伤害、吞入和是否接受拉扯始终归宿主权威；
   `Reached` 与 `Held` 都是当前 tick 尖端在到达半径内的电平值（不锁存），`Released` 才是一次性

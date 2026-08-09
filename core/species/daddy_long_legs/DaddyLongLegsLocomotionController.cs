@@ -324,6 +324,48 @@ public sealed class DaddyLongLegsLocomotionController
         InFlightStepCount = CountInFlightSteps();
     }
 
+    /// <summary>
+    /// opt-in 让位：宿主请求把一条被运动预算征用（NeededForLocomotion）的触手转为 Idle，
+    /// 供随后的 TryAssignExternalTarget 够取使用。动机：分配器的自主释放只挑支撑贡献
+    /// 最差的一条，抓稳在目标旁的触手贡献高、永远轮不到——外部够取这类「必须是这一条」
+    /// 的需求会被征用位无限期挡住。仅覆盖征用这一个粘性门：眩晕/起步中/链路隔断/地形
+    /// 恢复/待释放等瞬态门不越权（让位后仍不可用则原样还原征用，宿主下 tick 重试；
+    /// 还原走 SetLocomotion，其 TerrainDistanceHint 重置副作用与分配器征用同款）。
+    /// 运动腿已到下限时拒绝——身体真的缺这条腿。成功释放与分配器自主释放同款记账
+    /// （DutyReleaseSerial + 职责冷却）。既有回归从不调用本方法，基线逐位不变。
+    /// </summary>
+    public bool TryReleaseTentacleForExternalUse(int tentacleIndex)
+    {
+        DaddyTentacle tentacle = TentacleAt(tentacleIndex);
+        if (tentacle.CanAcceptExternalTarget)
+            return true;
+        if (tentacle.Task != DaddyTentacleTask.Locomotion || !tentacle.NeededForLocomotion)
+            return false;
+        int minimum = Math.Min(_parameters.MinimumLocomotionTentacles, _tentacles.Length);
+        if (LocomotionTentacleCount <= minimum)
+        {
+            // 稳态下配额常驻在下限，硬拒绝等于永远拒绝。分配器对「低于下限」有
+            // 冷却豁免的立即补位路径；本条让位后随即被宿主转 ExternalReach、不会被
+            // 回选，因此只要其余触手里存在超出保留额的可征用候选，缺口下 tick 即被
+            // 补上——按 AssignBestIdle 同款守卫预判，无候选才拒绝。
+            int claimable = 0;
+            for (int i = 0; i < _tentacles.Length; i++)
+                if (i != tentacleIndex && _tentacles[i].CanAcceptExternalTarget)
+                    claimable++;
+            if (claimable <= _parameters.ReservedIdleTentacles)
+                return false;
+        }
+        tentacle.SetIdle();
+        if (!tentacle.CanAcceptExternalTarget)
+        {
+            tentacle.SetLocomotion();
+            return false;
+        }
+        DutyReleaseSerial++;
+        _dutyCooldown = _parameters.DutyChangeCooldownTicks;
+        return true;
+    }
+
     /// <summary>该触手出生时的完整段数（Morphology 冻结值；断手期间实例段数小于它）。</summary>
     public int FullTentacleSegmentCount(int tentacleIndex)
     {
