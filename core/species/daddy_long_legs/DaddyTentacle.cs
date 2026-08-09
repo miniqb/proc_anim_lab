@@ -226,6 +226,23 @@ public sealed class DaddyTentacle
         }
     }
 
+    /// <summary>
+    /// 断/接手重建专用：新实例装配后由控制器逐段播种运动学状态，并跳过初始扩张。
+    /// 接触/抓附/落点记忆有意从零开始，交给后续 tick 的常规贴附循环自行重建。
+    /// </summary>
+    internal void SeedSegmentForRebuild(
+        int segmentIndex,
+        Vector3 pos,
+        Vector3 lastPos,
+        Vector3 velocityPerTick)
+    {
+        DaddyTentacleSegmentState segment = _segments[segmentIndex];
+        segment.Pos = pos;
+        segment.LastPos = lastPos;
+        segment.Vel = velocityPerTick;
+        _needsTerrainExpansion = false;
+    }
+
     internal void Tick(
         in TickContext ctx,
         Vector3 bodyCenter,

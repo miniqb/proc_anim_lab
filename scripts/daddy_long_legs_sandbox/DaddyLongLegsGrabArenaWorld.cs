@@ -50,6 +50,13 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private const float FlinchHangSideRatio = 0.35f;
 	private const float FlinchHangFloorClearance = 0.4f;
 
+	/// <summary>断落段接手牵引的宿主目标 ID 基（+触手编号；与玩家 ID 域错开）。</summary>
+	private const ulong PieceTargetIdBase = 0x9_2B_00_00UL;
+
+	/// <summary>枪线显示时长（秒，渲染侧）与命中闪标时长。</summary>
+	private const float TracerSeconds = 0.06f;
+	private const float HitMarkerSeconds = 0.18f;
+
 	// ---- Inspector 导出（本场景纯交互，无命令行参数）----
 
 	[ExportGroup("Arena / Creature")]
@@ -169,6 +176,52 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	[Export(PropertyHint.Range, "0,10,0.1")]
 	public float EatenRestartDelaySeconds { get; set; } = 1.2f;
 
+	/// <summary>命中判定的瞄准冗余（米）：加在触手段半径上。触手视觉极细（管径 0.05m），
+	/// 冗余给足才好打；等价于「射线带半径」的胶囊扫掠。</summary>
+	[ExportGroup("Arena / Gun")]
+	[Export(PropertyHint.Range, "0,0.6,0.01")]
+	public float GunAimAssistRadius { get; set; } = 0.22f;
+
+	[Export(PropertyHint.Range, "5,200,1")]
+	public float GunRange { get; set; } = 60f;
+
+	[Export(PropertyHint.Range, "0.05,2,0.05")]
+	public float GunCooldownSeconds { get; set; } = 0.25f;
+
+	/// <summary>true=命中完整触手时真的从命中段打断；false=退回普通失能（痛缩），不断开。</summary>
+	[Export]
+	public bool SeverOnHit { get; set; } = true;
+
+	/// <summary>断手时残肢至少保留的段数（太靠根的命中向外夹到这里）。</summary>
+	[Export(PropertyHint.Range, "1,8,1")]
+	public int SeverMinStumpSegments { get; set; } = 3;
+
+	/// <summary>断落段至少的段数（太靠梢的命中向内夹到这里；总段数不足两者之和则只失能不断）。</summary>
+	[Export(PropertyHint.Range, "1,8,1")]
+	public int SeverMinFallSegments { get; set; } = 2;
+
+	/// <summary>存在可接的断手时怪物优先走向断手（玩家靠太近仍会被其它触手抓）。
+	/// false=断了不接：残肢失能恢复后就以短触手继续生活。</summary>
+	[ExportGroup("Arena / Reattach")]
+	[Export]
+	public bool ReattachEnabled { get; set; } = true;
+
+	/// <summary>残肢锚点到断落段断口的距离小于此值即开始牵引（无需精确站位）。</summary>
+	[Export(PropertyHint.Range, "1,12,0.25")]
+	public float ReattachStartRadius { get; set; } = 3.2f;
+
+	/// <summary>断口与残肢尖端相触判定半径：小于此距离即接合复原。</summary>
+	[Export(PropertyHint.Range, "0.05,1,0.05")]
+	public float ReattachConnectRadius { get; set; } = 0.3f;
+
+	/// <summary>单次牵引超时（秒）：拽了这么久还接不上就放弃，断落段跌回地面、冷却后重试。</summary>
+	[Export(PropertyHint.Range, "1,30,0.5")]
+	public float ReattachTimeoutSeconds { get; set; } = 6f;
+
+	/// <summary>牵引失败/放弃后的重试冷却（秒）；牵引中被枪打断则还要叠加等残肢痛缩结束。</summary>
+	[Export(PropertyHint.Range, "0,30,0.5")]
+	public float ReattachRetryCooldownSeconds { get; set; } = 2f;
+
 	// ---- 运行态 ----
 
 	private enum ArenaPhase
@@ -205,7 +258,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private long _grabRetryAtTick;
 	private long _regrabGraceUntilTick;
 
-	// 痛缩失能（挣脱成功后借外部目标通道把触手抽回身体蜷缩，替代内核 Stun 软瘫）。
+	// 痛缩失能（挣脱成功/中弹后借外部目标通道把触手抽回身体蜷缩，替代内核 Stun 软瘫）。
 	// 多条可并行：宽限后再抓再挣脱，会在上一条还没痊愈时叠加第二条。
 	private sealed class FlinchState
 	{
@@ -214,10 +267,33 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		public long UntilTick;
 		public Vector3 FromPoint;
 		public Vector3 PrevTarget;
+		public bool Engaged;  // 已成功占住 ExternalReach 通道（断手后的新实例要等 1-2 tick 才接得上）
 		public bool Detached; // 内核（地形回溯等）收走了任务：不再喂目标，只保留「疼着不抓」到期
 	}
 
 	private readonly List<FlinchState> _flinches = new();
+
+	// 手枪
+	private bool _shotQueued;
+	private long _nextShotAtTick;
+	private ProcAnimLab.Render.TubeMeshBuilder? _tracer;
+	private readonly List<ProcAnimLab.Render.TubeStation> _tracerStations = new();
+	private Vector3 _tracerFrom;
+	private Vector3 _tracerTo;
+	private float _tracerTtl;
+	private float _hitMarkerTtl;
+
+	// 断落段与接手牵引（每条触手至多一条断落段；牵引可多条并行）。
+	private sealed class ReattachState
+	{
+		public int Tentacle;
+		public long TimeoutTick;
+		public Vector3 PrevBreakEnd;
+	}
+
+	private readonly List<DaddyLongLegsSeveredPiece> _pieces = new();
+	private readonly List<ReattachState> _tractions = new();
+	private readonly Dictionary<int, long> _reattachRetryAtTick = new();
 
 	// 束缚 / 挣脱
 	private double _takeoverElapsed;
@@ -280,6 +356,9 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 
 		_hud = new DaddyLongLegsGrabHud();
 		_hud.Build(this);
+
+		_tracer = new ProcAnimLab.Render.TubeMeshBuilder();
+		_tracer.Build(this, srgbVertexColors: true);
 
 		float minLength = float.PositiveInfinity;
 		float maxLength = 0f;
@@ -346,6 +425,24 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			return Fail($"DragMaxSpeed ({DragMaxSpeed}) must exceed DragMinSpeed ({DragMinSpeed})");
 		if (!float.IsFinite(EatenRestartDelaySeconds) || EatenRestartDelaySeconds < 0f)
 			return Fail($"EatenRestartDelaySeconds must be finite and >= 0, got {EatenRestartDelaySeconds}");
+		if (!float.IsFinite(GunAimAssistRadius) || GunAimAssistRadius < 0f)
+			return Fail($"GunAimAssistRadius must be finite and >= 0, got {GunAimAssistRadius}");
+		if (!FinitePositive(GunRange))
+			return Fail($"GunRange must be finite and positive, got {GunRange}");
+		if (!FinitePositive(GunCooldownSeconds))
+			return Fail($"GunCooldownSeconds must be finite and positive, got {GunCooldownSeconds}");
+		if (SeverMinStumpSegments < 1)
+			return Fail($"SeverMinStumpSegments must be >= 1, got {SeverMinStumpSegments}");
+		if (SeverMinFallSegments < 1)
+			return Fail($"SeverMinFallSegments must be >= 1, got {SeverMinFallSegments}");
+		if (!FinitePositive(ReattachStartRadius))
+			return Fail($"ReattachStartRadius must be finite and positive, got {ReattachStartRadius}");
+		if (!FinitePositive(ReattachConnectRadius))
+			return Fail($"ReattachConnectRadius must be finite and positive, got {ReattachConnectRadius}");
+		if (!FinitePositive(ReattachTimeoutSeconds))
+			return Fail($"ReattachTimeoutSeconds must be finite and positive, got {ReattachTimeoutSeconds}");
+		if (!float.IsFinite(ReattachRetryCooldownSeconds) || ReattachRetryCooldownSeconds < 0f)
+			return Fail($"ReattachRetryCooldownSeconds must be finite and >= 0, got {ReattachRetryCooldownSeconds}");
 
 		preset.GravityCancellationGain = GravityCancellationGain;
 		_preset = preset;
@@ -418,11 +515,12 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	{
 		_tick++;
 		_terrain.BeginTick();
+		ProcessQueuedShot();
 
 		switch (_phase)
 		{
 			case ArenaPhase.Chase:
-				DriveChase();
+				DriveMonster();
 				UpdateGrabAttempt();
 				break;
 			default:
@@ -431,17 +529,24 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		}
 
 		FlinchTick();
+		// 牵引在痛缩之后：中弹中断先由痛缩占位，本 tick 牵引立刻观测到并放手。
+		ReattachTick();
+		PieceTick();
 		FeedGrabSnapshot();
 		_controller.Tick(new TickContext(_gravityPerTick, _terrain, _tick));
 		ApplyTargetEffects();
 		UpdatePhaseAfterTick();
 	}
 
-	// ---- 追逐 ----
+	// ---- 追逐 / 取断手（仅 Chase 相位驱动移动；束缚流程内不许边抓人边走向断手）----
 
-	private void DriveChase()
+	private void DriveMonster()
 	{
-		Vector3 target = _player.GlobalPosition + Vector3.Up * ChaseHeightOffset;
+		// 优先接断手：存在可尝试的断落段就走向断口（玩家靠太近仍会被其它触手抓走）。
+		Vector3 target = TrySelectFetchPiece(out DaddyLongLegsSeveredPiece? piece)
+				&& piece is not null
+			? piece.BreakEndPosition + Vector3.Up * ChaseHeightOffset
+			: _player.GlobalPosition + Vector3.Up * ChaseHeightOffset;
 		if (_chaseDriveDir)
 		{
 			// ≙ 迷宫 dir 喂法：3D 方向 + 按水平距离饱和的油门；到达判定同样只看水平。
@@ -460,6 +565,31 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_controller.MoveTarget = target;
 		_controller.MoveDir = Vector3.Zero;
 		_controller.RunSpeed = 1f;
+	}
+
+	/// <summary>挑最近的、可尝试接回（残肢不疼、冷却已过、未在牵引）的断落段作为行走目标。</summary>
+	private bool TrySelectFetchPiece(out DaddyLongLegsSeveredPiece? selected)
+	{
+		selected = null;
+		if (!ReattachEnabled)
+			return false;
+		float bestDistance = float.PositiveInfinity;
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+		{
+			if (piece.State == DaddyLongLegsSeveredPiece.PieceState.Traction
+				|| FindTraction(piece.TentacleIndex) is not null
+				|| !CanTentacleAttemptReattach(piece.TentacleIndex))
+			{
+				continue;
+			}
+			float distance = _controller.BodyCenter.DistanceTo(piece.BreakEndPosition);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				selected = piece;
+			}
+		}
+		return selected is not null;
 	}
 
 	/// <summary>束缚/拖拽/吞没期间不给任何移动意图：生物原地自持站立（不强行定住）。</summary>
@@ -724,22 +854,26 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	}
 
 	/// <summary>
-	/// 挣脱成功的失能表现：不走内核 Stun（EnableStunLimp = 1.35× 重力自由绳，拖地在 3D
-	/// 里读作抽搐），改为占住同一条 ExternalReach 通道喂宿主合成目标——从抓点平滑抽回，
-	/// 垂吊在锚点下方（同内核 step-peel 收腿的伺服形状），到时清目标自动归队。任务全程
-	/// 不切换：照样不承重，且到期前不参与抓取候选（UpdateGrabAttempt 跳过在疼的触手）。
+	/// 失能表现（挣脱成功 / 中弹）：不走内核 Stun（EnableStunLimp = 1.35× 重力自由绳，
+	/// 拖地在 3D 里读作抽搐），改为占住同一条 ExternalReach 通道喂宿主合成目标——从起点
+	/// 平滑抽回，垂吊在锚点下方（同内核 step-peel 收腿的伺服形状），到时清目标自动归队。
+	/// 挣脱场景触手已在 ExternalReach（同 ID 无缝接管）；中弹/断手场景是 Locomotion 或
+	/// 刚重建的新实例，靠逐 tick 重试挂接（Engaged 前不判 Detached）。任务全程不切换：
+	/// 照样不承重，且到期前不参与抓取候选与接手（IsFlinching 双处排除）。
 	/// </summary>
-	private void BeginFlinch(int tentacleIndex)
+	private void BeginFlinch(int tentacleIndex) =>
+		BeginFlinch(tentacleIndex, PlayerChunkCenter());
+
+	private void BeginFlinch(int tentacleIndex, Vector3 fromPoint)
 	{
-		Vector3 from = PlayerChunkCenter();
 		_flinches.Add(new FlinchState
 		{
 			Tentacle = tentacleIndex,
 			StartTick = _tick,
 			UntilTick = _tick + Math.Max(1,
 				(long)MathF.Ceiling(EscapeTentacleStunSeconds * TicksPerSecond)),
-			FromPoint = from,
-			PrevTarget = from,
+			FromPoint = fromPoint,
+			PrevTarget = fromPoint,
 		});
 		GD.Print($"[DADDY-ARENA] flinch start tentacle={tentacleIndex} t={_tick} " +
 				 $"retract={FlinchRetractSeconds:F2}s recover at t={_flinches[^1].UntilTick}");
@@ -767,7 +901,9 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		{
 			FlinchState flinch = _flinches[n];
 			DaddyTentacle tentacle = _controller.Tentacles[flinch.Tentacle];
-			if (!flinch.Detached
+			// 只有挂接成功后失去任务才算被内核收走；挂接前（断手新实例、pendingRelease
+			// 独占 tick）任务本来就不是 ExternalReach，继续重试而不是误判降级。
+			if (!flinch.Detached && flinch.Engaged
 				&& (flinch.Tentacle == _grabTentacle
 					|| tentacle.Task != DaddyTentacleTask.ExternalReach))
 			{
@@ -776,7 +912,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			}
 			if (_tick >= flinch.UntilTick)
 			{
-				if (!flinch.Detached)
+				if (!flinch.Detached && flinch.Engaged)
 					_controller.ClearExternalTarget(flinch.Tentacle);
 				GD.Print($"[DADDY-ARENA] flinch recovered tentacle={flinch.Tentacle} t={_tick}");
 				_flinches.RemoveAt(n);
@@ -803,16 +939,397 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			float progress = Mathf.Clamp(
 				(float)(_tick - flinch.StartTick) / retractTicks, 0f, 1f);
 			Vector3 target = flinch.FromPoint.Lerp(tuckPoint, Mathf.SmoothStep(0f, 1f, progress));
-			_controller.TryAssignExternalTarget(flinch.Tentacle,
+			if (_controller.TryAssignExternalTarget(flinch.Tentacle,
 				new DaddyLongLegsTargetSnapshot(
 					PlayerTargetId,
 					target,
 					target - flinch.PrevTarget,
 					PlayerChunkRadius,
 					1f,
-					pullTowardBody: false));
+					pullTowardBody: false)))
+			{
+				flinch.Engaged = true;
+			}
 			flinch.PrevTarget = target;
 		}
+	}
+
+	// ---- 手枪：屏幕中心射线 → 逐段胶囊命中 → 断手/失能 ----
+
+	/// <summary>枪口位置：视点右下前少许，枪线从这里出发才看得见（正对视线的线是一个点）。</summary>
+	private Vector3 MuzzlePosition()
+	{
+		Basis basis = _player.EyeBasis;
+		return _player.EyePosition
+			+ basis.X * 0.12f - basis.Y * 0.09f - basis.Z * 0.25f;
+	}
+
+	/// <summary>输入侧只排队：DirectSpaceState 在物理步内才保证可查，射线留到下一个 core tick 打。</summary>
+	private void TryFireGun()
+	{
+		if (_fatal || _phase == ArenaPhase.Eaten
+			|| Input.MouseMode != Input.MouseModeEnum.Captured)
+		{
+			return;
+		}
+		_shotQueued = true;
+	}
+
+	private void ProcessQueuedShot()
+	{
+		if (!_shotQueued)
+			return;
+		_shotQueued = false;
+		if (_phase == ArenaPhase.Eaten || _tick < _nextShotAtTick)
+			return;
+		_nextShotAtTick = _tick + Math.Max(1,
+			(long)MathF.Ceiling(GunCooldownSeconds * TicksPerSecond));
+		FireGun(_player.EyePosition, _player.EyeForward);
+	}
+
+	/// <summary>
+	/// 命中判定全走宿主数学，不建物理形体：① 场景静态体射线截短射程（墙后打不到）；
+	/// ② 身体球遮挡（打中球团无效果但挡住后面的触手）；③ 全部触手逐链边
+	/// 「射线 vs 胶囊」（段半径 + 瞄准冗余），多条可中只取最近。每次射击约
+	/// 触手数×段数 ≈ 200 次胶囊测试，只在扣扳机时发生，成本可忽略。
+	/// </summary>
+	private void FireGun(Vector3 from, Vector3 direction)
+	{
+		float maxDistance = GunRange;
+		var query = PhysicsRayQueryParameters3D.Create(from, from + direction * GunRange);
+		query.Exclude = new Godot.Collections.Array<Rid> { _player.GetRid() };
+		Godot.Collections.Dictionary wall = GetWorld3D().DirectSpaceState.IntersectRay(query);
+		if (wall.Count > 0)
+			maxDistance = from.DistanceTo((Vector3)wall["position"]);
+
+		float bodyDistance = float.PositiveInfinity;
+		foreach (BodyChunk chunk in _controller.Body.Chunks)
+		{
+			if (RayHitsSphere(from, direction, chunk.Pos, chunk.Radius, out float t)
+				&& t < bodyDistance)
+			{
+				bodyDistance = t;
+			}
+		}
+
+		int hitTentacle = -1;
+		int hitEdge = -1;
+		float hitDistance = float.PositiveInfinity;
+		float occlusion = MathF.Min(maxDistance, bodyDistance);
+		for (int i = 0; i < _controller.Tentacles.Count; i++)
+		{
+			DaddyTentacle tentacle = _controller.Tentacles[i];
+			Vector3 previous = tentacle.Anchor.Pos;
+			for (int s = 0; s < tentacle.Segments.Count; s++)
+			{
+				DaddyTentacleSegmentState segment = tentacle.Segments[s];
+				float radius = segment.Radius + GunAimAssistRadius;
+				if (RayHitsCapsule(from, direction, previous, segment.Pos, radius, out float t)
+					&& t < hitDistance && t <= occlusion)
+				{
+					hitDistance = t;
+					hitTentacle = i;
+					hitEdge = s;
+				}
+				previous = segment.Pos;
+			}
+		}
+
+		Vector3 tracerEnd;
+		if (hitTentacle >= 0)
+		{
+			tracerEnd = from + direction * hitDistance;
+			_hitMarkerTtl = HitMarkerSeconds;
+			HitTentacle(hitTentacle, hitEdge, tracerEnd);
+		}
+		else if (bodyDistance <= maxDistance)
+		{
+			tracerEnd = from + direction * bodyDistance;
+			GD.Print($"[DADDY-ARENA] shot hit body (no effect) t={_tick}");
+		}
+		else
+		{
+			tracerEnd = from + direction * maxDistance;
+		}
+		_tracerFrom = MuzzlePosition();
+		_tracerTo = tracerEnd;
+		_tracerTtl = TracerSeconds;
+	}
+
+	/// <summary>
+	/// 命中处置：完整触手 → 从命中链边打断（命中位置只需大致对应，向两端各夹出
+	/// 最小残肢/最小断落段）；残肢或段数不足 → 只痛缩失能，不可再断。
+	/// 打断正抓着玩家的触手立刻放人（强反制）；牵引中的残肢中弹 = 接手失败。
+	/// </summary>
+	private void HitTentacle(int tentacleIndex, int edge, Vector3 hitPoint)
+	{
+		DaddyTentacle tentacle = _controller.Tentacles[tentacleIndex];
+		int count = tentacle.Segments.Count;
+		bool severable = SeverOnHit
+			&& !_controller.IsTentacleSevered(tentacleIndex)
+			&& count >= SeverMinStumpSegments + SeverMinFallSegments;
+		if (!severable)
+		{
+			InterruptTractionFor(tentacleIndex, "stump shot");
+			RemoveFlinchesFor(tentacleIndex);
+			BeginFlinch(tentacleIndex, tentacle.Segments[^1].Pos);
+			GD.Print($"[DADDY-ARENA] shot disabled tentacle={tentacleIndex} " +
+					 $"segments={count} t={_tick}");
+			return;
+		}
+
+		int keep = Math.Clamp(edge, SeverMinStumpSegments, count - SeverMinFallSegments);
+		RemoveFlinchesFor(tentacleIndex); // 挣脱痛缩中的完整触手也能被打断：旧条目引用旧实例
+		float linkLength = tentacle.LinkLength;
+		DaddyTentacleSegmentState[] removed =
+			_controller.SeverTentacle(tentacleIndex, keep);
+		var piece = new DaddyLongLegsSeveredPiece(
+			tentacleIndex,
+			linkLength,
+			removed,
+			_arena.Origin,
+			_arena.Origin + new Vector3(
+				_arena.InteriorWidth, DaddyLongLegsMazeBuilder.RoomHeight, _arena.InteriorDepth));
+		piece.BuildVisual(this, _preset.StableId);
+		_pieces.Add(piece);
+		GD.Print($"[DADDY-ARENA] severed tentacle={tentacleIndex} keep={keep} " +
+				 $"fall={removed.Length} hit=({hitPoint.X:F1},{hitPoint.Y:F1},{hitPoint.Z:F1}) t={_tick}");
+
+		// 残肢痛缩：从断口（新实例尖端）抽回。
+		BeginFlinch(tentacleIndex, _controller.Tentacles[tentacleIndex].Segments[^1].Pos);
+
+		if (tentacleIndex == _grabTentacle)
+		{
+			// 打断抓人的触手 = 立刻放人。EscapeNow 不叠加痛缩（断手已经疼了）。
+			if (_phase is ArenaPhase.Bound or ArenaPhase.Dragging)
+			{
+				EscapeNow(byMash: false);
+			}
+			else
+			{
+				_grabTentacle = -1;
+				_grabRetryAtTick = _tick + GrabRetryTicks;
+			}
+		}
+	}
+
+	/// <summary>射线 vs 球：返回最近的非负相交距离。</summary>
+	private static bool RayHitsSphere(
+		Vector3 from, Vector3 direction, Vector3 center, float radius, out float distance)
+	{
+		distance = 0f;
+		Vector3 offset = from - center;
+		float b = offset.Dot(direction);
+		float c = offset.LengthSquared() - radius * radius;
+		float discriminant = b * b - c;
+		if (discriminant < 0f)
+			return false;
+		float root = MathF.Sqrt(discriminant);
+		float t = -b - root;
+		if (t < 0f)
+			t = -b + root;
+		if (t < 0f)
+			return false;
+		distance = t;
+		return true;
+	}
+
+	/// <summary>
+	/// 射线 vs 胶囊（链边两端 + 半径）：取射线与线段的最近点对，距离 ≤ 半径即命中；
+	/// 命中距离用最近点的射线参数近似（够「大致符合命中位置」的断点定位精度）。
+	/// </summary>
+	private static bool RayHitsCapsule(
+		Vector3 from,
+		Vector3 direction,
+		Vector3 capsuleA,
+		Vector3 capsuleB,
+		float radius,
+		out float distance)
+	{
+		distance = 0f;
+		Vector3 segment = capsuleB - capsuleA;
+		Vector3 offset = from - capsuleA;
+		float segmentDot = segment.LengthSquared();
+		float segmentAlongRay = segment.Dot(direction);
+		float offsetAlongSegment = offset.Dot(segment);
+		float offsetAlongRay = offset.Dot(direction);
+		// 最近点对：s|S|² − t(S·D) = offset·S 与 t = s(S·D) − offset·D 联立
+		// （offset = 射线原点 − 胶囊端 A；D 单位向量）。
+		float denominator = segmentDot - segmentAlongRay * segmentAlongRay;
+		float s = denominator > 1e-8f
+			? Mathf.Clamp(
+				(offsetAlongSegment - segmentAlongRay * offsetAlongRay) / denominator, 0f, 1f)
+			: 0f;
+		float t = MathF.Max(0f, s * segmentAlongRay - offsetAlongRay);
+		Vector3 closestOnSegment = capsuleA + segment * s;
+		Vector3 closestOnRay = from + direction * t;
+		if (closestOnRay.DistanceSquaredTo(closestOnSegment) > radius * radius)
+			return false;
+		distance = t;
+		return true;
+	}
+
+	// ---- 断落段与接手 ----
+
+	private DaddyLongLegsSeveredPiece? FindPiece(int tentacleIndex)
+	{
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+		{
+			if (piece.TentacleIndex == tentacleIndex)
+				return piece;
+		}
+		return null;
+	}
+
+	private ReattachState? FindTraction(int tentacleIndex)
+	{
+		foreach (ReattachState traction in _tractions)
+		{
+			if (traction.Tentacle == tentacleIndex)
+				return traction;
+		}
+		return null;
+	}
+
+	private void RemoveFlinchesFor(int tentacleIndex)
+	{
+		for (int n = _flinches.Count - 1; n >= 0; n--)
+		{
+			if (_flinches[n].Tentacle == tentacleIndex)
+				_flinches.RemoveAt(n);
+		}
+	}
+
+	/// <summary>残肢是否可以（重新）尝试接手：不在疼、冷却已过。</summary>
+	private bool CanTentacleAttemptReattach(int tentacleIndex)
+	{
+		if (IsFlinching(tentacleIndex) || tentacleIndex == _grabTentacle)
+			return false;
+		return !_reattachRetryAtTick.TryGetValue(tentacleIndex, out long retryAt)
+			|| _tick >= retryAt;
+	}
+
+	/// <summary>牵引中断（中弹/超时/内核收走）：断落段跌回地面，冷却后再试。</summary>
+	private void InterruptTractionFor(int tentacleIndex, string reason)
+	{
+		ReattachState? traction = FindTraction(tentacleIndex);
+		if (traction is null)
+			return;
+		DaddyTentacle tentacle = _controller.Tentacles[tentacleIndex];
+		if (tentacle.Task == DaddyTentacleTask.ExternalReach)
+			_controller.ClearExternalTarget(tentacleIndex);
+		FindPiece(tentacleIndex)?.EndTraction();
+		_reattachRetryAtTick[tentacleIndex] = _tick + Math.Max(0,
+			(long)MathF.Ceiling(ReattachRetryCooldownSeconds * TicksPerSecond));
+		_tractions.Remove(traction);
+		GD.Print($"[DADDY-ARENA] reattach interrupted tentacle={tentacleIndex} ({reason}) t={_tick}");
+	}
+
+	/// <summary>
+	/// 接手主循环：① 活动牵引——残肢向断口伸（喂 ExternalReach 目标）、断落段被拽向
+	/// 残肢尖端，两断点相触即复原；中弹（IsFlinching 顶替）/超时/内核收走则失败落回。
+	/// ② 残肢空闲且断口进入 ReattachStartRadius 内 → 发起新牵引；多条可并行。
+	/// 抓住玩家不影响已激活的牵引（站着也能拽），但移动优先级见 DriveMonster。
+	/// </summary>
+	private void ReattachTick()
+	{
+		for (int n = _tractions.Count - 1; n >= 0; n--)
+		{
+			ReattachState traction = _tractions[n];
+			DaddyLongLegsSeveredPiece? piece = FindPiece(traction.Tentacle);
+			if (piece is null)
+			{
+				_tractions.RemoveAt(n);
+				continue;
+			}
+			DaddyTentacle tentacle = _controller.Tentacles[traction.Tentacle];
+			if (IsFlinching(traction.Tentacle))
+			{
+				InterruptTractionFor(traction.Tentacle, "shot"); // 玩家打断了接手
+				continue;
+			}
+			if (tentacle.Task != DaddyTentacleTask.ExternalReach)
+			{
+				InterruptTractionFor(traction.Tentacle, "core reclaimed");
+				continue;
+			}
+			if (_tick >= traction.TimeoutTick)
+			{
+				InterruptTractionFor(traction.Tentacle, "timeout");
+				continue;
+			}
+
+			Vector3 stumpTip = tentacle.Segments[^1].Pos;
+			Vector3 breakEnd = piece.BreakEndPosition;
+			piece.UpdateTractionTarget(stumpTip);
+			_controller.TryAssignExternalTarget(traction.Tentacle,
+				new DaddyLongLegsTargetSnapshot(
+					PieceTargetIdBase + (ulong)traction.Tentacle,
+					breakEnd,
+					breakEnd - traction.PrevBreakEnd,
+					0.1f,
+					1f,
+					pullTowardBody: false));
+			traction.PrevBreakEnd = breakEnd;
+
+			if (stumpTip.DistanceTo(breakEnd) <= ReattachConnectRadius)
+				CompleteReattach(traction, piece);
+		}
+
+		if (!ReattachEnabled)
+			return;
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+		{
+			int index = piece.TentacleIndex;
+			if (FindTraction(index) is not null || !CanTentacleAttemptReattach(index))
+				continue;
+			DaddyTentacle stump = _controller.Tentacles[index];
+			if (!stump.CanAcceptExternalTarget)
+				continue; // 被运动预算征用等：等职责分配器放人
+			if (stump.Anchor.Pos.DistanceTo(piece.BreakEndPosition) > ReattachStartRadius)
+				continue;
+			Vector3 breakEnd = piece.BreakEndPosition;
+			if (!_controller.TryAssignExternalTarget(index,
+				new DaddyLongLegsTargetSnapshot(
+					PieceTargetIdBase + (ulong)index,
+					breakEnd,
+					Vector3.Zero,
+					0.1f,
+					1f,
+					pullTowardBody: false)))
+			{
+				continue;
+			}
+			piece.BeginTraction(stump.Segments[^1].Pos);
+			_tractions.Add(new ReattachState
+			{
+				Tentacle = index,
+				TimeoutTick = _tick + Math.Max(1,
+					(long)MathF.Ceiling(ReattachTimeoutSeconds * TicksPerSecond)),
+				PrevBreakEnd = breakEnd,
+			});
+			GD.Print($"[DADDY-ARENA] reattach traction start tentacle={index} " +
+					 $"dist={stump.Anchor.Pos.DistanceTo(breakEnd):F2}m t={_tick}");
+		}
+	}
+
+	private void CompleteReattach(ReattachState traction, DaddyLongLegsSeveredPiece piece)
+	{
+		var positions = new Vector3[piece.PointCount];
+		piece.CopyPositions(positions);
+		_controller.RestoreTentacle(traction.Tentacle, positions, piece.AverageVelocity());
+		piece.ClearVisual();
+		_pieces.Remove(piece);
+		_tractions.Remove(traction);
+		_reattachRetryAtTick.Remove(traction.Tentacle);
+		GD.Print($"[DADDY-ARENA] reattached tentacle={traction.Tentacle} " +
+				 $"segments={_controller.Tentacles[traction.Tentacle].Segments.Count} t={_tick}");
+	}
+
+	private void PieceTick()
+	{
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+			piece.Tick(_gravityPerTick);
 	}
 
 	private void BeginDragging()
@@ -885,6 +1402,14 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			_grabTentacle = -1;
 		}
 		_flinches.Clear(); // controller 即将重建，旧触手引用作废
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+			piece.ClearVisual();
+		_pieces.Clear();
+		_tractions.Clear();
+		_reattachRetryAtTick.Clear();
+		_nextShotAtTick = 0;
+		_tracerTtl = 0f;
+		_hitMarkerTtl = 0f;
 		SpawnDaddy();
 		_player.InputLocked = false;
 		_player.MotionFrozen = false;
@@ -935,6 +1460,9 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			formal.Draw(interpolation, (float)delta);
 		else
 			_renderer.Render(interpolation);
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+			piece.Render(interpolation);
+		DrawTracer((float)delta);
 		// 调试线必须每帧调用（Draw 开头 ClearSurfaces）；正式渲染下临时压 Enabled。
 		bool terrainEnabled = _terrain.Enabled;
 		_terrain.Enabled = terrainEnabled && !formalOn;
@@ -955,6 +1483,27 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			mass += chunk.Mass;
 		}
 		return mass > 0f ? weighted / mass : _controller.BodyCenter;
+	}
+
+	/// <summary>短寿命枪线（渲染侧，每帧重发管面；无枪线时发空帧清面）。</summary>
+	private void DrawTracer(float delta)
+	{
+		if (_tracer is not { } tracer)
+			return;
+		_hitMarkerTtl = MathF.Max(0f, _hitMarkerTtl - delta);
+		tracer.BeginFrame();
+		if (_tracerTtl > 0f)
+		{
+			_tracerTtl -= delta;
+			var color = new Color(1.0f, 0.86f, 0.44f);
+			_tracerStations.Clear();
+			_tracerStations.Add(new ProcAnimLab.Render.TubeStation(_tracerFrom, 0.008f, color));
+			_tracerStations.Add(new ProcAnimLab.Render.TubeStation(
+				_tracerFrom.Lerp(_tracerTo, 0.5f), 0.006f, color));
+			_tracerStations.Add(new ProcAnimLab.Render.TubeStation(_tracerTo, 0.004f, color));
+			tracer.AddTube(_tracerStations, Vector3.Up, 5);
+		}
+		tracer.EndFrame();
 	}
 
 	/// <summary>
@@ -1008,10 +1557,16 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		string flinch = "";
 		foreach (FlinchState state in _flinches)
 			flinch += $" flinch={state.Tentacle}({(state.UntilTick - _tick) / (float)TicksPerSecond:F1}s)";
+		string pieces = "";
+		foreach (DaddyLongLegsSeveredPiece piece in _pieces)
+			pieces += $" piece={piece.TentacleIndex}({piece.State})";
 		_hud.SetStatus(
 			$"DADDY GRAB ARENA — phase={_phase} drive={DriveName()} dist={distance:F1}m " +
-			$"grab={grab}{flinch} mash={_mashCount}/{MashTargetPresses}\n" +
-			"[M] chase drive  [R] restart  [V] render  [F1] hud  [F3] rays  [Esc] mouse");
+			$"grab={grab}{flinch}{pieces} mash={_mashCount}/{MashTargetPresses}\n" +
+			"[LMB] shoot  [M] chase drive  [R] restart  [V] render  [F1] hud  [F3] rays  [Esc] mouse");
+		_hud.SetCrosshair(
+			_phase != ArenaPhase.Eaten && Input.MouseMode == Input.MouseModeEnum.Captured,
+			_hitMarkerTtl > 0f);
 
 		switch (_phase)
 		{
@@ -1062,7 +1617,14 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 
 	public override void _Input(InputEvent @event)
 	{
-		if (_fatal || @event is not InputEventKey { Pressed: true, Echo: false } key)
+		if (_fatal)
+			return;
+		if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
+		{
+			TryFireGun();
+			return;
+		}
+		if (@event is not InputEventKey { Pressed: true, Echo: false } key)
 			return;
 
 		switch (key.PhysicalKeycode)

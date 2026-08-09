@@ -722,6 +722,15 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   等待下一 tick 发出旧目标 `Released` 的触手不会被
   `FindIdleTentacle()` 返回。`ExternalReach` 与 `Stunned` 都清旧地形接触记忆、不吃 adhesion，且不计
   运动支撑；free-duty Locomotion 虽显示为 Idle，仍会搜索、贴面、支撑并参与换步。
+- **opt-in 断/接手**：`SeverTentacle(index,keepSegments)` 把触手截断成前 `keepSegments` 段的
+  短链实例重建（LinkLength 不变、近端段运动学状态原样保留、接触/落点记忆清零重建），返回被移除
+  的远端段状态（孤儿对象，宿主自行模拟断落段）；`RestoreTentacle(index,distalPositions,vel)` 按
+  出生 spec 复原全长（远端从宿主坐标播种）；`IsTentacleSevered(index)` /
+  `FullTentacleSegmentCount(index)` 由 Morphology 冻结 spec 派生，无额外记账。断手期间不可叠断
+  （再调用即抛）；被断触手若持有外部目标，**不补发 `Released`**——宿主自行清理绑定。实现是
+  整实例替换而非原地截断：任意段数本就是构造期自由度，求解器零改动；既有回归从不调用这组
+  API，全部确定性基线逐位不变（「冻结多余段」的替代路线会让逐段折叠流漂移全部哈希，已否决）。
+  宿主侧渲染件不得跨帧缓存 `DaddyTentacle` 实例引用，必须按编号每帧从 `Tentacles[i]` 现取。
 - `TargetEffects[index]` 是每 tick 覆盖的纯值输出：`Reached` / `Held` / `Released` 加建议的
   `PositionCorrection` / `VelocityDelta`。目标实体、伤害、吞入和是否接受拉扯始终归宿主权威；
   `Reached` 与 `Held` 都是当前 tick 尖端在到达半径内的电平值（不锁存），`Released` 才是一次性

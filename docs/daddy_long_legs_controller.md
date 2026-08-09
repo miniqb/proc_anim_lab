@@ -930,6 +930,91 @@ V formal/白盒、Esc 鼠标捕获。全部调参走 Inspector 导出（无命�
 tick 级一致；daddy smoke 全绿（内核零 diff 旁证）。垂吊版还消掉了悬空盘团的 detach 触发
 （贴近自然悬挂形态，拓扑审计不再报警，长触手也能疼满全程）。
 
+### 7.3 手枪断触手与接手（2026-08-09，探索场景续轮；内核首次为竞技场加 opt-in API）
+
+**需求**：玩家手枪（准心 + 左键 + 无限弹药）命中触手时**真的从命中位置打断**——断落段瘫在
+地上完全静止后不再动弹；残肢留在怪物身上短暂失能，恢复后**以短触手照常执行全部触手逻辑**；
+怪物有一套「接手」AI：优先走向断落段，够近时残肢向断口伸、断口被无形力量拽起，两断点相触
+即复原为完整触手。玩家由此获得强力牵制手段（打不死，但可反复断手拖住它）。
+
+**命中判定（纯宿主数学，零物理形体）**：屏幕中心射线依次做 ① 场景静态体 `IntersectRay`
+截短射程（墙后打不到，排除玩家自身 RID）；② 身体球「射线 vs 球」遮挡（打中球团无效果但挡住
+后面的触手）；③ 全部触手逐链边「射线 vs 胶囊」——半径 = 段半径 + `GunAimAssistRadius(0.22m)`
+瞄准冗余（触手管径只有 0.05m，冗余给足才好打；给段加半径与给射线加半径在 Minkowski 意义下
+等价，选了前者）。多条可中只取最近；每枪 ≈ 触手数×段数 ≈ 200 次胶囊测试，只在扣扳机时发生。
+射击事件从 `_Input` **排队到下一个 core tick** 执行（`DirectSpaceState` 只在物理步内保证可查，
+也顺便对齐全场 tick 纪律）。修复轮：胶囊最近点公式初版两处符号推错（`s`、`t` 都取了反号），
+首测整枪穿链无命中；重推导 `s|S|²−t(S·D)=offset·S` 与 `t=s(S·D)−offset·D` 联立后修正。
+
+**断手的内核路线：「换实例」而非「原地截断」**。`DaddyTentacle._segments` 是构造期定长数组，
+30+ 处循环用 `_segments.Length`、十余条平行数组、`Length/LinkLength` 只读——原地截断要改遍
+整个求解器。而「活动段计数 + 冻结多余段」的路线被哈希证据直接否决：`FoldDeterministicState`
+逐段折叠 Pos/LastPos/Vel/接触/抓附，冻结段的折叠流会立刻偏离基线，**即使从不断手的回归也会
+全哈希漂移**。最终路线利用「任意段数本就是构造期自由度」：控制器持有 `DaddyTentacle[]`，
+断手 = 用短 spec（同 LinkLength、同 LocalPreference、同 seed，`Morphology.TentacleAt(i)` 永久
+保存出生 spec，无需额外记账）重建实例并逐段播种近端运动学状态（新增 internal
+`SeedSegmentForRebuild`，播种后跳过 `ExpandInitialChain`）；接回 = 反向同款（远端从宿主坐标
+播种）。求解器 2602 行零改动；控制器新增
+`SeverTentacle` / `RestoreTentacle` / `IsTentacleSevered` / `FullTentacleSegmentCount`
+四个公共 API + StunTentacle 同款的起步/在途记账。既有回归从不调用 → smoke 哈希
+`47F9584427FCD54A` 逐位不变 + 40 项矩阵全绿。契约新条目见
+[`porting_contract.md`](porting_contract.md) §4.1d（含「不补发 Released、宿主自清绑定」边界）。
+
+**断口定位**：命中的链边序号直接当 keep 段数，向两端夹
+`[SeverMinStumpSegments(3), 总段数−SeverMinFallSegments(2)]`——「大致符合命中位置」够用；
+总段数不足两下限之和（或命中的是残肢/`SeverOnHit=false`）退回普通失能。残肢与断落段的规则：
+**残肢可被再次击中但只失能不再断；断落段完全不可交互**（不在控制器里，命中扫描天然跳过）。
+
+**断落段**：`DaddyLongLegsSeveredPiece`（宿主侧独立 Verlet 短绳，双向精确距离约束 ×4 轮 +
+房间盒钳位 + 落地强摩擦）。从 `SeverTentacle` 返回的孤儿段状态播种 Pos/LastPos/Vel——断落
+瞬间渲染插值与弹道无缝衔接。`Falling→Resting`（全点贴地 + 近静止连续 20 tick 即冻结，
+「不再动弹」）；修复轮：地板反弹每 tick 把重力转成 ~+0.005 的竖直速度，恰好卡在 0.004 入睡
+阈值上方永远睡不着——微弹（<0.01）直接吸收清零后即正常入睡。渲染独立复用
+`TubeMeshBuilder`（剪影黑扫管、断口粗末梢细），白盒/正式视图都可见。
+
+**接手 AI（全宿主层）**：移动优先级——Chase 相位存在「可尝试」断落段（残肢不疼、冷却过、
+未在牵引、非抓人触手）时走向断口而非玩家；束缚/拖拽/吞没相位照旧 FeedIdleStance——
+**挣脱流程内不许边抓人边走向断手**（用户显式要求），但已激活的牵引站着继续拽。牵引 =
+残肢锚点距断口 ≤ `ReattachStartRadius(3.2m)` 时双向奔赴：残肢经 ExternalReach 通道喂断口
+坐标（独立 `PieceTargetIdBase+index`，宿主 `TargetEffects` 过滤只认玩家 ID，事件天然隔离）、
+断落段被 capped 伺服（0.075 m/tick、链身按 0.55 衰减跟随）拽向残肢尖端，可整条离地；
+断口与残肢尖端 ≤ `ReattachConnectRadius(0.3m)` 即 `RestoreTentacle` 复原。中断三源：残肢
+中弹（痛缩顶替，= 接手失败）、超时 `ReattachTimeoutSeconds(6s)`、内核收走任务——统一
+`ClearExternalTarget` + 断落段跌回 Falling + `ReattachRetryCooldownSeconds(2s)` 冷却；
+中弹叠加等痛缩结束（`IsFlinching` 门）。多断落段可并行牵引，各自独立计时。
+
+**痛缩机制升级（Engaged 挂接标记）**：§7.2 的痛缩预设「触手已在 ExternalReach、同 ID 无缝
+接管」；断手后的残肢是 Locomotion 新实例，喂目标要等 1~2 tick 才接得上（pendingRelease 独占
+tick、新实例首 tick），旧版会立刻误判「被内核收走」降级 Detached、残肢完全不痛。加
+`Engaged` 标记：挂接成功前失败只重试不降级，挂接后失去任务才算真被收走。
+
+**宿主渲染件的实例引用陷阱**：白盒 `DaddyLongLegsRenderer` 在 `TentacleVisual` 里跨帧缓存
+`DaddyTentacle` 实例——换实例后它会继续画早已脱钩的旧链。改按编号每帧从
+`controller.Tentacles[i]` 现取 + 段节点多于实例段数时隐藏（接回自动复显）。正式渲染件本就
+逐帧现取，零改动兼容（strand 端点 clamp 到当前段数的既有防御恰好覆盖变短）。
+
+**验证（headless TEMP-DIAG 合成射击，验后已删）**：
+① 断手→取手闭环：t=100 击断 19.7m 触手（keep=12/fall=7），残肢痛缩 2s 恢复，断落段
+Falling→Resting（y=0.08≈段半径），怪物优先走向断口（anchorDist 9.85→3.17m）、t=277 牵引、
+**t=293 接回 12→19 段复原**；② 残肢再中弹只失能（`shot disabled`，段数不变）；③ 束缚期
+击断抓人触手**当 tick 放人**（`severed`→`escape byMash=False`，安全网与主动路径都覆盖）；
+④ 牵引中被击 → `reattach interrupted`→断落段跌回→痛缩结束次 tick 重试→接回；⑤ 12 段短
+残肢恢复后自己发起 reach 并锁定玩家（「变短了照常干活」的直接证据）；⑥ 接回后可再断、
+多断落段并行、断在玩家脚边的 2 段小段照常接回。零射击默认败北链与改前逐 tick 一致
+（69/138/195/256/317/378/451）；`core/smoke` + `daddy_long_legs_smoke` + 40 项矩阵全绿。
+
+**追补修复（同日，用户实机反馈）**：枪线只活 0.06s，消隐后 `DrawTracer` 每帧仍
+`BeginFrame/EndFrame` 发空帧清面——但 `ImmediateMesh.SurfaceEnd` 不允许零顶点 surface，
+**每帧**打一条 `No vertices were added` 报错（headless 也打，只是此前没 grep 渲染报错，漏网）。
+修在共享 `TubeMeshBuilder`：`SurfaceBegin` 推迟到本帧首个 `EmitVertex`（全部 `Add*` 的必经
+收口点），空帧只 `ClearSurfaces` 即合法；非空帧调用序不变，各正式渲染件零影响。验证：
+240 帧 headless 竞技场跑修前 240 条报错、修后 0 条，败北链事件 tick 不变。
+
+**边界与后续**：断落段不做地形射线（房间盒常量钳位，探索场景约定同 §7.2 垂吊）；残肢被
+运动预算征用时牵引会等职责分配器放人（观测中未成为实际瓶颈，若卡再加 opt-in 让位机制）；
+牵引双向速度常量未按触手长度缩放，超长触手的接合观感可再调
+（`ReattachConnectRadius` / `TractionServoSpeed`）。
+
 ## 8. 明确边界
 
 - 不实现 AI、路径搜索、伤害、进食、消化、水中运动、房间切换或动态实体权威。

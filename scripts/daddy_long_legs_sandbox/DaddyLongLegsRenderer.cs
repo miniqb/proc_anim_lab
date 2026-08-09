@@ -15,7 +15,9 @@ public sealed class DaddyLongLegsRenderer
 {
     private sealed class TentacleVisual
     {
-        public required DaddyTentacle Tentacle;
+        // 按编号每帧从控制器现取触手：断/接手会整实例替换 DaddyTentacle，
+        // 缓存实例引用会让白盒继续画早已脱钩的旧链。
+        public required int TentacleIndex;
         public readonly List<MeshInstance3D> SegmentNodes = new();
         public required MeshInstance3D LandingMarker;
         public required MeshInstance3D IdealLandingMarker;
@@ -84,11 +86,12 @@ public sealed class DaddyLongLegsRenderer
             }
         }
 
-        foreach (DaddyTentacle tentacle in controller.Tentacles)
+        for (int tentacleIndex = 0; tentacleIndex < controller.Tentacles.Count; tentacleIndex++)
         {
+            DaddyTentacle tentacle = controller.Tentacles[tentacleIndex];
             var visual = new TentacleVisual
             {
-                Tentacle = tentacle,
+                TentacleIndex = tentacleIndex,
                 LandingMarker = AddSphere(
                     parent, 0.085f, _landingMaterial, radialSegments: 10, rings: 5),
                 IdealLandingMarker = AddSphere(
@@ -180,11 +183,20 @@ public sealed class DaddyLongLegsRenderer
 
         foreach (TentacleVisual visual in _tentacleVisuals)
         {
-            DaddyTentacle tentacle = visual.Tentacle;
+            DaddyTentacle tentacle = _controller.Tentacles[visual.TentacleIndex];
+            // 断手后实例段数可小于出生节点数：多余节点隐藏，接回后自动复显。
+            int activeSegments = Math.Min(
+                visual.SegmentNodes.Count, tentacle.Segments.Count);
             for (int i = 0; i < visual.SegmentNodes.Count; i++)
             {
-                DaddyTentacleSegmentState segment = tentacle.Segments[i];
                 MeshInstance3D node = visual.SegmentNodes[i];
+                if (i >= activeSegments)
+                {
+                    node.Visible = false;
+                    continue;
+                }
+                DaddyTentacleSegmentState segment = tentacle.Segments[i];
+                node.Visible = true;
                 node.GlobalPosition = segment.LerpPos(interpolation);
                 node.MaterialOverride = SegmentMaterial(tentacle.Role, segment);
             }
@@ -238,7 +250,7 @@ public sealed class DaddyLongLegsRenderer
 
         foreach (TentacleVisual visual in _tentacleVisuals)
         {
-            DaddyTentacle tentacle = visual.Tentacle;
+            DaddyTentacle tentacle = controller.Tentacles[visual.TentacleIndex];
             Color chainColor = TentacleLineColor(tentacle);
             SetLineColor(chainColor);
             Vector3 previous = tentacle.Anchor.LerpPos(interpolation);

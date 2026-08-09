@@ -25,6 +25,12 @@ public sealed class DaddyLongLegsGrabHud
     private ColorRect _escapeFill = null!;
     private ColorRect _timeFill = null!;
     private ColorRect _fade = null!;
+    private Control _crosshair = null!;
+    private ColorRect _crosshairH = null!;
+    private ColorRect _crosshairV = null!;
+
+    private static readonly Color CrosshairIdle = new(0.95f, 0.95f, 0.92f, 0.85f);
+    private static readonly Color CrosshairHit = new(1.00f, 0.42f, 0.22f, 0.95f);
 
     public void Build(Node parent)
     {
@@ -89,6 +95,43 @@ public sealed class DaddyLongLegsGrabHud
         AddBar(_barsRoot, new Vector2(0f, BarHeight + 6f), new Vector2(BarWidth, TimeBarHeight),
             new Color(0.06f, 0.08f, 0.10f, 0.82f),
             new Color(0.95f, 0.30f, 0.22f), out _timeFill);
+
+        // 屏幕中央准心：两条细矩形组成的十字，命中瞬间整体变橙。
+        _crosshair = new Control
+        {
+            Name = "Crosshair",
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _crosshair.AnchorLeft = 0.5f;
+        _crosshair.AnchorRight = 0.5f;
+        _crosshair.AnchorTop = 0.5f;
+        _crosshair.AnchorBottom = 0.5f;
+        root.AddChild(_crosshair);
+        _crosshairH = new ColorRect
+        {
+            Position = new Vector2(-7f, -1f),
+            Size = new Vector2(14f, 2f),
+            Color = CrosshairIdle,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _crosshair.AddChild(_crosshairH);
+        _crosshairV = new ColorRect
+        {
+            Position = new Vector2(-1f, -7f),
+            Size = new Vector2(2f, 14f),
+            Color = CrosshairIdle,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _crosshair.AddChild(_crosshairV);
+    }
+
+    /// <summary>准心显隐与命中闪色（世界脚本每帧推送）。</summary>
+    public void SetCrosshair(bool visible, bool hitFlash)
+    {
+        _crosshair.Visible = visible;
+        Color color = hitFlash ? CrosshairHit : CrosshairIdle;
+        _crosshairH.Color = color;
+        _crosshairV.Color = color;
     }
 
     public void SetStatus(string text) => _status.Text = text;

@@ -63,6 +63,8 @@ internal sealed class TubeMeshBuilder
         }
     }
 
+    // ImmediateMesh 不允许零顶点 surface（SurfaceEnd 会报错），所以 SurfaceBegin
+    // 推迟到本帧第一次 AddTube；空帧（如枪线消隐后）只清面，合法且画面为空。
     public void BeginFrame()
     {
         if (_mesh is null)
@@ -70,20 +72,24 @@ internal sealed class TubeMeshBuilder
             return;
         }
         _mesh.ClearSurfaces();
-        _mesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
-        _hasSurface = true;
+        _frameOpen = true;
     }
 
     public void EndFrame()
     {
-        if (_mesh is null || !_hasSurface)
+        if (_mesh is null || !_frameOpen)
         {
             return;
         }
-        _mesh.SurfaceEnd();
-        _hasSurface = false;
+        _frameOpen = false;
+        if (_hasSurface)
+        {
+            _mesh.SurfaceEnd();
+            _hasSurface = false;
+        }
     }
 
+    private bool _frameOpen;
     private bool _hasSurface;
 
     /// <summary>沿管站序列扫掠 ringVerts 边截面。upHint 是 frame 种子（通常 SupportNormal
@@ -271,6 +277,11 @@ internal sealed class TubeMeshBuilder
 
     private void EmitVertex(Color color, Vector3 normal, Vector3 pos)
     {
+        if (!_hasSurface)
+        {
+            _mesh!.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+            _hasSurface = true;
+        }
         // 包裹漫反射烘进顶点色：dot∈[-1,1] → 亮度 [1-Shade, 1]，保持平色抽象感的体积暗示。
         float wrap = 0.5f + 0.5f * normal.Dot(_keyLightDir);
         float shade = 1f - ShadeAmount + ShadeAmount * wrap;

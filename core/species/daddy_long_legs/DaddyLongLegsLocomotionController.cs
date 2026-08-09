@@ -324,6 +324,116 @@ public sealed class DaddyLongLegsLocomotionController
         InFlightStepCount = CountInFlightSteps();
     }
 
+    /// <summary>该触手出生时的完整段数（Morphology 冻结值；断手期间实例段数小于它）。</summary>
+    public int FullTentacleSegmentCount(int tentacleIndex)
+    {
+        _ = TentacleAt(tentacleIndex);
+        return Morphology.TentacleAt(tentacleIndex).SegmentCount;
+    }
+
+    /// <summary>当前是否处于断手状态（实例段数少于出生 spec，无需额外记账）。</summary>
+    public bool IsTentacleSevered(int tentacleIndex) =>
+        TentacleAt(tentacleIndex).Segments.Count
+            < Morphology.TentacleAt(tentacleIndex).SegmentCount;
+
+    /// <summary>
+    /// opt-in 断手：把触手截断成前 keepSegments 段的短链实例重建（LinkLength 不变、
+    /// 近端段运动学状态原样保留），返回被移除的远端段状态——已与内核脱钩的孤儿对象，
+    /// 供宿主自行模拟断落段。断手期间不可叠断，再调用即抛。注意：不会为旧实例的外部
+    /// 目标补发 Released 事件，宿主自行清理其绑定状态。既有回归从不调用本方法，
+    /// 因此全部既有确定性基线逐位不变。
+    /// </summary>
+    public DaddyTentacleSegmentState[] SeverTentacle(int tentacleIndex, int keepSegments)
+    {
+        DaddyTentacle old = TentacleAt(tentacleIndex);
+        if (IsTentacleSevered(tentacleIndex))
+            throw new InvalidOperationException(
+                $"Tentacle {tentacleIndex} is already severed.");
+        int fullCount = old.Segments.Count;
+        if (keepSegments < 1 || keepSegments >= fullCount)
+            throw new ArgumentOutOfRangeException(nameof(keepSegments), keepSegments,
+                $"keepSegments must be in [1, {fullCount - 1}].");
+
+        var removed = new DaddyTentacleSegmentState[fullCount - keepSegments];
+        for (int i = 0; i < removed.Length; i++)
+            removed[i] = old.Segments[keepSegments + i];
+        RebuildTentacle(tentacleIndex, keepSegments, old,
+            ReadOnlySpan<Vector3>.Empty, Vector3.Zero);
+        return removed;
+    }
+
+    /// <summary>
+    /// 接回断手：按出生 spec 重建完整实例；近端沿用当前短链状态，远端由宿主提供
+    /// 断落段的世界位置（从断口到末梢顺序，数量必须恰好补齐与出生段数的差额）。
+    /// </summary>
+    public void RestoreTentacle(
+        int tentacleIndex,
+        ReadOnlySpan<Vector3> distalPositions,
+        Vector3 distalVelocityPerTick)
+    {
+        DaddyTentacle old = TentacleAt(tentacleIndex);
+        if (!IsTentacleSevered(tentacleIndex))
+            throw new InvalidOperationException(
+                $"Tentacle {tentacleIndex} is not severed.");
+        int fullCount = Morphology.TentacleAt(tentacleIndex).SegmentCount;
+        int missing = fullCount - old.Segments.Count;
+        if (distalPositions.Length != missing)
+            throw new ArgumentException(
+                $"Expected exactly {missing} distal positions, got {distalPositions.Length}.",
+                nameof(distalPositions));
+        EnsureFinite(distalVelocityPerTick, nameof(distalVelocityPerTick));
+        foreach (Vector3 position in distalPositions)
+            EnsureFinite(position, nameof(distalPositions));
+        RebuildTentacle(tentacleIndex, fullCount, old,
+            distalPositions, distalVelocityPerTick);
+    }
+
+    /// <summary>
+    /// 断/接手共用的实例重建：同 anchor、同 LocalPreference、同 seed，LinkLength 恒为
+    /// 出生值；近端从旧实例播种、远端（若有）从宿主坐标播种。求解器零改动——任意段数
+    /// 本来就是构造期自由度。控制器侧记账与 StunTentacle 同款：起步/在途腿立即提交
+    /// 中断并保留一个完整 UpdateStepRelease 冷却窗。
+    /// </summary>
+    private void RebuildTentacle(
+        int tentacleIndex,
+        int segmentCount,
+        DaddyTentacle old,
+        ReadOnlySpan<Vector3> distalPositions,
+        Vector3 distalVelocityPerTick)
+    {
+        DaddyTentacleSpec fullSpec = Morphology.TentacleAt(tentacleIndex);
+        float linkLength = fullSpec.Length / fullSpec.SegmentCount;
+        var spec = new DaddyTentacleSpec(
+            fullSpec.AnchorBodyIndex,
+            linkLength * segmentCount,
+            segmentCount,
+            fullSpec.LocalPreference);
+        var rebuilt = new DaddyTentacle(
+            tentacleIndex, old.Anchor, spec, _parameters, Morphology.StableSeed);
+        int copied = Math.Min(segmentCount, old.Segments.Count);
+        for (int i = 0; i < copied; i++)
+        {
+            DaddyTentacleSegmentState source = old.Segments[i];
+            rebuilt.SeedSegmentForRebuild(i, source.Pos, source.LastPos, source.Vel);
+        }
+        for (int i = copied; i < segmentCount; i++)
+        {
+            Vector3 position = distalPositions[i - copied];
+            rebuilt.SeedSegmentForRebuild(i, position, position, distalVelocityPerTick);
+        }
+        _tentacles[tentacleIndex] = rebuilt;
+        _targetEffects[tentacleIndex] = default;
+
+        if (tentacleIndex == _startReplantIndex)
+        {
+            _startReplantIndex = -1;
+            if (_moveEpisodeActive && _parameters.EnableStartReplant)
+                _startReplantPending = true;
+        }
+        _stepCooldown = Math.Max(_stepCooldown, 2);
+        InFlightStepCount = CountInFlightSteps();
+    }
+
     /// <summary>地形与生物一起 rebase：位置态全部平移，速度、职责、支撑与 seed 相位保留。</summary>
     public void Shift(Vector3 delta)
     {

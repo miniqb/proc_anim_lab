@@ -67,6 +67,9 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
         ? -_camera.GlobalTransform.Basis.Z
         : -GlobalTransform.Basis.Z;
 
+    /// <summary>相机世界基（枪口偏移等相机系偏移用；相机是子节点，外部不该直接摸）。</summary>
+    public Basis EyeBasis => _camera?.GlobalTransform.Basis ?? GlobalTransform.Basis;
+
     /// <summary>身体 yaw（弧度）。镜头接管读取当前值做阻尼插值。</summary>
     public float Yaw => Rotation.Y;
 
