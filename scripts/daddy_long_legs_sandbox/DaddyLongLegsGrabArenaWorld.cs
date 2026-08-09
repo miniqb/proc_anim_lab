@@ -964,10 +964,11 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			+ basis.X * 0.12f - basis.Y * 0.09f - basis.Z * 0.25f;
 	}
 
-	/// <summary>输入侧只排队：DirectSpaceState 在物理步内才保证可查，射线留到下一个 core tick 打。</summary>
+	/// <summary>输入侧只排队：DirectSpaceState 在物理步内才保证可查，射线留到下一个 core tick 打。
+	/// 只有自由身（Chase 相位）能开枪——被束缚/拖拽/吞没期一律打不响，脱困只靠连打。</summary>
 	private void TryFireGun()
 	{
-		if (_fatal || _phase == ArenaPhase.Eaten
+		if (_fatal || _phase != ArenaPhase.Chase
 			|| Input.MouseMode != Input.MouseModeEnum.Captured)
 		{
 			return;
@@ -980,7 +981,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		if (!_shotQueued)
 			return;
 		_shotQueued = false;
-		if (_phase == ArenaPhase.Eaten || _tick < _nextShotAtTick)
+		if (_phase != ArenaPhase.Chase || _tick < _nextShotAtTick)
 			return;
 		_nextShotAtTick = _tick + Math.Max(1,
 			(long)MathF.Ceiling(GunCooldownSeconds * TicksPerSecond));
@@ -1101,6 +1102,9 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		if (tentacleIndex == _grabTentacle)
 		{
 			// 打断抓人的触手 = 立刻放人。EscapeNow 不叠加痛缩（断手已经疼了）。
+			// 束缚期开枪已被相位门封死（脱困只靠连打），枪械暂时到不了这条分支；
+			// 有意保留：这是设计资产，后续会有非枪击的断手来源（其它机制）复用它，
+			// 同时兼作安全网——被抓期间无论谁断掉抓人触手，状态都不能悬空。
 			if (_phase is ArenaPhase.Bound or ArenaPhase.Dragging)
 			{
 				EscapeNow(byMash: false);
@@ -1565,7 +1569,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			$"grab={grab}{flinch}{pieces} mash={_mashCount}/{MashTargetPresses}\n" +
 			"[LMB] shoot  [M] chase drive  [R] restart  [V] render  [F1] hud  [F3] rays  [Esc] mouse");
 		_hud.SetCrosshair(
-			_phase != ArenaPhase.Eaten && Input.MouseMode == Input.MouseModeEnum.Captured,
+			_phase == ArenaPhase.Chase && Input.MouseMode == Input.MouseModeEnum.Captured,
 			_hitMarkerTtl > 0f);
 
 		switch (_phase)
