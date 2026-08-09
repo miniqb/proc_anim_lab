@@ -45,6 +45,15 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private const float TugDecayRate = 0.82f;
 	private const float TugVerticalScale = 0.5f;
 
+	/// <summary>挣脱镜头震动包络：快起（挣扎一激活就抖起来）慢收（停止时自然收敛不硬切，
+	/// 也是「被拖走/吞没不震」语义下残余震动的消失速度）；猛拽冲量单独按更快节奏衰减。</summary>
+	private const float ShakeAttackTau = 0.06f;
+	private const float ShakeReleaseTau = 0.12f;
+	private const float ShakeKickDecayTau = 0.25f;
+	/// <summary>猛拽冲量累积上限：密集猛拽 + 高 TugKick 调参下冲量会无界堆积，把震动
+	/// 幅度放大到镜头贴俯仰夹角时翻过竖直极点（相机侧另有硬夹兜底，这里限源头）。</summary>
+	private const float ShakeKickMax = 3f;
+
 	// 痛缩垂吊：吊点以向下为主、带少量外偏免得盘进身体；吊点不低于地板上方此高度
 	// （本场景房间地板恒为 y=0，探索场景直接用常量，不做地形查询）。
 	private const float FlinchHangSideRatio = 0.35f;
@@ -157,6 +166,23 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	/// <summary>视线与怪物身体夹角小于此角度（度）即视为「已对准」，挣脱流程与倒计时从此刻开始。</summary>
 	[Export(PropertyHint.Range, "1,45,0.5")]
 	public float AlignStartDegrees { get; set; } = 6f;
+
+	/// <summary>挣脱连打期的镜头震动旋转峰值（度；0 = 关闭震动）。只在挣扎流程激活后生效——
+	/// 刚被抓的扭头对准与挣脱失败被拖走都不震。</summary>
+	[Export(PropertyHint.Range, "0,6,0.1")]
+	public float StruggleShakeDegrees { get; set; } = 1.5f;
+
+	/// <summary>镜头震动的位移峰值（米，相机局部系横/竖向）。</summary>
+	[Export(PropertyHint.Range, "0,0.2,0.005")]
+	public float StruggleShakeOffsetMeters { get; set; } = 0.03f;
+
+	/// <summary>镜头震动基频（Hz）：多条不可通约正弦叠成无规律抖动，这是最快一条的频率。</summary>
+	[Export(PropertyHint.Range, "2,30,0.5")]
+	public float StruggleShakeFrequencyHz { get; set; } = 11f;
+
+	/// <summary>每次猛拽瞬间叠加的震动冲量倍率（快速衰减；0 = 猛拽不加震）。</summary>
+	[Export(PropertyHint.Range, "0,6,0.25")]
+	public float StruggleShakeTugKick { get; set; } = 2.2f;
 
 	/// <summary>玩家视点进入身体质心此半径内视为「已完全拖进身体」。</summary>
 	[ExportGroup("Arena / Devour")]
@@ -305,6 +331,12 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private long _nextTugAtTick;
 	private int _tugSerial;
 
+	// 挣脱镜头震动（纯渲染侧：正弦叠噪 × 包络，无 RNG，不进物理与哈希）
+	private float _shakeEnvelope;
+	private float _shakeKick;
+	private float _shakeTime;
+	private bool _shakeApplied;
+
 	// 拖拽 / 吞没
 	private Vector3 _captiveVel;
 	private Vector3 _pendingVelocityDelta;
@@ -320,12 +352,12 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		if (!ValidateExports())
 		{
 			_fatal = true;
-			GetTree().Quit(2);
-			return;
-		}
+				GetTree().Quit(2);
+				return;
+			}
 
-		_gravityPerTick = new Vector3(0f, -GravityMps2 * (float)(TickDt * TickDt), 0f);
-		Engine.PhysicsTicksPerSecond = HostPhysicsTps;
+			_gravityPerTick = new Vector3(0f, -GravityMps2 * (float)(TickDt * TickDt), 0f);
+			Engine.PhysicsTicksPerSecond = HostPhysicsTps;
 
 		_terrain = new RayDebugDraw(_raycast);
 		_terrain.Build(this);
@@ -417,6 +449,14 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			return Fail($"CameraTakeoverSeconds must be finite and positive, got {CameraTakeoverSeconds}");
 		if (!FinitePositive(AlignStartDegrees))
 			return Fail($"AlignStartDegrees must be finite and positive, got {AlignStartDegrees}");
+		if (!float.IsFinite(StruggleShakeDegrees) || StruggleShakeDegrees < 0f)
+			return Fail($"StruggleShakeDegrees must be finite and >= 0 (0 disables shake), got {StruggleShakeDegrees}");
+		if (!float.IsFinite(StruggleShakeOffsetMeters) || StruggleShakeOffsetMeters < 0f)
+			return Fail($"StruggleShakeOffsetMeters must be finite and >= 0, got {StruggleShakeOffsetMeters}");
+		if (!FinitePositive(StruggleShakeFrequencyHz))
+			return Fail($"StruggleShakeFrequencyHz must be finite and positive, got {StruggleShakeFrequencyHz}");
+		if (!float.IsFinite(StruggleShakeTugKick) || StruggleShakeTugKick < 0f)
+			return Fail($"StruggleShakeTugKick must be finite and >= 0, got {StruggleShakeTugKick}");
 		if (!FinitePositive(EatRadius))
 			return Fail($"EatRadius must be finite and positive, got {EatRadius}");
 		if (!FinitePositive(DragMinSpeed))
@@ -757,6 +797,10 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_takeoverElapsed = 0.0;
 		_tugVel = Vector3.Zero;
 		_nextTugAtTick = long.MaxValue; // 对准前不猛拽；BeginStruggle 才排期
+		// 快速再抓（RegrabGraceSeconds 调小）时上一轮挣扎的残余震动会漏进本轮扭头窗口，
+		// 违反「扭头对准不震」——此刻残余幅度已极小，硬清不可见。
+		_shakeEnvelope = 0f;
+		_shakeKick = 0f;
 		_player.InputLocked = true;
 		_player.Velocity = Vector3.Zero;
 		FeedIdleStance();
@@ -808,6 +852,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		direction = direction.Normalized();
 		float reach = Mathf.Min(StruggleTugDistance, distance);
 		_tugVel = direction * (reach * (1f - TugDecayRate));
+		_shakeKick = MathF.Min(_shakeKick + StruggleShakeTugKick, ShakeKickMax);
 		GD.Print($"[DADDY-ARENA] tug t={_tick} dist={distance:F1}m pull={reach:F2}m");
 	}
 
@@ -1425,6 +1470,11 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_tugVel = Vector3.Zero;
 		_nextTugAtTick = 0;
 		_tugSerial = 0;
+		_shakeEnvelope = 0f;
+		_shakeKick = 0f;
+		_shakeTime = 0f;
+		_player.SetCameraShake(Vector3.Zero, Vector3.Zero);
+		_shakeApplied = false;
 		_captiveVel = Vector3.Zero;
 		_pendingVelocityDelta = Vector3.Zero;
 		_pendingPositionCorrection = Vector3.Zero;
@@ -1458,6 +1508,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 				PinEyeInsideBody(delta, interpolation);
 				break;
 		}
+		UpdateCameraShake((float)delta);
 
 		bool formalOn = _formalRenderer is not null && _formalView;
 		if (formalOn && _formalRenderer is { } formal)
@@ -1540,6 +1591,47 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		{
 			BeginStruggle();
 		}
+	}
+
+	/// <summary>
+	/// 挣脱连打期的镜头震动：多条不可通约正弦叠成无规律抖动（无 RNG、纯渲染侧），
+	/// 猛拽瞬间叠一记快衰减冲量。只在 Bound 且挣扎流程已激活时驱动——刚被抓的扭头
+	/// 对准（<see cref="_struggleActive"/> 未立）与拖拽/吞没相位目标包络为零，按
+	/// <see cref="ShakeReleaseTau"/> 自然收敛后停喂（硬切到零画面会跳）。
+	/// </summary>
+	private void UpdateCameraShake(float delta)
+	{
+		float target = _phase == ArenaPhase.Bound && _struggleActive ? 1f : 0f;
+		float tau = target > _shakeEnvelope ? ShakeAttackTau : ShakeReleaseTau;
+		_shakeEnvelope += (target - _shakeEnvelope) * (1f - MathF.Exp(-delta / tau));
+		_shakeKick *= MathF.Exp(-delta / ShakeKickDecayTau);
+		float amplitude = _shakeEnvelope * (1f + _shakeKick);
+		if (amplitude < 0.001f || StruggleShakeDegrees <= 0f)
+		{
+			if (_shakeApplied)
+			{
+				_player.SetCameraShake(Vector3.Zero, Vector3.Zero);
+				_shakeApplied = false;
+			}
+			_shakeTime = 0f;
+			return;
+		}
+
+		_shakeTime += delta * StruggleShakeFrequencyHz * Mathf.Tau;
+		float t = _shakeTime;
+		float rot = Mathf.DegToRad(StruggleShakeDegrees) * amplitude;
+		// 频率比 1 / 0.61 / 0.83 / 0.47 / 0.73 互不成整数比，叠加后无循环节拍感。
+		var euler = new Vector3(
+			(MathF.Sin(t) * 0.6f + MathF.Sin(t * 0.61f + 1.7f) * 0.4f) * rot,
+			(MathF.Sin(t * 0.83f + 4.2f) * 0.6f + MathF.Sin(t * 0.47f + 0.9f) * 0.4f) * rot,
+			MathF.Sin(t * 0.73f + 2.6f) * rot * 0.5f);
+		float sway = StruggleShakeOffsetMeters * amplitude;
+		var offset = new Vector3(
+			MathF.Sin(t * 0.89f + 0.4f) * sway,
+			MathF.Sin(t * 1.13f + 3.1f) * sway * 0.7f,
+			0f);
+		_player.SetCameraShake(offset, euler);
+		_shakeApplied = true;
 	}
 
 	/// <summary>吞没期：把视点平滑吸进身体质心并钉住（跟随质心漂移）。</summary>

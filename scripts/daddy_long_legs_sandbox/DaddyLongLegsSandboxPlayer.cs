@@ -27,6 +27,9 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
     private const float MouseSensitivity = 0.0025f;
     private const float JumpVelocity = 4.5f;
     private const float PitchLimit = 1.35f;
+    /// <summary>pitch + 震动叠加后的硬夹（弧度）：必须 &lt; π/2，不然俯仰贴夹角时震动
+    /// 峰值能把镜头翻过竖直极点（画面瞬间倒置）。震动只被削顶，不影响 pitch 本值。</summary>
+    private const float CameraPitchHardLimit = 1.5f;
     private const float CapsuleRadius = 0.35f;
     private const float CapsuleHeight = 1.7f;
     private const float CapsuleCenterY = 0.85f;
@@ -43,6 +46,8 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
     private Camera3D _camera = null!;
     private MeshInstance3D _bodyMesh = null!;
     private float _pitch;
+    private Vector3 _shakeOffset;
+    private Vector3 _shakeEuler;
 
     public bool Active { get; private set; }
 
@@ -59,16 +64,19 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
     /// </summary>
     public bool MotionFrozen { get; set; }
 
-    /// <summary>相机所在世界位置（HUD 用；相机是子节点，外部不该直接摸）。</summary>
-    public Vector3 EyePosition => _camera?.GlobalPosition ?? GlobalPosition;
+    // Eye* 三个观测量刻意**不读相机节点**、从未震动的 yaw/pitch 刚体推导：震动是纯化妆，
+    // 只落在相机节点这最后一层；拖拽物理、吞没判定、对准判定、枪线全都不能被它污染
+    // （否则物理结果随渲染帧率漂移）。无震动时两种算法逐位等价（身体只转 yaw、无缩放）。
 
-    /// <summary>相机视线方向（世界系，指向画面深处）。镜头接管的对准判定用。</summary>
-    public Vector3 EyeForward => _camera is not null
-        ? -_camera.GlobalTransform.Basis.Z
-        : -GlobalTransform.Basis.Z;
+    /// <summary>视点世界位置（HUD/拖拽/枪口用）——未震动刚体值，见上。</summary>
+    public Vector3 EyePosition => GlobalPosition + new Vector3(0f, EyeHeight, 0f);
 
-    /// <summary>相机世界基（枪口偏移等相机系偏移用；相机是子节点，外部不该直接摸）。</summary>
-    public Basis EyeBasis => _camera?.GlobalTransform.Basis ?? GlobalTransform.Basis;
+    /// <summary>视线方向（世界系，指向画面深处）——未震动刚体值，见上。</summary>
+    public Vector3 EyeForward => -EyeBasis.Z;
+
+    /// <summary>视点世界基（枪口偏移等相机系偏移用）——未震动刚体值，见上。</summary>
+    public Basis EyeBasis =>
+        GlobalTransform.Basis * Basis.FromEuler(new Vector3(_pitch, 0f, 0f));
 
     /// <summary>身体 yaw（弧度）。镜头接管读取当前值做阻尼插值。</summary>
     public float Yaw => Rotation.Y;
@@ -85,6 +93,20 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
     {
         Rotation = new Vector3(0f, yaw, 0f);
         _pitch = Mathf.Clamp(pitch, -PitchLimit, PitchLimit);
+        ApplyCameraRotation();
+    }
+
+    /// <summary>
+    /// 相机震动偏移（局部位移 + 欧拉增量，弧度）：挣脱等高强度时刻由世界脚本每帧喂值、
+    /// 结束喂零。纯化妆姿态，只写相机节点——Yaw/CameraPitch 与 Eye* 全套观测量都
+    /// **保证不受震动影响**（Eye* 从刚体推导，见上），逻辑侧可放心在震动期继续消费。
+    /// </summary>
+    public void SetCameraShake(Vector3 localOffset, Vector3 eulerRadians)
+    {
+        _shakeOffset = localOffset;
+        _shakeEuler = eulerRadians;
+        if (_camera is not null)
+            _camera.Position = new Vector3(0f, EyeHeight, 0f) + localOffset;
         ApplyCameraRotation();
     }
 
@@ -225,7 +247,10 @@ public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
     private void ApplyCameraRotation()
     {
         if (_camera is not null)
-            _camera.Rotation = new Vector3(_pitch, 0f, 0f);
+            _camera.Rotation = new Vector3(
+                Mathf.Clamp(_pitch + _shakeEuler.X,
+                    -CameraPitchHardLimit, CameraPitchHardLimit),
+                _shakeEuler.Y, _shakeEuler.Z);
     }
 
     private static Vector2 MovementInput()

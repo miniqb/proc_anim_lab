@@ -15,6 +15,9 @@ script = ExtResource("1_world")
 GravityCancellationGain = 1.12
 StruggleTugDistance = 2.0
 EscapeTentacleStunSeconds = 2.0
+StruggleShakeDegrees = 1.1
+StruggleShakeOffsetMeters = 0.015
+StruggleShakeFrequencyHz = 3.5
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=800832326]
 transform = Transform3D(1, 0, 0, 0, 0.9145, 0.4048, 0, -0.4048, 0.9145, 15, 14, 40)
