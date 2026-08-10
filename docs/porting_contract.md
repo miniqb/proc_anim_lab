@@ -1271,6 +1271,16 @@ gameplay 对目标的实际修正、伤害与吞入不进入视觉 tether 层。
 
 > 建议路径：姿态 1 先落地验证（不动任何现有边界），姿态 2 留给需要「真爬墙怪」的品种。
 
+> **2026-08-10 主仓接线完成（DaddyLongLegs，姿态 2 首个正式落地）**：Daddy 以路线 A
+> （源码拷入 `scripts/enemies/daddy/kernel/` + namespace 归化，内核零改动）移植进
+> `random-room-runtime`，作为新暴君种类并设为默认（`DaddyTyrantEnemy`，规格修订记录
+> 在主仓 `docs/daddy_tyrant_port.md`）。宿主 60Hz 物理下 0.025s 累加器 + LerpPos 插值
+> 照 §3.3 落地；驱动走 dir 模式（tether 三档不适用——姿态 2 无权威根），MoveTarget
+> 直喂模式并存可静态切换；地形掩码 = 主仓层 20+21（关门板计入层 21，「关门即断路」
+> 是该暴君的玩法规则）。主仓 headless 冒烟（`scenes/debug/DaddyTyrantSmoke.tscn`）
+> 验证：追逐接近 / 跨层楼梯自然攀爬 / 关门断路→闲逛 / 开门恢复追逐 / 断手接回闭环。
+> 姿态 1（tether 拴 CharacterBody3D）依旧无人闭环——上面的如实说明对其余物种仍然成立。
+
 **固定生物例外：拟态草不走两种移动姿态的 tether。**
 宿主安装根始终是位置/导航/伤害权威；出生时把地形点、洞外法线、切向提示和 collider ID
 写入 `TentaclePlantMount`，核心只模拟根外的手和段链。世界原点重置调用 `Shift`；
