@@ -209,7 +209,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 	/// </summary>
 	private const int PlayerSpawnLead = 4;
 
-	private DaddyLongLegsSandboxPlayer? _player;
+	private ArenaFirstPersonPlayer? _player;
 	private bool _playerMode;
 	private bool _wantPlayerMode;            // ← StartInFirstPerson
 
@@ -2874,7 +2874,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 		_playerMode = !_playerMode;
 		if (_playerMode && _player is null)
 		{
-			_player = new DaddyLongLegsSandboxPlayer { Name = "SandboxPlayer" };
+			_player = new ArenaFirstPersonPlayer { Name = "SandboxPlayer" };
 			AddChild(_player);
 			PlacePlayerNearCreature(_player);
 		}
@@ -2893,7 +2893,7 @@ public partial class DaddyLongLegsSandboxWorld : Node3D
 	/// 把人放到「离生物最近的路点 + <see cref="PlayerSpawnLead"/>」并转向生物。用路点当落点
 	/// 是因为它天然满足两个条件：一定在开放格里，且一定在地面高度（y = 迷宫原点）。
 	/// </summary>
-	private void PlacePlayerNearCreature(DaddyLongLegsSandboxPlayer player)
+	private void PlacePlayerNearCreature(ArenaFirstPersonPlayer player)
 	{
 		IReadOnlyList<Vector3> waypoints = _maze!.Waypoints;
 		Vector3 center = _controller.BodyCenter;

@@ -1,10 +1,12 @@
 using System;
 using Godot;
+using ProcAnimLab.DaddyLongLegsSandbox; // 有意保留：尺度常量真相源 DaddyLongLegsMazeBuilder 仍归 Daddy 沙盒（见类头注释）
 
-namespace ProcAnimLab.DaddyLongLegsSandbox;
+namespace ProcAnimLab.Sandbox;
 
 /// <summary>
-/// 抓取竞技场：单个封闭矩形房间（地板 + 天花板 + 四墙，共 6 个盒子）。
+/// 从 Daddy 沙盒提升共享（原 <c>DaddyLongLegsGrabArenaBuilder</c>，内容不变）。
+/// 竞技场房间构建器：单个封闭矩形房间（地板 + 天花板 + 四墙，共 6 个盒子）。
 ///
 /// 尺度常量**直接引用** <see cref="DaddyLongLegsMazeBuilder"/> 的公共常量（它是主仓
 /// <c>CoordinateMapper</c>/<c>RoomBuilder</c> 的只读镜像，单一真相源）：净高 3.2m、
@@ -14,7 +16,7 @@ namespace ProcAnimLab.DaddyLongLegsSandbox;
 /// 墙心钉在内径边界平面上（与迷宫墙骑在 lane 线上的惯例一致），四角互相加长半墙厚封角；
 /// 全部 collider 合并进一个 StaticBody3D（内核只消费命中点/法线/距离，不读 collider 身份）。
 /// </summary>
-public sealed class DaddyLongLegsGrabArenaBuilder
+public sealed class BoxRoomArenaBuilder
 {
     private const float MinimumInterior = 12f;
 
@@ -30,7 +32,7 @@ public sealed class DaddyLongLegsGrabArenaBuilder
     /// <summary>玩家出生端：−X 端中线，地面高度（Place 自带出生抬升）。</summary>
     public Vector3 PlayerSpawn { get; }
 
-    public DaddyLongLegsGrabArenaBuilder(
+    public BoxRoomArenaBuilder(
         Vector3 origin,
         float interiorWidth,
         float interiorDepth,

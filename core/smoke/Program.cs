@@ -1628,7 +1628,7 @@ internal static class Program
     private static bool CheckSpeciesModularity(out string message)
     {
         const int ExpectedSpecies = 7;
-        var allowed = new HashSet<string> { "Humanoid>Lizard" };
+        var allowed = new HashSet<string> { "Humanoid>Lizard", "RatFiend>Lizard" };
 
         if (!TryFindKernelRoot(out string kernelRoot))
         {

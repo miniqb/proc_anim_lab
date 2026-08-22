@@ -15,7 +15,7 @@
 3. **宿主 tick 里装 0.025s 累加器**驱动选定物种控制器的 `Tick`，渲染读
    `LerpPos(插值分数)`（§3）；回归先跑对应的 `core/smoke` / `core/spider_smoke`
    / `core/cicada_smoke` / `core/tentacle_plant_smoke` / `core/deer_smoke`
-   / `core/daddy_long_legs_smoke` / `core/dropbug_smoke`
+   / `core/daddy_long_legs_smoke` / `core/dropbug_smoke` / `core/ratfiend_smoke`
    （秒级、无引擎），再照主项目 MotionSmoke 惯例加一条 headless 探针（§7）。
 
 ## 1. 模块清单与依赖面
@@ -41,10 +41,11 @@ core/
 │   ├── tentacle_plant/ ProcAnim.Core.Species.TentaclePlant
 │   ├── deer/           ProcAnim.Core.Species.Deer
 │   ├── daddy_long_legs/ ProcAnim.Core.Species.DaddyLongLegs
-│   └── dropbug/        ProcAnim.Core.Species.DropBug
+│   ├── dropbug/        ProcAnim.Core.Species.DropBug
+│   └── ratfiend/       ProcAnim.Core.Species.RatFiend
 ├── godot/              ProcAnim.Core.Terrain        引擎适配器（**归宿主程序集**，见 §1.2）
 └── smoke/ spider_smoke/ cicada_smoke/ tentacle_plant_smoke/ deer_smoke/
-    daddy_long_legs_smoke/ dropbug_smoke/           无引擎回归工程
+    daddy_long_legs_smoke/ dropbug_smoke/ ratfiend_smoke/   无引擎回归工程
 ```
 
 两处**有意的目录 ≠ 命名空间**：`godot/` 的适配器实现 `Terrain` 的接口却不属于内核程序集，
@@ -53,9 +54,10 @@ core/
 
 跨物种引用由 `core/smoke` 的 **`[CORE-MODULARITY]` 源码扫描**强制（与 §1.2 的 TypeRef
 引擎边界扫描并列）：`species/<物种>/` 下出现白名单外的另一物种命名空间即回归 FAIL。
-白名单当前只有一条 **Humanoid → Lizard**（人形腿复用 `Limb` 的 opt-in `LookaheadTicks`
-与 `MoveIntentDeadzone` 常量）。扫描走源码而非 IL：编译期常量在 IL 里被内联，
-元数据扫描看不见——`MoveIntentDeadzone` 恰好就是这一类。
+白名单当前两条：**Humanoid → Lizard** 与 **RatFiend → Lizard**（都是双足复用 `Limb`
+的同一件事：opt-in `LookaheadTicks` 前瞻点循环与 `MoveIntentDeadzone` 常量）。
+扫描走源码而非 IL：编译期常量在 IL 里被内联，元数据扫描看不见——
+`MoveIntentDeadzone` 恰好就是这一类。
 
 ### 1.1b 文件清单
 
@@ -101,6 +103,9 @@ core/
 | `species/dropbug/DropBugLocomotionController.cs` | 掉落虫控制器：三节短链自撑、站稳计数与前后不对称重力、运行时收放静息长度的悬挂态、弹道俯冲、蓄力扑击、越障抬升与确定性卡住抖动 | DropBug.Act + DropBugAI 的运动子集 |
 | `species/dropbug/DropBugLeg.cs` | **纯图形件**腿：步频随头部实际位移驱动，静止严格为零；不回传力、不计支撑（反编译实证腿为 `Limb[2,2]` 图形层） | DropBugGraphics |
 | `species/dropbug/DropBugParams.cs` / `DropBugFactory.cs` | 掉落虫独立参数表与三节短链装配；original/nimble/bulky 三稳定 ID（未知 ID 快速失败） | DropBug 构造 |
+| `species/ratfiend/RatFiendLocomotionController.cs` | 鼠煞控制器：倾斜站立力偶（常态驼背）、Gait 走跑姿态混合、断肢（固定断肘/膝）与爬行（推进 ∝ 抓地肢体数）、蠕动、攻击接缝（GrabTarget/MouthDrive/HandsOnTarget） | Scavenger 伺服体制的物种化 + 本物种新造 |
+| `species/ratfiend/RatArm.cs` | 鼠煞手臂粒子（Humanoid Arm 的物种私有同构版 + Severed/EffectiveLength 断肢语义） | ScavengerHand 机械部分 |
+| `species/ratfiend/RatFiendParams.cs` / `RatFiendFactory.cs` / `RatFiendSeveredLimbState.cs` | 参数表（Snapshot 出生冻结）、gaunt/dusk/broad/whelp 四稳定 ID 装配（未知 ID 快速失败）、断肢交接结构 | — |
 | `species/vulture/VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
 | `species/vulture/VultureWing.cs` | 翅膀段链粒子：只抗拉绳约束 + 行波 Flap / 射线抓附 Grab 两模式；除抓地悬挂拉力外对身体零回传 | VultureTentacle |
 | `species/vulture/VultureBreedParams.cs` | 秃鹫品种参数表（与蜥蜴表平行、不混表；vulture/king/swift/quad 四预设） | Vulture 构造 + IsKing/IsMiros 分支 |
@@ -114,6 +119,7 @@ core/
 | `deer_smoke/` | 鹿独立无引擎回归（装配、恒重力支撑、多节腿步态、地形、生命周期、确定性与机制消融） | — |
 | `daddy_long_legs_smoke/` | DaddyLongLegs 独立无引擎回归（seed 形态、整链支撑、职责/换步、全向地形、打断、外部够取、生命周期、确定性与机制消融） | — |
 | `dropbug_smoke/` | DropBug 独立无引擎回归（装配、前后不对称重力、悬挂收放与击飞冷却、俯冲、蓄力、越障、卡住、负重、表现腿、生命周期、确定性与九机制消融） | — |
+| `ratfiend_smoke/` | RatFiend 独立无引擎回归（装配、驼背姿态、走跑单调、摆臂反相、断肢 API、断臂行走、断腿爬行、爬行调头、爬行翻台阶、断肢里程单调、全断蠕动、攻击接缝、生命周期、确定性与四机制消融） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -459,6 +465,41 @@ DropBugLocomotionController bug = DropBugFactory.CreateController(origin, forwar
   宿主不要在运行时改动它们（会改变哈希）。
 - 完整 DLL 数值、3D 取舍与有意偏离原作的清单见 [`dropbug_controller.md`](dropbug_controller.md)。
 
+### 2.10 鼠煞装配契约（RatFiendLocomotionController）
+
+```csharp
+RatFiendParams p = RatFiendFactory.ById("ratfiend/gaunt");  // 或 Gaunt/Dusk/Broad/Whelp
+RatFiendLocomotionController rat = RatFiendFactory.CreateController(origin, forward, p);
+```
+
+- 身体拓扑照搬人形：3 chunk `[胸, 髋, 头]`（折叠序即此序），胸↔髋 Rigid、胸↔头 PullOnly，
+  RotationChunk 显式钉定（胸↔髋互绑、头→胸）。双腿 = Lizard `Limb`（LookaheadTicks=10
+  硬性，Pair 互绑对角相位）；双臂 = 物种私有 `RatArm`（[0]=左 / [1]=右，与
+  `RatFiendLimbId` 同序）。
+- 四个稳定 ID `ratfiend/gaunt|dusk|broad|whelp`；未知 ID **快速失败**。**dusk 是 gaunt 的
+  调色变体**：体格参数逐位相同、物理轨迹逐位相等（矩阵 dusk-parity 断言），调色板归渲染层。
+- **本后端有三点此前十个后端都没有的机制**：
+  1. **倾斜站立力偶**（常态驼背）：站立力偶的目标姿态轴从世界上朝 Facing 倾斜
+     HunchAngle——平衡态本身是驼背的；行进弓背加深靠**推进天花板不对称**
+     （HunchSpeedBias，胸 ×(1+b)/髋 ×(1−b)——巡航双 chunk 钉在天花板上时唯一
+     穿得过余量钳制的差分通道）。胸/髋阻尼必须**相等**（不等阻尼会把动量中性的
+     倾斜力偶整流成静立净漂移，实测 0.65m/300tick）。
+  2. **断肢**（`Sever(RatFiendLimbId, staggerImpulse = default)`）：固定断肘/膝 =
+     标志位 + 可及长度减半（单粒子肢体不走 Daddy 换实例）。断腿即停用该 Limb 步态机
+     （残肢粒子由控制器手动积分）并把**存活腿 `Pair` 置 null**（Lookahead 释放 guard
+     防冻结）；`CanStand` 变假 → 重力回归、直立伺服静默、摔倒涌现。返回末端粒子
+     Pos/LastPos/Vel 供宿主播种断落装饰物；已断再调 throw；昏迷可断；staggerImpulse
+     opt-in 默认零（既有回归从不传它 → 基线不受影响）；不可逆（无接肢）。
+  3. **爬行**（Crawling = 清醒且断任一腿）：重力常开 + 手臂 plant-and-trail 撑地
+     （控制器层子链驱动哑粒子，每 tick ≤1 根找点射线）+ **推进 = CrawlForcePerLimb ×
+     抓地肢体数 × RunSpeed**；四肢全断退化为周期性内力偶蠕动（近零位移）。
+- 走↔跑无 gait 枚举：进哈希的平滑标量 `Gait` 追 RunSpeed，`RunBlend` 派生姿态权重
+  （头耷拉↔抬头、垂手摆臂↔前伸、嘴微张↔大张三路连续混合）。`CrawlFactor` 同理
+  （渲染 dorsal/肘 pole 的连续驱动）。
+- 控制器另暴露两个消融开关（`EnableHunchTilt` / `EnableCrawlGripScaling`），
+  **默认全 true，仅供 smoke 消融红灯使用**——宿主不要在运行时改动（会改变哈希）。
+- 设计裁定与修复轮记录见 [`ratfiend_controller.md`](ratfiend_controller.md)。
+
 ## 3. 驱动契约（tick 与渲染）
 
 ### 3.1 固定步长
@@ -775,6 +816,34 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   `Legs`（**纯表现**，不要拿它反推支撑）。另有 `PounceLeapSerial` / `PounceAbandonSerial` /
   `DiveSerial` / `HopSerial` 四个只读事件流水号，供宿主检测「事件确实发生过」。
 
+### 4.1f 鼠煞（RatFiendLocomotionController）的输入与观测差异
+
+三旋钮同名同义（`MoveDir` / `RunSpeed` / 可选 `MoveTarget` + `AtMoveTarget`，到点判定
+用水平距离——地面生物），新增的都围绕「驼背猎手 + 断肢」：
+
+- `GrabTarget`（`Vector3?`，宿主逐 tick 写/清）：攻击抓取目标。非 null 且清醒时双臂脱离
+  步态摆动、沿「胸→目标」满伸（可及半径钳制），头 aim 自动转向目标。**抓住判定归宿主**：
+  读 `HandsOnTarget[2]`（手到目标真实距离 < GrabContactRadius）。伤害/束缚/咬合计时
+  全在宿主（竞技场先例：修正 = 双手中点 − 目标，全量交付）。
+- `MouthDrive`（float 0..1，宿主输入）：嘴开度的攻击驱动分量，咬合时拉满。
+  `MouthOpen = clamp(0.15 + 0.55·RunBlend + MouthDrive)` 纯派生；`LastMouthOpen`
+  供渲染 `lerp(Last, Cur, alpha)` 插值。
+- `Sever(RatFiendLimbId, staggerImpulse = default)` → `RatFiendSeveredLimbState`
+  （见 §2.10）；`IsSevered` / `SeveredLimbCount` / `SeverSerial`（单调事件序号，
+  渲染抽搐/宿主特效按沿触发）。
+- `Conscious` / `Shift` / `Teleport` / `Launch` 与人形同名同义（断肢状态是拓扑态不是
+  位置态：Teleport 保留断肢、清 GrabTarget/MoveTarget）。
+- `Facing` 语义：站立时瞬时对齐 effMove；**爬行时限速回转**（`CrawlTurnRatePerTick`
+  0.06 rad/tick，身体画弧调头）——宿主把目标点切到生物身后时不要期待朝向当 tick 翻转。
+- **爬行可翻低台阶**（手拉体升）：撑稳的手高出躯干 chunk 底面时把躯干拽上台面，
+  可爬高度是涌现上限 ≈ `CrawlProbeRise` + 胸径 ≈ 0.5m（更高的立面回到「墙」语义
+  滑墙绕行）。宿主给爬行态喂 `MoveTarget` 时不必替它绕开 ≤0.3m 级的台阶/门槛。
+- 观测面：`Uprightness`（对**倾斜姿态轴**度量——1 = 驼背平衡态）、`Grounded` /
+  `GroundedCounter` / `ApplyGravity`、`Facing`、`Gait` / `LastGait` / `RunBlend`、
+  `CrawlFactor` / `LastCrawlFactor` / `Crawling` / `CanStand`、`CrawlGripCount`
+  （爬行引擎计数），以及 `Legs`（Limb）/ `Arms`（RatArm：`Severed` /
+  `EffectiveLength`——断后粒子即残肢肘端，渲染与命中判定直接消费）。
+
 ### 4.2 人形（HumanoidLocomotionController）的输入面差异
 
 三旋钮语义与蜥蜴一致（`MoveDir`/`RunSpeed`/可选 `MoveTarget`，同一 `MoveIntentDeadzone`），
@@ -1087,11 +1156,25 @@ dotnet run --project core/dropbug_smoke
 #    nimble/bulky 变体各覆盖 walk/hang/dive/pounce（pounce 起跳窗口按预设蓄力时长参数化）。
 ./tools/run_dropbug_matrix.sh
 
-# ⑭ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
+# ⑭ 鼠煞无引擎 smoke：16 门全真断言——装配与出生冻结、确定性主路线（含固定 tick
+#    断腿→爬行→断臂）、驼背几何（静立保持 + 消融红灯）、走跑姿态三链单调、摆臂反相、
+#    断肢 API（播种逐位连续/叠断 throw/昏迷可断/stagger 精确）、断臂行走偏差 <5%、
+#    断腿爬行（摔倒涌现/步频/Pair 清空）、爬行调头（Facing 限速回转 + 头髋不穿插 +
+#    身体轴真转过来 + 瞬时置向消融红灯）、爬行翻台阶（0.3m 台阶手拉体升 +
+#    撤拽升消融红灯）、断肢里程单调（+ 抓地缩放消融红灯）、
+#    全断蠕动上界、攻击接缝、生命周期、查询预算与 2mm 残余穿透门。
+dotnet run --project core/ratfiend_smoke
+
+# ⑮ 鼠煞 Godot 矩阵：23 配置 = walk 双跑/40vs400Hz/微扰 + run/yank +
+#    sever-leg/crawl-step/sever-arm-walk/sever-both-legs/sever-all + attack/sever-during-attack +
+#    dusk/broad/whelp 变体（walk + 断腿爬行）+ dusk-parity（调色变体哈希逐位等于 gaunt）。
+./tools/run_ratfiend_matrix.sh
+
+# ⑯ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +
 #    [RESULT] 判定聚合，任何一项红即非零退出：
 ./tools/run_matrix.sh
 
-# ⑮ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
+# ⑰ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空。
 #    M5 抽离即以此验收（9 配置 bit-exact 零漂移）。
 ```
 
@@ -1168,6 +1251,7 @@ DaddyLongLegs 的本轮地形卡腿专项覆盖：物理半径裁边的 tick-end
 - DaddyLongLegs：`tools/run_daddy_long_legs_matrix.sh` 与
   `core/daddy_long_legs_smoke/Program.cs`；
 - DropBug：`tools/run_dropbug_matrix.sh` 与 `core/dropbug_smoke/Program.cs`；
+- RatFiend：`tools/run_ratfiend_matrix.sh` 与 `core/ratfiend_smoke/Program.cs`；
 - Humanoid：`tools/run_matrix.sh`（HASH_HUMANOID_* 六条）与 `core/smoke/Program.cs`
   的 `HumanoidExpectedHash`；
 - Vulture：`tools/run_matrix.sh`（vulture 四配置）与 `core/smoke/Program.cs`
@@ -1182,7 +1266,8 @@ DaddyLongLegs 的本轮地形卡腿专项覆盖：物理半径裁边的 tick-end
 `--headless --scene …` + PASS 标记；其 ClockProbe 已验证过「两次构建 40 步轨迹逐 float 一致」，
 确定性标准同构）。建议：对应物种的 `core/*_smoke` 原样带走（拟态草为
 `core/tentacle_plant_smoke`，鹿为 `core/deer_smoke`，长腿爸爸为
-`core/daddy_long_legs_smoke`，掉落虫为 `core/dropbug_smoke`，均为纯 .NET 秒级回归），另加一条
+`core/daddy_long_legs_smoke`，掉落虫为 `core/dropbug_smoke`，鼠煞为 `core/ratfiend_smoke`，
+均为纯 .NET 秒级回归），另加一条
 `tech_validation/m10_motion/` 风格的场景探针跑真实地形（等价本仓库 `--determinism` 模式）。
 
 ## 8. 迁移路线与集成姿态（主项目对接面调研结论，2026-07）

@@ -1,8 +1,9 @@
 using Godot;
 
-namespace ProcAnimLab.DaddyLongLegsSandbox;
+namespace ProcAnimLab.Sandbox;
 
 /// <summary>
+/// 从 Daddy 沙盒提升共享（原 <c>DaddyLongLegsSandboxPlayer</c>，内容不变）。
 /// 主仓 <c>FirstPersonPlayer</c> 的**运动规格镜像**：在迷宫里用人的尺寸、人的速度走一圈，
 /// 直观感受 Daddy 在同一空间里的体量与快慢。只做「站着走」这一件事。
 ///
@@ -19,7 +20,7 @@ namespace ProcAnimLab.DaddyLongLegsSandbox;
 /// （<c>RaycastTerrainQuery</c>）掩码恒为 1，因此玩家对生物**完全不可见**——不会被当成
 /// 地形抓住，也不会污染任何观测量或残余穿透统计。生物侧没有碰撞体，人可以直接穿过它。
 /// </summary>
-public partial class DaddyLongLegsSandboxPlayer : CharacterBody3D
+public partial class ArenaFirstPersonPlayer : CharacterBody3D
 {
     // ---- 主仓规格镜像 ----
     private const float MoveSpeed = 5.0f;

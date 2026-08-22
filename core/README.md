@@ -27,9 +27,10 @@ core/
     daddy_long_legs_smoke/                         无引擎回归工程
 ```
 
-**九个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
-唯一的跨物种边是 **Humanoid → Lizard**：人形腿复用蜥蜴 `Limb` 的 opt-in `LookaheadTicks`
-前瞻释放循环与 `MoveIntentDeadzone` 常量（其余物种各自声明自己的 deadzone，不共享）。
+**十一个物种目录互为平级，只依赖 `physics`/`terrain`/`host`/`diagnostics` 四层底座。**
+跨物种边只有两条：**Humanoid → Lizard** 与 **RatFiend → Lizard**——都是双足复用蜥蜴
+`Limb` 的 opt-in `LookaheadTicks` 前瞻释放循环与 `MoveIntentDeadzone` 常量
+（其余物种各自声明自己的 deadzone，不共享）。
 这条边和「没有别的边」都由 `smoke/` 的 `[CORE-MODULARITY]` 扫描钉死：
 `species/<物种>/` 下出现白名单外的另一物种命名空间即回归 FAIL。
 

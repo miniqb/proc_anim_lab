@@ -29,7 +29,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 	private const ulong PlayerTargetId = 0x9_1A_7E_12UL;
 
 	/// <summary>
-	/// 玩家胶囊的镜像常量（真相源 <see cref="DaddyLongLegsSandboxPlayer"/> 的胶囊
+	/// 玩家胶囊的镜像常量（真相源 <see cref="ArenaFirstPersonPlayer"/> 的胶囊
 	/// r0.35 / 中心抬 0.85）：触手要「摸到」的目标球心与半径。改玩家规格需同步。
 	/// </summary>
 	private const float PlayerChunkCenterY = 0.85f;
@@ -266,14 +266,14 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 
 	private readonly RaycastTerrainQuery _raycast = new();
 	private RayDebugDraw _terrain = null!;
-	private DaddyLongLegsGrabArenaBuilder _arena = null!;
+	private BoxRoomArenaBuilder _arena = null!;
 	private DaddyLongLegsParams _preset = null!;
 	private ulong _seed;
 	private DaddyLongLegsLocomotionController _controller = null!;
 	private DaddyLongLegsRenderer _renderer = null!;
 	private ProcAnimLab.Render.IFormalRenderer? _formalRenderer;
 	private bool _formalView;
-	private DaddyLongLegsSandboxPlayer _player = null!;
+	private ArenaFirstPersonPlayer _player = null!;
 	private DaddyLongLegsGrabHud _hud = null!;
 	private Camera3D _bootCamera = null!;
 
@@ -372,7 +372,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 
 		try
 		{
-			_arena = new DaddyLongLegsGrabArenaBuilder(
+			_arena = new BoxRoomArenaBuilder(
 				Vector3.Zero, ArenaWidth, ArenaDepth, SpawnEndInset);
 		}
 		catch (InvalidOperationException error)
@@ -389,7 +389,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		_chaseDriveDir = ChaseDrive == "dir";
 		SpawnDaddy();
 
-		_player = new DaddyLongLegsSandboxPlayer { Name = "ArenaPlayer" };
+		_player = new ArenaFirstPersonPlayer { Name = "ArenaPlayer" };
 		AddChild(_player);
 		_player.Place(_arena.PlayerSpawn, _arena.MonsterSpawn);
 		_player.SetActive(true);
@@ -1061,7 +1061,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		float bodyDistance = float.PositiveInfinity;
 		foreach (BodyChunk chunk in _controller.Body.Chunks)
 		{
-			if (RayHitsSphere(from, direction, chunk.Pos, chunk.Radius, out float t)
+			if (RayHitMath.RayHitsSphere(from, direction, chunk.Pos, chunk.Radius, out float t)
 				&& t < bodyDistance)
 			{
 				bodyDistance = t;
@@ -1080,7 +1080,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 			{
 				DaddyTentacleSegmentState segment = tentacle.Segments[s];
 				float radius = segment.Radius + GunAimAssistRadius;
-				if (RayHitsCapsule(from, direction, previous, segment.Pos, radius, out float t)
+				if (RayHitMath.RayHitsCapsule(from, direction, previous, segment.Pos, radius, out float t)
 					&& t < hitDistance && t <= occlusion)
 				{
 					hitDistance = t;
@@ -1182,61 +1182,7 @@ public partial class DaddyLongLegsGrabArenaWorld : Node3D
 		}
 	}
 
-	/// <summary>射线 vs 球：返回最近的非负相交距离。</summary>
-	private static bool RayHitsSphere(
-		Vector3 from, Vector3 direction, Vector3 center, float radius, out float distance)
-	{
-		distance = 0f;
-		Vector3 offset = from - center;
-		float b = offset.Dot(direction);
-		float c = offset.LengthSquared() - radius * radius;
-		float discriminant = b * b - c;
-		if (discriminant < 0f)
-			return false;
-		float root = MathF.Sqrt(discriminant);
-		float t = -b - root;
-		if (t < 0f)
-			t = -b + root;
-		if (t < 0f)
-			return false;
-		distance = t;
-		return true;
-	}
-
-	/// <summary>
-	/// 射线 vs 胶囊（链边两端 + 半径）：取射线与线段的最近点对，距离 ≤ 半径即命中；
-	/// 命中距离用最近点的射线参数近似（够「大致符合命中位置」的断点定位精度）。
-	/// </summary>
-	private static bool RayHitsCapsule(
-		Vector3 from,
-		Vector3 direction,
-		Vector3 capsuleA,
-		Vector3 capsuleB,
-		float radius,
-		out float distance)
-	{
-		distance = 0f;
-		Vector3 segment = capsuleB - capsuleA;
-		Vector3 offset = from - capsuleA;
-		float segmentDot = segment.LengthSquared();
-		float segmentAlongRay = segment.Dot(direction);
-		float offsetAlongSegment = offset.Dot(segment);
-		float offsetAlongRay = offset.Dot(direction);
-		// 最近点对：s|S|² − t(S·D) = offset·S 与 t = s(S·D) − offset·D 联立
-		// （offset = 射线原点 − 胶囊端 A；D 单位向量）。
-		float denominator = segmentDot - segmentAlongRay * segmentAlongRay;
-		float s = denominator > 1e-8f
-			? Mathf.Clamp(
-				(offsetAlongSegment - segmentAlongRay * offsetAlongRay) / denominator, 0f, 1f)
-			: 0f;
-		float t = MathF.Max(0f, s * segmentAlongRay - offsetAlongRay);
-		Vector3 closestOnSegment = capsuleA + segment * s;
-		Vector3 closestOnRay = from + direction * t;
-		if (closestOnRay.DistanceSquaredTo(closestOnSegment) > radius * radius)
-			return false;
-		distance = t;
-		return true;
-	}
+	// 射线 vs 球 / 胶囊：提升到共享 RayHitMath（ProcAnimLab.Sandbox），逐字搬迁。
 
 	// ---- 断落段与接手 ----
 

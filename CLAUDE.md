@@ -4,13 +4,14 @@
 > 系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/)
 > 的怪物系统。**
 >
-> **当前状态（2026-08-08）**：`ProcAnim.Core` 含 **10 个平行物种控制器**
+> **当前状态（2026-08-22）**：`ProcAnim.Core` 含 **11 个平行物种控制器**
 > （Lizard / Humanoid / Spider / Centipede / Cicada / Vulture / TentaclePlant / Deer /
-> DaddyLongLegs / DropBug），各有独立回归；七套 Godot 矩阵合计 **170 项**。M5 内核抽离与
-> 回迁契约完成；正式渲染层已有 **6 个渲染件**（Lizard / Centipede / Vulture / DaddyLongLegs /
-> Spider / Humanoid）。最近一轮：DaddyLongLegs 抓取竞技场 —— 外部目标通道首次接玩家，
-> 闭环「追逐 → 触手提前伸抓 → 束缚连打挣脱 → 拖入吞食 → 重开」，内核零改动
-> （探索场景，不进矩阵，见 [daddy_long_legs](docs/daddy_long_legs_controller.md) §7.2）。
+> DaddyLongLegs / DropBug / RatFiend），各有独立回归；八套 Godot 矩阵合计 **193 项**。
+> M5 内核抽离与回迁契约完成；正式渲染层已有 **7 个渲染件**（Lizard / Centipede / Vulture /
+> DaddyLongLegs / Spider / Humanoid / RatFiend——首个可动颌）。最近一轮：RatFiend 鼠煞
+> —— 驼背鼠头人形怪：倾斜站立力偶（常态驼背）、走跑姿态连续混合、断肢（固定断肘/膝）
+> 与爬行（推进 ∝ 抓地肢体数）、枪击部位判定竞技场
+> （见 [ratfiend](docs/ratfiend_controller.md)）。
 > 「默认集成姿态」的闭环待主仓接线后验证（契约 §4.1 / §8.3）。
 
 ---
@@ -48,7 +49,7 @@
 
 | 文档 | 什么时候看 |
 |------|-----------|
-| [`docs/porting_contract.md`](docs/porting_contract.md) | **回迁真相源**。改内核 API、加物种、准备回迁时看：十物种各自的装配/驱动/输入/输出四契约、`ITerrainQuery` 全语义、确定性守则与三层回归、迁移路线与集成姿态。 |
+| [`docs/porting_contract.md`](docs/porting_contract.md) | **回迁真相源**。改内核 API、加物种、准备回迁时看：十一物种各自的装配/驱动/输入/输出四契约、`ITerrainQuery` 全语义、确定性守则与三层回归、迁移路线与集成姿态。 |
 | [`docs/rainworld_procedural_animation_research.md`](docs/rainworld_procedural_animation_research.md) | **核心参考**。深度研究 + 反编译实证（§11 代码级）+ Godot 移植策略（§12：为什么用射线而不是细网格）。本项目内为**工作副本**（2026-08-06 已反向同步回主项目，两边一致）。 |
 | [`docs/rainworld_creature_taxonomy.md`](docs/rainworld_creature_taxonomy.md) | **扩多节脊柱、肢体或固定触手前先查这里的先例**：92 物种 / 54 个 `Creature` 实现类、七大身体架构统计。 |
 
@@ -104,7 +105,7 @@
 > M1~M5 的**产物细节**（翻越三件套、闲置姿态、防折叠支柱、抽离质量门等）在
 > [`docs/lizard_controller.md`](docs/lizard_controller.md) §1。
 
-**十个并列后端**（互不继承，只共享 `physics/` + `terrain/` + `host/` 底座）：
+**十一个并列后端**（互不继承，只共享 `physics/` + `terrain/` + `host/` 底座）：
 
 | 后端 | 运动路线 | 预设 | 文档 |
 |------|---------|------|------|
@@ -118,6 +119,7 @@
 | **Deer** | 常开重力下的连续支撑；粗重叠躯干 + 四条独立多节腿 | original / compact / strider | [deer](docs/deer_controller.md) |
 | **DaddyLongLegs** | **无前向轴**：seed 冻结的完整图球团 + 整链贴面连续抵消重力 | brother / daddy / terror | [daddy_long_legs](docs/daddy_long_legs_controller.md) |
 | **DropBug** | **伏击者**：三节短链、前后不对称重力、运行时收放静息长度的悬挂态、弹道俯冲 | original / nimble / bulky | [dropbug](docs/dropbug_controller.md) |
+| **RatFiend** | **驼背鼠头人形**：倾斜站立力偶（常态驼背）+ Gait 走跑姿态混合；断肢固定断肘/膝，断腿改爬行（推进 ∝ 抓地肢体数），全断蠕动 | gaunt / dusk / broad / whelp | [ratfiend](docs/ratfiend_controller.md) |
 
 ## 6. 跨物种硬约束（改任何内核前必读）
 
@@ -155,7 +157,7 @@ lizard + humanoid + vulture 三家，是唯一不对称点；按物种拆开是�
 （留顶层作回迁隔离区）；`AssemblyInfo.cs` 只承载程序集属性。
 
 > **per-file using 现在就是依赖图。** 十个物种目录只依赖四层底座，**唯一跨物种边是
-> Humanoid → Lizard**（人形腿复用 `Limb` 的 opt-in `LookaheadTicks` + `MoveIntentDeadzone`
+> Humanoid → Lizard 与 RatFiend → Lizard**（双足复用 `Limb` 的 opt-in `LookaheadTicks` + `MoveIntentDeadzone`
 > 常量）。smoke `[CORE-MODULARITY]` 遍历全部物种目录，白名单外的另一物种命名空间即 FAIL。
 > 扫描走**源码**而非 IL —— 跨物种耦合最常见的形态就是编译期常量，它在 IL 里被内联得一干二净，
 > 元数据扫描看不见。
@@ -196,18 +198,19 @@ dotnet run --project core/smoke
 #    pipefail + 退出码聚合，结尾打 MATRIX GREEN/RED：
 ./tools/run_matrix.sh [输出目录]
 
-# ③ 六个独立物种的专项（各自 smoke + 矩阵）：
+# ③ 七个独立物种的专项（各自 smoke + 矩阵）：
 dotnet run --project core/spider_smoke          && ./tools/run_spider_matrix.sh            # 16 项
 dotnet run --project core/cicada_smoke          && ./tools/run_cicada_matrix.sh            #  9 项
 dotnet run --project core/tentacle_plant_smoke  && ./tools/run_tentacle_plant_matrix.sh    # 17 项
 dotnet run --project core/deer_smoke            && ./tools/run_deer_matrix.sh              # 18 项
 dotnet run --project core/daddy_long_legs_smoke && ./tools/run_daddy_long_legs_matrix.sh   # 40 项
 dotnet run --project core/dropbug_smoke         && ./tools/run_dropbug_matrix.sh           # 25 项
+dotnet run --project core/ratfiend_smoke        && ./tools/run_ratfiend_matrix.sh          # 23 项
 
 # ④ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 ```
 
-七套 Godot 矩阵合计 **170 项**（45 + 16 + 9 + 17 + 18 + 40 + 25）。各矩阵覆盖什么、哪些机制
+八套 Godot 矩阵合计 **193 项**（45 + 16 + 9 + 17 + 18 + 40 + 25 + 23）。各矩阵覆盖什么、哪些机制
 有消融红灯，见对应物种文档与脚本本身。
 
 **单配置手跑**：
