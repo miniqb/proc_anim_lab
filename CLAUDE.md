@@ -157,7 +157,7 @@ lizard + humanoid + vulture 三家，是唯一不对称点；按物种拆开是�
 （留顶层作回迁隔离区）；`AssemblyInfo.cs` 只承载程序集属性。
 
 > **per-file using 现在就是依赖图。** 十个物种目录只依赖四层底座，**唯一跨物种边是
-> Humanoid → Lizard 与 RatFiend → Lizard**（双足复用 `Limb` 的 opt-in `LookaheadTicks` + `MoveIntentDeadzone`
+> Humanoid → Lizard 与 RatFiend → Lizard**（双足复用 `Limb` 的 opt-in `LookaheadTicks` / `RestDepth` + `MoveIntentDeadzone`
 > 常量）。smoke `[CORE-MODULARITY]` 遍历全部物种目录，白名单外的另一物种命名空间即 FAIL。
 > 扫描走**源码**而非 IL —— 跨物种耦合最常见的形态就是编译期常量，它在 IL 里被内联得一干二净，
 > 元数据扫描看不见。
@@ -171,7 +171,7 @@ lizard + humanoid + vulture 三家，是唯一不对称点；按物种拆开是�
 ### 6.6 opt-in 是硬要求
 
 任何改变**已进哈希**状态的新机制，必须以默认关闭的 opt-in 参数落地（先例：
-`Limb.LookaheadTicks`、`SpiderBreedParams.KneeStepBudgetRatio`），否则既有品种基线漂移。
+`Limb.LookaheadTicks`、`Limb.RestDepth`、`SpiderBreedParams.KneeStepBudgetRatio`），否则既有品种基线漂移。
 共享层改动则**全部重新审计**，不能用批量改哈希代替行为断言。
 
 ### 6.7 渲染层边界

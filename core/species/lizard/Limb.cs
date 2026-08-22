@@ -117,6 +117,11 @@ public sealed class Limb
 	/// <summary>触发闲置休息位所需的连续找不到落点 tick 数（只在无移动意图时累计）。</summary>
 	public int IdleAfterTicks = 20;
 
+	/// <summary>闲置休息位深度（×JointDist，沿 −up 垂脚）。默认 0.6 = 既有物种基线逐位不变
+	/// （opt-in，先例 LookaheadTicks）。高站位物种必须 opt-in 抬到 站高/腿长：0.6×腿长 &lt; 站高
+	/// 时闲置脚悬空（鼠煞 R10 站高抬到 0.83×腿长后暴露——此前 0.6×腿长 ≈ 站高纯属巧合）。</summary>
+	public float RestDepth = 0.6f;
+
 	/// <summary>连续 FindGrip 失败计数（找到落点或有移动意图即清零）。</summary>
 	private int _gripFailTicks;
 
@@ -312,7 +317,7 @@ public sealed class Limb
 	{
 		Vector3 side = stepDir.Cross(up);
 		side = side.LengthSquared() < 1e-8f ? Vector3.Right : side.Normalized();
-		return Anchor.Pos - up * (JointDist * 0.6f) + side * (Side * JointDist * 0.3f);
+		return Anchor.Pos - up * (JointDist * RestDepth) + side * (Side * JointDist * 0.3f);
 	}
 
 	private bool OverlappingHuntPos()

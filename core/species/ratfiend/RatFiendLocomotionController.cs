@@ -319,11 +319,12 @@ public sealed class RatFiendLocomotionController
 		}
 		if (effMove != Vector3.Zero)
 		{
-			// 站立瞬时置向（腿+站立力偶立刻把身体带过来）；爬行限速回转——身体是贴地
-			// 水平链，瞬时翻向会让头伺服把头从裆下拽过去（头髋穿插），限速后画弧调头。
-			Facing = CanStand
-				? effMove
-				: SlewFacing(Facing, effMove, up, _p.CrawlTurnRatePerTick);
+			// 调头统一画弧（R13 把 R8 的爬行限速回转扩展到直立）：直立瞬时置向会让头伺服
+			// 把头从躯干里拽到另一侧、渲染 dorsal（−Facing）低通打转——与爬行头髋穿插同一
+			// 病灶。直立限速取爬行 2×（双足原地转身比贴地水平链灵活）；夹角 ≤ 限速时
+			// SlewFacing 直接取目标，直线与小角度转向和旧行为逐位相同。
+			Facing = SlewFacing(Facing, effMove, up,
+				CanStand ? _p.StandTurnRatePerTick : _p.CrawlTurnRatePerTick);
 		}
 
 		LastGait = Gait;
@@ -345,10 +346,27 @@ public sealed class RatFiendLocomotionController
 			if (CanStand)
 			{
 				ApplyStandCouple(postureUp);
-				ApplyWalkLean(effMove);
+				// R13：推进/走倾沿限速回转后的 Facing——沿原始 effMove 推会在意图反向时
+				// 先全速倒车再转身（爬行 R8「胸沿 Facing 推」的直立对应件）。直线行走时
+				// Facing == effMove，逐位同旧行为。
+				// R13b 半径收紧（双态转体门，见 TurnAlignGate 注释——线性节流被
+				// BaseSpeed≫天花板的钳制证伪）：转体期间零注入 + 主动刹车 → 滑步刹停、
+				// 低速拧身；对齐后全油门沿新方向弹射起步。转速（StandTurnRatePerTick）
+				// 不变，只压弧半径。直线对齐度恒 1，逐位不变。
+				Vector3 standDrive = effMove == Vector3.Zero ? Vector3.Zero : Facing;
+				float align = effMove == Vector3.Zero
+					? 0f
+					: Facing.Dot(SafeNormalized(effMove, Facing));
+				float driveThrottle = align >= _p.TurnAlignGate ? 1f : 0f;
+				if (standDrive != Vector3.Zero && driveThrottle == 0f && Grounded)
+				{
+					BrakeHorizontal(Chest, up);
+					BrakeHorizontal(Hips, up);
+				}
+				ApplyWalkLean(standDrive, driveThrottle);
 				ApplyHeadServo(up);
 				ApplyHipServo(up, groundHit, groundPoint);
-				ApplyLocomotionForce(effMove);
+				ApplyLocomotionForce(standDrive, driveThrottle);
 			}
 			else
 			{
@@ -439,13 +457,20 @@ public sealed class RatFiendLocomotionController
 	}
 
 	/// <summary>胸朝移动方向前压（加速段质感；满油门被推进余量钳制吸收）。</summary>
-	private void ApplyWalkLean(Vector3 effMove)
+	/// <summary>掉头刹车（R13b）：只砍水平速度分量，竖直留给重力/髋伺服。</summary>
+	private void BrakeHorizontal(BodyChunk chunk, Vector3 up)
+	{
+		Vector3 vUp = up * chunk.Vel.Dot(up);
+		chunk.Vel = vUp + (chunk.Vel - vUp) * _p.TurnBrakePerTick;
+	}
+
+	private void ApplyWalkLean(Vector3 effMove, float throttle)
 	{
 		if (effMove == Vector3.Zero)
 		{
 			return;
 		}
-		WeightedPush(Chest, Hips, effMove, _p.LeanPush * RunSpeed);
+		WeightedPush(Chest, Hips, effMove, _p.LeanPush * RunSpeed * throttle);
 	}
 
 	/// <summary>头部双伺服（Humanoid 同构，aim 按姿态混合）：
@@ -491,20 +516,27 @@ public sealed class RatFiendLocomotionController
 	/// 天花板不对称（胸 ×(1+bias) / 髋 ×(1−bias)）是行进驼背的唯一有效差分通道——
 	/// 巡航时两 chunk 双双钉在天花板上，力偶/阻尼差通道都被钳制吸收或带静立漂移副作用
 	/// （见 RatFiendParams.HunchSpeedBias 注释）。</summary>
-	private void ApplyLocomotionForce(Vector3 effMove)
+	private void ApplyLocomotionForce(Vector3 effMove, float throttle)
 	{
 		if (effMove == Vector3.Zero)
 		{
 			return;
 		}
 		float bias = EnableHunchTilt ? _p.HunchSpeedBias : 0f;
-		float frameSpeed = _p.BaseSpeed * RunSpeed;
-		float chestRoom = _p.MaxMoveSpeed * (1f + bias) - Chest.Vel.Dot(effMove);
+		// R13b：注入 ∝ 朝向-意图对齐度（throttle）——掉头期熄油门压弧半径；天花板不动
+		// （只作瞬态门，不改直线巡航平衡，HunchSpeedBias 的不对称天花板论证不受影响）。
+		float frameSpeed = _p.BaseSpeed * RunSpeed * throttle;
+		// R11 步态修复：天花板 ∝ 油门。此前天花板与 RunSpeed 无关，注入率在 RunSpeed≥0.15
+		// 后全被余量钳制吸收——走/跑巡航速度逐位相同（实测三档全是 0.0859/tick=3.4m/s），
+		// 「走」就是用跑的速度挪碎步。乘 RunSpeed 后巡航 ≈ 0.9×天花板×油门：
+		// 0.35 档 ≈1.2m/s（人样步行）、1.0 档 ≈3.4m/s（满速追击，与修复前一致）。
+		float ceiling = _p.MaxMoveSpeed * RunSpeed;
+		float chestRoom = ceiling * (1f + bias) - Chest.Vel.Dot(effMove);
 		if (chestRoom > 0f)
 		{
 			Chest.Vel += effMove * Mathf.Min(frameSpeed, chestRoom);
 		}
-		float hipsRoom = _p.MaxMoveSpeed * (1f - bias) - Hips.Vel.Dot(effMove);
+		float hipsRoom = ceiling * (1f - bias) - Hips.Vel.Dot(effMove);
 		if (hipsRoom > 0f)
 		{
 			Hips.Vel += effMove * Mathf.Min(frameSpeed, hipsRoom);
@@ -658,6 +690,22 @@ public sealed class RatFiendLocomotionController
 		stepDir = stepDir.LengthSquared() < 1e-8f ? Facing : stepDir.Normalized();
 		float runSpeed = Conscious && effMove != Vector3.Zero ? RunSpeed : 0f;
 		Vector3 right = SafeNormalized(Facing.Cross(up), Vector3.Right);
+
+		// R11 反相自举：前瞻落点是公共的（髋前 ≈0.46m），两腿一旦近同相（前后间距塌缩），
+		// 纯时间错位会被逐周期原样保留——出生 stagger 只有 0.1m，长步幅慢步频下走成
+		// 双脚并排的「并步跳」。两脚同时踩稳、间距 < LegPhaseMinGap 且居后脚已过髋
+		// （即将自然释放）时，把居后脚提前释放重迈：一次干预拉开 ≈半步幅的空间差，
+		// 之后释放-重落循环自稳在近反相，规则不再触发（人样迈步的确定性等价物）。
+		if (Conscious && CanStand && HasMoveIntent
+			&& Legs.Count == 2 && Legs[0].Gripping && Legs[1].Gripping)
+		{
+			float fwd0 = (Legs[0].Pos - Hips.Pos).Dot(stepDir);
+			float fwd1 = (Legs[1].Pos - Hips.Pos).Dot(stepDir);
+			if (Mathf.Abs(fwd0 - fwd1) < _p.LegPhaseMinGap && Mathf.Min(fwd0, fwd1) < 0f)
+			{
+				(fwd0 < fwd1 ? Legs[0] : Legs[1]).ForceRelease();
+			}
+		}
 
 		for (int i = 0; i < Legs.Count; i++)
 		{

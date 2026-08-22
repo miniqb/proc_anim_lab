@@ -55,7 +55,8 @@ core/
 跨物种引用由 `core/smoke` 的 **`[CORE-MODULARITY]` 源码扫描**强制（与 §1.2 的 TypeRef
 引擎边界扫描并列）：`species/<物种>/` 下出现白名单外的另一物种命名空间即回归 FAIL。
 白名单当前两条：**Humanoid → Lizard** 与 **RatFiend → Lizard**（都是双足复用 `Limb`
-的同一件事：opt-in `LookaheadTicks` 前瞻点循环与 `MoveIntentDeadzone` 常量）。
+的同一件事：opt-in `LookaheadTicks` 前瞻点循环与 `MoveIntentDeadzone` 常量；RatFiend
+另 opt-in `RestDepth` 闲置垂脚深度 = 站高/腿长——高站位下默认 0.6 会闲置悬脚）。
 扫描走源码而非 IL：编译期常量在 IL 里被内联，元数据扫描看不见——
 `MoveIntentDeadzone` 恰好就是这一类。
 
@@ -473,9 +474,9 @@ RatFiendLocomotionController rat = RatFiendFactory.CreateController(origin, forw
 ```
 
 - 身体拓扑照搬人形：3 chunk `[胸, 髋, 头]`（折叠序即此序），胸↔髋 Rigid、胸↔头 PullOnly，
-  RotationChunk 显式钉定（胸↔髋互绑、头→胸）。双腿 = Lizard `Limb`（LookaheadTicks=10
-  硬性，Pair 互绑对角相位）；双臂 = 物种私有 `RatArm`（[0]=左 / [1]=右，与
-  `RatFiendLimbId` 同序）。
+  RotationChunk 显式钉定（胸↔髋互绑、头→胸）。双腿 = Lizard `Limb`（LookaheadTicks>0
+  硬性、取值 3 + 控制器层反相自举，见物种文档 §5.9；Pair 互绑对角相位）；双臂 =
+  物种私有 `RatArm`（[0]=左 / [1]=右，与 `RatFiendLimbId` 同序）。
 - 四个稳定 ID `ratfiend/gaunt|dusk|broad|whelp`；未知 ID **快速失败**。**dusk 是 gaunt 的
   调色变体**：体格参数逐位相同、物理轨迹逐位相等（矩阵 dusk-parity 断言），调色板归渲染层。
 - **本后端有三点此前十个后端都没有的机制**：
@@ -495,7 +496,9 @@ RatFiendLocomotionController rat = RatFiendFactory.CreateController(origin, forw
      抓地肢体数 × RunSpeed**；四肢全断退化为周期性内力偶蠕动（近零位移）。
 - 走↔跑无 gait 枚举：进哈希的平滑标量 `Gait` 追 RunSpeed，`RunBlend` 派生姿态权重
   （头耷拉↔抬头、垂手摆臂↔前伸、嘴微张↔大张三路连续混合）。`CrawlFactor` 同理
-  （渲染 dorsal/肘 pole 的连续驱动）。
+  （渲染 dorsal/肘 pole 的连续驱动）。直立推进天花板 **∝ RunSpeed**（R11：巡航 ≈
+  0.9×MaxMoveSpeed×油门——走/跑是真实速度差，不只是姿态差；步频步幅随之自适应，
+  低油门 = 人样迈步，见物种文档 §5.9）。
 - 控制器另暴露两个消融开关（`EnableHunchTilt` / `EnableCrawlGripScaling`），
   **默认全 true，仅供 smoke 消融红灯使用**——宿主不要在运行时改动（会改变哈希）。
 - 设计裁定与修复轮记录见 [`ratfiend_controller.md`](ratfiend_controller.md)。
@@ -833,8 +836,11 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   渲染抽搐/宿主特效按沿触发）。
 - `Conscious` / `Shift` / `Teleport` / `Launch` 与人形同名同义（断肢状态是拓扑态不是
   位置态：Teleport 保留断肢、清 GrabTarget/MoveTarget）。
-- `Facing` 语义：站立时瞬时对齐 effMove；**爬行时限速回转**（`CrawlTurnRatePerTick`
-  0.06 rad/tick，身体画弧调头）——宿主把目标点切到生物身后时不要期待朝向当 tick 翻转。
+- `Facing` 语义：**站立与爬行均限速回转**（`StandTurnRatePerTick` 0.22 /
+  `CrawlTurnRatePerTick` 0.06 rad/tick，直立推进沿回转后的 Facing；直立转体期间
+  （对齐度 < `TurnAlignGate` 0.9）推进零注入 + 主动刹车 = 原地拧身式掉头——R13，
+  见物种文档 §5.10）——宿主把目标点切到生物身后时不要期待朝向当 tick 翻转，也不要
+  期待急转中保持全速；夹角小于限速的转向仍即时对齐、缓弯不减速。
 - **爬行可翻低台阶**（手拉体升）：撑稳的手高出躯干 chunk 底面时把躯干拽上台面，
   可爬高度是涌现上限 ≈ `CrawlProbeRise` + 胸径 ≈ 0.5m（更高的立面回到「墙」语义
   滑墙绕行）。宿主给爬行态喂 `MoveTarget` 时不必替它绕开 ≤0.3m 级的台阶/门槛。

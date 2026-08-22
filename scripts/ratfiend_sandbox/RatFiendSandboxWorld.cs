@@ -112,6 +112,7 @@ public partial class RatFiendSandboxWorld : Node3D
     private long _refootTick = -1;
     private float _recoverStartX;
     private float _travelAfterRecover;
+    private float _lastRecoverX;
 
     private bool Deterministic => _determinismTicks > 0;
 
@@ -395,10 +396,15 @@ public partial class RatFiendSandboxWorld : Node3D
             {
                 _refootTick = _tick;
                 _recoverStartX = _rat.Chest.Pos.X;
+                _lastRecoverX = _recoverStartX;
             }
             if (_refootTick > 0)
             {
-                _travelAfterRecover = Mathf.Abs(_rat.Chest.Pos.X - _recoverStartX);
+                // 累计行走里程，不取末刻位移：巡逻乒乓下末刻位移是周期敏感量——
+                // R11 速度分离改变巡逻节奏后，路线末端恰好折返回落点附近（|Δ|=1.46m）
+                // 曾把正常恢复（总里程 87m）误判成未恢复。
+                _travelAfterRecover += Mathf.Abs(_rat.Chest.Pos.X - _lastRecoverX);
+                _lastRecoverX = _rat.Chest.Pos.X;
             }
         }
     }

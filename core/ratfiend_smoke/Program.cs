@@ -28,7 +28,7 @@ internal static class Program
     private static string _maxPenetrationContext = "";
 
     // 在完整行为门人工核对后钉定；只有有意改变 RatFiend 内核轨迹时才更新。
-    private const ulong ExpectedHash = 0x61B69A122056878DUL;
+    private const ulong ExpectedHash = 0x1B0FC96919D881E9UL;
 
     private static int Main()
     {
@@ -110,7 +110,7 @@ internal static class Program
             && ReferenceEquals(rat.Head.RotationChunk, rat.Chest);
         bool legs = rat.Legs.Count == 2
             && rat.Legs[0].Side == -1 && rat.Legs[1].Side == +1
-            && rat.Legs[0].LookaheadTicks == 10 && rat.Legs[1].LookaheadTicks == 10
+            && rat.Legs[0].LookaheadTicks == 3 && rat.Legs[1].LookaheadTicks == 3
             && ReferenceEquals(rat.Legs[0].Pair, rat.Legs[1])
             && ReferenceEquals(rat.Legs[1].Pair, rat.Legs[0]);
         bool arms = rat.Arms.Count == 2

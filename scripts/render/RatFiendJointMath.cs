@@ -8,9 +8,10 @@ namespace ProcAnimLab.Render;
 ///
 /// ⚠️ **双向同步义务**：本类的全部常量与 <see cref="RatFiendFormalRenderer"/> 内联的同名
 /// 公式**必须逐字一致**（肩挂点 0.78/0.35/0.18、臂骨 0.52、三态 pole、髋关节 0.55、
-/// 腿骨 0.60、腿 pole 0.25/0.5）——改渲染件的关节公式必须同步这里，反之亦然。
-/// 两处刻意的确定性近似（命中侧用内核标量，不复制渲染件的化妆状态）：
-/// · 忽略渲染基因 <c>_legGene</c>（seed 私有）与 pole/spineUp/dorsal 的逐帧低通——
+/// 腿 pole 0.25/0.5）——改渲染件的关节公式必须同步这里，反之亦然。腿骨长渲染件已改为
+/// 直接调 <see cref="LegBone"/>（R10 起 _legGene 只调粗细不掺骨长），膝位两侧逐字同源。
+/// 刻意的确定性近似（命中侧用内核标量，不复制渲染件的化妆状态）：
+/// · 忽略 pole/spineUp/dorsal 的逐帧低通——
 ///   由命中判定的瞄准冗余（LimbAimAssist 0.22m ≫ 低通差）冗余覆盖误差；
 /// · SpineUp/Dorsal 直接从内核当 tick 状态推导（无历史、无 RNG），断肢流当 tick 可解。
 /// </summary>
@@ -82,8 +83,9 @@ internal static class RatFiendJointMath
     public static Vector3 HipJoint(Vector3 hips, Vector3 right, float side, float hipsRadius) =>
         hips + right * (side * hipsRadius * 0.55f);
 
-    /// <summary>腿骨长。忽略渲染基因 _legGene（seed 私有）——命中冗余覆盖误差。</summary>
-    public static float LegBone(float jointDist) => jointDist * 0.60f;
+    /// <summary>腿骨长（渲染件同调此函数，膝位逐字同源）。0.44 × 双骨 ≈ 0.88×JointDist，
+    /// 对 HipRideHeight ≈0.83×JointDist 的站高给出站立膝微屈（R10 站姿修复轮；此前 0.60）。</summary>
+    public static float LegBone(float jointDist) => jointDist * 0.44f;
 
     /// <summary>膝 pole：前向 + 侧偏 + 爬行抬升。</summary>
     public static Vector3 LegPole(Vector3 facing, Vector3 right, Vector3 spineUp,

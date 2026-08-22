@@ -48,15 +48,15 @@ public static class RatFiendFactory
 		HipsDamping = 0.88f,
 		BaseSpeed = 0.05f,
 		MaxMoveSpeed = 0.07f,
-		LegLength = 0.85f,
+		LegLength = 0.9f,
 		FootRadius = 0.07f,
 		LegSpeed = 0.24f,
 		LegQuickness = 0.55f,
 		LegGripDelay = 4,
 		StepLength = 0.65f,
 		LiftFeet = 0.25f,
-		LegLateral = 0.38f,
-		HipRideHeight = 0.5f,
+		LegLateral = 0.18f,
+		HipRideHeight = 0.7f,
 		ArmLength = 1.3f,
 		HandRadius = 0.075f,
 		ArmSpeed = 0.45f,
@@ -86,14 +86,14 @@ public static class RatFiendFactory
 		HipsDamping = 0.92f,
 		BaseSpeed = 0.075f,
 		MaxMoveSpeed = 0.11f,
-		LegLength = 0.55f,
+		LegLength = 0.58f,
 		FootRadius = 0.05f,
 		LegSpeed = 0.35f,
 		LegQuickness = 0.8f,
 		StepLength = 0.55f,
 		LiftFeet = 0.15f,
-		LegLateral = 0.25f,
-		HipRideHeight = 0.33f,
+		LegLateral = 0.12f,
+		HipRideHeight = 0.47f,
 		ArmLength = 0.85f,
 		HandRadius = 0.05f,
 		ArmSpeed = 0.7f,
@@ -162,8 +162,12 @@ public static class RatFiendFactory
 
 		var controller = new RatFiendLocomotionController(body, chest, hips, head, p, fwd);
 
-		// 双腿：anchor=髋，出生错位相反 = 对角相位种子；LookaheadTicks=10 硬性
-		// （双足必须走前瞻点循环，Humanoid §3.5 结论）。
+		// 双腿：anchor=髋，出生错位相反 = 对角相位种子；LookaheadTicks>0 硬性
+		// （双足必须走前瞻点循环，Humanoid §3.5 结论）。取值 3 是 R11 步态修复：
+		// 释放点 = 前瞻圈（髋 + vel×前瞻）沿步向后退水平余量 sqrt(腿长²−站高²)≈0.42m；
+		// 前瞻 10 时圈心在髋前 vel×10≈0.65m，释放点被推到髋前 0.4m——脚从落点到释放
+		// 全程在髋前（实测 bothAhead=100%、11 步/秒碎步）。缩到 3 后走姿释放点落到
+		// 髋后 ≈0.33m，脚过髋后蹬、步频降到 ≈3 步/秒（人样迈步）。
 		foreach (int side in new[] { -1, +1 })
 		{
 			float stagger = LegStagger * side * -1f;
@@ -178,7 +182,10 @@ public static class RatFiendFactory
 				LiftFeet = p.LiftFeet,
 				FeetDown = p.FeetDown,
 				PairLateral = p.LegLateral,
-				LookaheadTicks = 10,
+				LookaheadTicks = 3,
+				// 闲置垂脚深度 = 站高/腿长（R10：站高 0.83×腿长 > 默认 0.6×腿长，
+				// 不 opt-in 则站定进 IdlePose 时脚悬空 0.18m）。
+				RestDepth = p.HipRideHeight / p.LegLength,
 			};
 			controller.Legs.Add(leg);
 		}

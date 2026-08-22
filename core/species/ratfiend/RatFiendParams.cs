@@ -58,8 +58,12 @@ public sealed class RatFiendParams
 	/// <summary>爬行时的抬头分量（aim = Facing + up·此值——爬行抬头看路）。</summary>
 	public float HeadCrawlUp = 0.2f;
 
-	/// <summary>髋高度伺服（腿长 0.75 → 站高 ≈0.6×腿长，给渲染 IK 留屈膝余量）。</summary>
-	public float HipRideHeight = 0.45f;
+	/// <summary>髋高度伺服（站高 ≈0.83×腿长 → 站立膝微屈的人样直立；R10 站姿修复轮之前
+	/// 是 0.6×腿长，两骨 IK 被塞成深蹲马步）。抬高受 Limb.FindGrip 探针几何约束：
+	/// goal 高度 = 站高 − 腿长×(0.3×FeetDown/|dir|) 必须落在 (−0.35, 0.55] 内
+	/// （探针带上扫 0.35 / 下扫 0.55；超上界探不到地、破下界探针起点陷入地面）——
+	/// 调站高必须与 FeetDown 联动核这条（R11 后 goal ≈ 地上 0.06m，两侧余量都足）。</summary>
+	public float HipRideHeight = 0.66f;
 	public float HipLiftGain = 0.1f;
 	public float HipVelYDamp = 0.5f;
 
@@ -104,16 +108,52 @@ public sealed class RatFiendParams
 	/// <summary>步进方向中移动意图对身体朝向的混合权重（同 Humanoid SteerBlend）。</summary>
 	public float SteerBlend = 0.4f;
 
-	// —— 腿（复用 Lizard Limb，anchor=髋；LookaheadTicks=10 由工厂硬性写入）——
-	public float LegLength = 0.75f;
+	/// <summary>直立调头限速（弧度/tick，R13）：意图反向时 Facing 画弧回转（0.22 ≈ 12.6°/tick，
+	/// 180° ≈ 0.36s），推进/走倾/头伺服/驼背姿态轴全程跟随——此前直立瞬时置向，头伺服把头
+	/// 直接从躯干里拽到另一侧、渲染 dorsal（−Facing）低通打转（爬行 R8 的同一病灶）。
+	/// 夹角 ≤ 限速时 SlewFacing 直接取目标：直线与小角度转向零影响。转弯半径上界 = 巡航速/
+	/// 此值（满油门 ≈0.39m、走档 ≈0.14m；实际更紧——回转中推进反向对旧速度是刹车），
+	/// 仍低于到点判定半径 0.4m，无绕圈风险。初版取 0.12（2×CrawlTurnRatePerTick），
+	/// 用户实测嫌弧大，提到 0.22 换干脆紧凑的原地掉头感；再往上逼近瞬时置向的头穿躯干带
+	/// （爬行消融红灯 ③ 的病灶），不宜超 ~0.3。</summary>
+	public float StandTurnRatePerTick = 0.22f;
+
+	/// <summary>掉头主动刹车（R13b）：踩地且朝向-意图对齐度 < TurnAlignGate 时，胸髋
+	/// 水平速度每 tick 乘此保留系数——纯 chunk 阻尼（0.9/tick）放速度太慢，冲刺掉头滑出
+	/// ≈1m 横向弧（探针逐 tick 实测）。与推进零注入（同一道门）配合：滑步刹停 → 低速
+	/// 拧身 → 对齐后按本种「弹射起步」体质（BaseSpeed ≫ 天花板，2 tick 到巡航）沿新方向
+	/// 干净加速。只砍水平分量（竖直留给重力/髋伺服），空中不刹（击飞弹道不受染指）。</summary>
+	public float TurnBrakePerTick = 0.8f;
+
+	/// <summary>转体门（R13b，双态）：Facing·意图 < 此值 = 「还在转体」——推进零注入 +
+	/// 主动刹车；≥ 此值恢复全油门。线性节流（注入 ∝ 对齐度）被证伪：BaseSpeed(0.065) ≫
+	/// 天花板余量，min() 钳制下部分对齐即近全额注入，沿旋转中的 Facing 逐 tick 矢量叠加
+	/// 把出弯速度弹到 4.6 m/s 超巡航、尾段侧向残速再横漂 0.5m。0.9 ≈ 偏差 26° 内放行。
+	/// 直线行走对齐度恒 1 永不触发；缓弯目标漂移被 slew 逐 tick 追平（对齐度 ≥
+	/// cos(12.6°) ≈ 0.976，如竞技场绕行玩家）同样不触发——只有 >26° 的急转吃这道门。</summary>
+	public float TurnAlignGate = 0.9f;
+
+	// —— 腿（复用 Lizard Limb，anchor=髋；LookaheadTicks=3 由工厂硬性写入）——
+	// R10 站姿修复轮：LegLateral 0.3→0.14（马步外撇 → 脚落髋正下）。
+	// R11 步态修复轮：FeetDown 0.75→4.5。FeetDown 决定 FindGrip 步向的下压角
+	// （dir = stepDir − up×0.3×FeetDown），落点前距 = 腿长/|dir|。0.75 时下压角仅 ~13°，
+	// 落点甩在髋前 0.94×腿长（探针几乎够不到、脚被钳制拖行）；4.5 → 下压角 ≈54°，
+	// 落点收到髋前 ≈0.46m——高站位双足的髋→落点方向本来就该近乎垂下（人迈步的
+	// 髋-落点连线 ≈55°）。副作用是探针带整体贴地：下行落差余量从 0.06m 放宽到 ≈0.5m。
+	public float LegLength = 0.8f;
 	public float FootRadius = 0.06f;
 	public float LegSpeed = 0.3f;
 	public float LegQuickness = 0.7f;
 	public int LegGripDelay = 3;
 	public float StepLength = 0.6f;
 	public float LiftFeet = 0.2f;
-	public float FeetDown = 0.6f;
-	public float LegLateral = 0.3f;
+	public float FeetDown = 4.5f;
+	public float LegLateral = 0.14f;
+
+	/// <summary>反相自举的最小前后间距（米）：两脚同时踩稳且沿步向间距塌到此值内、居后脚
+	/// 已过髋时，居后脚被提前释放重迈（见 RatFiendLocomotionController.TickLegs R11 注释）。
+	/// 取 ≈0.26×步幅跨距：远小于自稳后的半步差（≈0.35m），收敛后规则静默。</summary>
+	public float LegPhaseMinGap = 0.2f;
 	public bool SmoothenLegMovement = true;
 
 	// —— 手臂（RatArm）——
@@ -124,8 +164,9 @@ public sealed class RatFiendParams
 	public float ArmAdaptVel = 0.4f;
 	public float ArmExaggerate = 0.1f;
 
-	/// <summary>走路摆臂：目标点沿 Facing 的摆幅（×对侧腿相位，右臂随左腿天然反相）。</summary>
-	public float ArmSwingAmplitude = 0.25f;
+	/// <summary>走路摆臂：目标点沿 Facing 的摆幅（×对侧腿相位，右臂随左腿天然反相）。
+	/// R10 站姿修复轮 0.25→0.35：站高抬升后腿的归一化相位变小，等幅补回可见摆幅。</summary>
+	public float ArmSwingAmplitude = 0.35f;
 
 	/// <summary>走路摆臂目标点的固定前偏（米）。</summary>
 	public float ArmWalkForwardBias = 0.08f;

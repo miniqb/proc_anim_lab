@@ -87,12 +87,16 @@ internal readonly struct RatFiendRenderProfile
 /// alpha) 插值 + 渲染侧非对称低通——开快合稍慢）；口腔 = 沿两颌角平分线的暗红喉管，
 /// 闭嘴时半径缩进颌内不可见。抗抖四件套：头帧每帧只算一次、张角单独低通、
 /// 牙 = (头帧, 张角) 纯函数零累积、jawRest ≥3° 永不真正咬死（TwoBoneIk「永不绷直」的颌版）。
-/// 躯干 = 六点脊柱，**驼峰独立控制点上移到肩位且为全身最宽**（剪影直接读出驼背）+
-/// 掐腰瘦削 + 椎骨凸；爬行时 dorsal 双源 slerp（站姿 −facing 系 / 爬行 up 系，按内核
-/// CrawlFactor 连续混合）——防脊轴转水平后驼峰方向乱转。
+/// 躯干 = 七点脊柱**长弧**（颈根→肩坡→驼峰弧顶→中背→掐腰→髋→尾基，R12：隆起摊在
+/// 三个控制点上沿轴单调推进，弧顶仍是全身最宽——背读成弓不读成球；躯干管终点即脖管
+/// 起点，同点同半径无拼缝）+ 掐腰瘦削 + 椎骨凸；爬行时 dorsal 双源 slerp（站姿 −facing 系 /
+/// 爬行 up 系，按内核 CrawlFactor 连续混合）——防脊轴转水平后驼峰方向乱转。
 /// 四肢 = TwoBoneIk 肘膝（pole 三态混合：垂手肘朝后外 / 前伸肘外压 / **爬行肘朝上**）+
-/// 钩爪（逐指两枚刀片折出钩形）；断肢画 肩/髋 → 内核残肢粒子的短残段 + 暗红断口瘤 +
-/// 碎肉刀片。尾 = 渲染侧 verlet 短锥链（环纹裸鼠尾）。
+/// 钩爪（逐指两枚刀片折出钩形）；R14 一体化走 Lizard 路线：根点埋进躯干/骨盆内部、
+/// 肥根快收锥（三角肌/臀肌），大腿肉取代膝球、掌/脚掌并进肢管一根扫到底、两骨中段
+/// 沿 pole 微弓——关节位置与 RatFiendJointMath 逐字同源不动，只改管剖面。
+/// 断肢画 同款埋根 → 内核残肢粒子的短残段 + 暗红断口瘤 + 碎肉刀片。
+/// 尾 = 渲染侧 verlet 短锥链（环纹裸鼠尾）。
 /// 化妆状态（嘴平滑/咬合前突/断肢抽搐/爬行挣扎/眨眼/呼吸/耳颤）全部渲染侧私有，
 /// 不写回内核、不进哈希。对内核只读；srgbVertexColors:true（苍白调色在所见空间定档）。
 /// </summary>
@@ -199,8 +203,8 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
     private readonly List<Vector3> _pts = new();
     private readonly List<float> _radii = new();
     private readonly List<Color> _colors = new();
-    private readonly Vector3[] _spinePts = new Vector3[6];
-    private readonly float[] _spineRadii = new float[6];
+    private readonly Vector3[] _spinePts = new Vector3[7];
+    private readonly float[] _spineRadii = new float[7];
     private readonly Vector3[] _snoutPts = new Vector3[5];
     private readonly float[] _snoutRadii = new float[5];
 
@@ -292,13 +296,13 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         _upperTeeth = SeedRow(5, 8, 1f);
         _lowerTeeth = SeedRow(4, 7, 0.85f);
 
-        // 椎骨凸：4~7 颗沿驼峰脊线。
+        // 椎骨凸：4~7 颗沿驼峰脊线（区间对准七点脊柱的肩坡→中背段 = 弧顶两侧）。
         int vertCount = rng.Next(4, 8);
         _vertebrae = new VertebraSpec[vertCount];
         for (int i = 0; i < vertCount; i++)
         {
             _vertebrae[i] = new VertebraSpec(
-                Mathf.Lerp(0.08f, 0.45f, (i + 0.5f) / vertCount) + R() * 0.03f,
+                Mathf.Lerp(0.14f, 0.52f, (i + 0.5f) / vertCount) + R() * 0.03f,
                 Mathf.Lerp(0.11f, 0.16f, R()) * Mathf.Lerp(0.8f, 1.3f, _p.Gauntness));
         }
 
@@ -371,8 +375,8 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         UpdateTwitch(dt);
 
         _tube.BeginFrame();
-        DrawTorso(chest, hips, right, crawl, runN, struggling, out Vector3 humpPoint);
-        DrawNeck(chest, headPos, humpPoint, runN);
+        DrawTorso(chest, hips, right, crawl, runN, struggling, out Vector3 neckRoot);
+        DrawNeck(chest, headPos, neckRoot, runN);
         DrawHead(chest, headPos, facing, runN, crawl, dt);
         for (int i = 0; i < _c.Arms.Count; i++)
         {
@@ -515,11 +519,15 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
 
     // ———————————————————————— 躯干 ————————————————————————
 
-    /// <summary>六点脊柱：颈基 → **驼峰**（上移到肩位、全身最宽——剪影直接读出驼背）→ 胸 →
-    /// 掐腰 → 髋 → 尾基。呼吸 = 驼峰/胸半径 ±5%（停驶才明显，Lizard 门控；爬行时频率 ×2.7
-    /// 幅度 ×0.6 = 急促浅喘）；挣扎 = 驼峰点侧向蠕摆。椎骨凸沿驼峰脊线撒 AddKnob。</summary>
+    /// <summary>七点脊柱长弧：颈根 → 肩坡 → **驼峰弧顶**（全身最宽）→ 中背 → 掐腰 → 髋 →
+    /// 尾基。R12 背部重塑：旧版驼峰是单点极宽剖面（0.90×胸半径），颈基紧贴其上 0.2×胸半径
+    /// 处半径却砍半——近半球端盖，读成「背了颗肉球」；且控制点序列在胸处折返
+    /// （颈基→驼峰→胸 是回头路径），背侧剪影在驼峰后方塌出一道凹槽。现改沿躯干轴单调推进
+    /// 的长弧（负 lerp 因子 = 越过胸向头侧延伸），隆起摊在肩坡→弧顶→中背三点、峰值半径降档，
+    /// 背读成弓不读成球。呼吸 = 弧顶/中背半径 ±5%（停驶才明显，Lizard 门控；爬行时频率 ×2.7
+    /// 幅度 ×0.6 = 急促浅喘）；挣扎 = 弧顶侧向蠕摆。椎骨凸沿弧顶脊线撒 AddKnob。</summary>
     private void DrawTorso(Vector3 chest, Vector3 hips, Vector3 right, float crawl,
-        float runN, bool struggling, out Vector3 humpPoint)
+        float runN, bool struggling, out Vector3 neckRoot)
     {
         float chestR = _c.Chest.Radius;
         float hipsR = _c.Hips.Radius;
@@ -529,36 +537,39 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         float breathPulse = (Mathf.Sin(_time * breathRate) + 1f) * 0.5f * breathGate;
         float breathScale = 1f + 0.05f * breathPulse;
 
-        humpPoint = chest.Lerp(hips, 0.18f)
-            + _dorsalDraw * (chestR * Mathf.Lerp(0.52f, 0.82f, _humpGene)
-                * Mathf.Lerp(1f, 0.75f, crawl));
+        float humpLift = chestR * Mathf.Lerp(0.40f, 0.62f, _humpGene)
+            * Mathf.Lerp(1f, 0.75f, crawl);
+        neckRoot = chest.Lerp(hips, -0.18f) + _dorsalDraw * (humpLift * 0.50f);
+        Vector3 shoulderSlope = chest.Lerp(hips, -0.02f) + _dorsalDraw * (humpLift * 0.88f);
+        Vector3 humpPeak = chest.Lerp(hips, 0.20f) + _dorsalDraw * humpLift;
         if (struggling)
         {
-            humpPoint += right * (Mathf.Sin(_time * 2.2f) * 0.015f * crawl);
+            humpPeak += right * (Mathf.Sin(_time * 2.2f) * 0.015f * crawl);
         }
+        Vector3 midBack = chest.Lerp(hips, 0.42f) + _dorsalDraw * (humpLift * 0.52f);
         Vector3 waistPoint = chest.Lerp(hips, 0.62f) + _dorsalDraw * (chestR * 0.12f);
-        Vector3 neckBase = humpPoint + _spineUp * (chestR * 0.20f)
-            + _dorsalDraw * (chestR * 0.08f);
 
-        _spinePts[0] = neckBase;
-        _spinePts[1] = humpPoint;
-        _spinePts[2] = chest;
-        _spinePts[3] = waistPoint;
-        _spinePts[4] = hips;
-        _spinePts[5] = hips - _spineUp * (hipsR * 0.35f * (1f - 0.7f * crawl));
-        // 剖面整体降档（修长化）：驼峰仍是全身最宽，但不再读成「球」；
-        // 剪影靠 humpPoint 抬高的脊线弧度撑，不靠管子粗。
-        _spineRadii[0] = chestR * 0.38f;
-        _spineRadii[1] = chestR * 0.90f * breathScale;
+        _spinePts[0] = neckRoot;
+        _spinePts[1] = shoulderSlope;
+        _spinePts[2] = humpPeak;
+        _spinePts[3] = midBack;
+        _spinePts[4] = waistPoint;
+        _spinePts[5] = hips;
+        _spinePts[6] = hips - _spineUp * (hipsR * 0.35f * (1f - 0.7f * crawl));
+        // 半径梯度全程 ≲0.7×（旧颈基段 ≈2.4×——半球端盖的根因）；[0] 与脖管首站同半径，
+        // 躯干管终点直接交棒给脖管。
+        _spineRadii[0] = chestR * 0.30f;
+        _spineRadii[1] = chestR * 0.62f;
         _spineRadii[2] = chestR * 0.78f * breathScale;
-        _spineRadii[3] = hipsR * Mathf.Lerp(0.85f, 0.45f, _gauntWaist);
-        _spineRadii[4] = hipsR * 0.74f;
-        _spineRadii[5] = hipsR * 0.50f;
+        _spineRadii[3] = chestR * 0.70f * breathScale;
+        _spineRadii[4] = hipsR * Mathf.Lerp(0.85f, 0.45f, _gauntWaist);
+        _spineRadii[5] = hipsR * 0.74f;
+        _spineRadii[6] = hipsR * 0.50f;
 
         _pts.Clear();
         _radii.Clear();
         _colors.Clear();
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 7; i++)
         {
             _pts.Add(_spinePts[i]);
             _radii.Add(_spineRadii[i]);
@@ -589,17 +600,19 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         }
     }
 
-    /// <summary>脖管：从**驼峰顶端后上方**发出（不是胸口正上——问号脖剪影的关键），
-    /// 正弦上拱 + 前凸、中段掐细，顶点色体→头渐变（Humanoid 秘诀原样搬）。
-    /// 头耷拉时 occiput 低于起点 → 自然读成「先拱起再垂落」的秃鹫式问号脖；
-    /// 跑步抬头时同一公式自动读成前伸直脖。</summary>
-    private void DrawNeck(Vector3 chest, Vector3 headPos, Vector3 humpPoint, float runN)
+    /// <summary>脖管：起点 = 躯干管终点（颈根，**同点同半径**——R12 前两根管在驼峰顶各自
+    /// 收口，端点与粗细都不重合，大驼峰盖与细脖根之间留一道褶缝读成凹陷），再沿脖向反向
+    /// 内埋一小段把接头藏进躯干管里。正弦上拱 + 前凸、中段掐细，顶点色体→头渐变
+    /// （Humanoid 秘诀原样搬）。头耷拉时 occiput 低于起点 → 自然读成「先拱起再垂落」的
+    /// 秃鹫式问号脖；跑步抬头时同一公式自动读成前伸直脖。</summary>
+    private void DrawNeck(Vector3 chest, Vector3 headPos, Vector3 neckRoot, float runN)
     {
         float chestR = _c.Chest.Radius;
         float headR = _c.Head.Radius * _headSize;
         Vector3 occiput = headPos - _headFwd * (headR * 0.55f);
-        Vector3 neckStart = humpPoint + _spineUp * (chestR * 0.30f)
-            + _dorsalDraw * (chestR * 0.15f);
+        Vector3 inward = occiput - neckRoot;
+        inward = inward.LengthSquared() > 1e-8f ? inward.Normalized() : _spineUp;
+        Vector3 neckStart = neckRoot - inward * (chestR * 0.12f);
         float droop = Mathf.Clamp(-_headFwd.Dot(_spineUp), 0f, 1f);
         Vector3 facing = _c.Facing;
 
@@ -820,9 +833,14 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
 
     // ———————————————————————— 四肢 ————————————————————————
 
-    /// <summary>臂：肩挂驼峰前坡（耸肩）→ TwoBoneIk 肘 → 腕 → 手爪。pole 三态混合
+    /// <summary>臂：肩挂驼峰前坡（耸肩）→ TwoBoneIk 肘 → 腕 → 掌。pole 三态混合
     /// （垂手肘朝后外 / 前伸肘外压 / 爬行肘朝上=蜘蛛式撑地），逐臂低通防跳变。
-    /// 断臂 → 肩→残肢粒子的短残段（内核真粒子，插值无缝）+ 暗红断口瘤 + 碎肉刀片。</summary>
+    /// R14 一体化（Lizard 路线）：根点埋到躯干**内部**、根半径放大成三角肌锥
+    /// （旧版细棍从肥躯干表面穿出，交线读成「管子怼上去」——苍白皮不像近黑 Humanoid
+    /// 能靠剪影藏缝）；两骨中段沿 pole 微弓打散直圆柱感；掌隆起并进臂管本体
+    /// （旧版手 = 大瘤球粘细腕上）。肩/肘**位置**与 RatFiendJointMath 逐字同源不动，
+    /// 改的全是管控制点与半径剖面。断臂 → 同款埋根 → 残肢粒子的短残段
+    /// （内核真粒子，插值无缝）+ 暗红断口瘤 + 碎肉刀片。</summary>
     private void DrawArm(RatArm arm, int index, Vector3 chest, Vector3 facing,
         Vector3 right, float runN, float crawl, float alpha)
     {
@@ -833,10 +851,12 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
             + _dorsalDraw * (chestR * 0.18f);
         float thick = 0.030f * _armThin;
         Color handCol = _p.Body.Lerp(_p.Head.Darkened(0.35f), 0.55f);
+        Vector3 armRootDeep = shoulder.Lerp(chest, 0.62f);
+        float armRootR = chestR * 0.38f;
 
         if (arm.Severed)
         {
-            DrawStump(shoulder, arm.LerpPos(alpha), thick * 1.5f, arm.Radius);
+            DrawStump(armRootDeep, armRootR, shoulder, arm.LerpPos(alpha), thick * 1.5f);
             return;
         }
 
@@ -858,36 +878,53 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
 
         float bone = arm.ArmLength * 0.52f;
         Vector3 elbow = TwoBoneIk.Solve(shoulder, hand, bone, bone, pole);
-        Vector3 wrist = hand + (elbow - hand).Normalized() * 0.05f;
+        Vector3 forearmDir = hand - elbow;
+        forearmDir = forearmDir.LengthSquared() > 1e-8f ? forearmDir.Normalized() : facing;
+        Vector3 wrist = hand - forearmDir * 0.05f;
 
         _pts.Clear();
         _radii.Clear();
         _colors.Clear();
-        _pts.Add(shoulder.Lerp(chest, 0.35f));
-        _radii.Add(thick * 1.5f);
+        // 埋根三角肌锥：起点在躯干内部，肥根快收锥（半径剖面 smoothstep 无过冲），
+        // 出膛角变浅 → 剪影里臂从肩坡自然长出来而不是穿出来。
+        _pts.Add(armRootDeep);
+        _radii.Add(armRootR);
         _colors.Add(_p.Body);
+        _pts.Add(shoulder);
+        _radii.Add(thick * 2.2f);
+        _colors.Add(_p.Body);
+        _pts.Add(shoulder.Lerp(elbow, 0.55f) + pole * (bone * 0.10f));
+        _radii.Add(thick * 1.25f);
+        _colors.Add(_p.Body.Lerp(handCol, 0.18f));
         _pts.Add(elbow);
         _radii.Add(thick * 0.95f);
         _colors.Add(_p.Body.Lerp(handCol, 0.35f));
+        _pts.Add(elbow.Lerp(hand, 0.5f) + pole * (bone * 0.05f));
+        _radii.Add(thick * 1.0f);
+        _colors.Add(_p.Body.Lerp(handCol, 0.55f));
         _pts.Add(wrist);
-        _radii.Add(thick * 0.68f);
+        _radii.Add(thick * 0.62f);
         _colors.Add(_p.Body.Lerp(handCol, 0.8f));
+        // 掌并进臂管：腕细 → 掌背隆起 → 掌缘收锥，一根管扫到底（旧版大瘤球粘细腕）。
         _pts.Add(hand);
-        _radii.Add(thick * 0.55f);
+        _radii.Add(thick * 1.10f);
         _colors.Add(handCol);
+        _pts.Add(hand + forearmDir * (arm.Radius * 0.7f));
+        _radii.Add(thick * 0.45f);
+        _colors.Add(handCol.Darkened(0.08f));
         SplineSampler.Sample(_pts, _radii, _colors, 3, _stations);
-        _tube.AddTube(_stations, pole, 6);
+        _tube.AddTube(_stations, pole, 10);
 
         DrawClaws(arm, hand, elbow, facing, right, handCol);
     }
 
-    /// <summary>钩爪：手瘤 + 每手 3 指（40% 个体 + 拇指爪），每指两枚刀片折出钩形
+    /// <summary>钩爪：每手 3 指（40% 个体 + 拇指爪），每指两枚刀片折出钩形
     /// （近节沿指向、远节向掌心折 _fingerCurl）；撑地时指向抓面摊开扒地。爪尖染暗
-    /// （苍白身上的暗爪尖，参考图读法）。</summary>
+    /// （苍白身上的暗爪尖，参考图读法）。R14 起手瘤删除——掌隆起在臂管剖面里，
+    /// 刀片根埋在掌管内，无球-管拼缝。</summary>
     private void DrawClaws(RatArm arm, Vector3 hand, Vector3 elbow, Vector3 facing,
         Vector3 right, Color handCol)
     {
-        _tube.AddKnob(hand, arm.Radius * 1.0f, handCol);
         Vector3 forearmDir = (hand - elbow).Normalized();
         bool planted = arm.GrabPos is not null && arm.TerrainContact;
         Vector3 palmN = planted ? Vector3.Up : -facing * 0.3f + forearmDir;
@@ -917,56 +954,75 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         }
     }
 
-    /// <summary>腿：髋侧关节 → TwoBoneIk 膝（鼓 2.4 档）→ 踝 → 脚板 + 趾刀片。
-    /// 断腿 → 髋关节→残肢粒子（膝端）的短残段 + 断口。</summary>
+    /// <summary>腿：髋侧关节 → TwoBoneIk 膝 → 踝 → 脚掌 → 趾尖，**一根管扫到底** + 趾刀片。
+    /// R14 一体化（Lizard 路线）：根点埋进骨盆内部成臀肌锥（旧版细棍从髋球表面出发）；
+    /// _kneeBulge 基因改驱大腿肉（旧版单点鼓在膝上 = 机械球关节），膝收成骨感窄点、
+    /// 小腿肚微凸；脚掌并进腿管（旧版独立脚板管在踝处半径跳 3× = 楔子粘牙签）。
+    /// 髋/膝**位置**与 RatFiendJointMath 逐字同源不动。
+    /// 断腿 → 同款埋根 → 残肢粒子（膝端）的短残段 + 断口。</summary>
     private void DrawLeg(Limb leg, int index, Vector3 hips, Vector3 facing,
         Vector3 right, float crawl, float alpha)
     {
         float hipsR = _c.Hips.Radius;
         Vector3 hipJoint = hips + right * (leg.Side * hipsR * 0.55f);
         float thick = Mathf.Lerp(0.016f, 0.022f, 1f - _p.Gauntness) * _legGene;
+        Vector3 legRootDeep = hipJoint.Lerp(hips, 0.75f);
+        float legRootR = hipsR * 0.52f;
 
         bool severed = _c.IsSevered(index == 0
             ? RatFiendLimbId.LegLeft : RatFiendLimbId.LegRight);
         if (severed)
         {
-            DrawStump(hipJoint, leg.LerpPos(alpha), thick * 1.7f, leg.Radius);
+            DrawStump(legRootDeep, legRootR, hipJoint, leg.LerpPos(alpha), thick * 1.7f);
             return;
         }
 
         Vector3 foot = leg.LerpPos(alpha);
-        float bone = leg.JointDist * 0.60f * _legGene;
+        // 骨长不吃 _legGene（基因只调粗细）：站立膝角由「站高/双骨长」唯一决定，基因掺进
+        // 骨长会把同一预设的膝角在 141°~97° 之间乱抽。系数调 JointMath 单一真相源
+        // （R10 站姿修复轮 0.60→0.44，命中胶囊与视觉膝位逐字同源）。
+        float bone = RatFiendJointMath.LegBone(leg.JointDist);
         Vector3 pole = (facing + right * (leg.Side * 0.25f) + _spineUp * (crawl * 0.5f))
             .Normalized();
         Vector3 knee = TwoBoneIk.Solve(hipJoint, foot, bone, bone, pole);
         Vector3 ankle = foot + (knee - foot).Normalized() * (leg.Radius * 0.8f);
 
-        _pts.Clear();
-        _radii.Clear();
-        _colors.Clear();
-        _pts.Add(hipJoint);
-        _radii.Add(thick * 1.6f);
-        _colors.Add(_p.Body);
-        _pts.Add(knee);
-        _radii.Add(thick * _kneeBulge);
-        _colors.Add(_p.Body);
-        _pts.Add(ankle);
-        _radii.Add(thick * 0.75f);
-        _colors.Add(_p.Body.Darkened(0.1f));
-        SplineSampler.Sample(_pts, _radii, _colors, 3, _stations);
-        _tube.AddTube(_stations, pole, 6);
-
-        // 脚板 + 两枚小趾爪（方向混入本腿姿态——悬空外飘教训照抄）。
+        // 趾向混入本腿姿态——摆动腿拖在身后时脚不能还朝行进向硬指（悬空外飘教训照抄）。
         Vector3 legDir = foot - knee;
         legDir = legDir.LengthSquared() > 1e-8f ? legDir.Normalized() : -_spineUp;
         Vector3 toeDir = facing * 0.55f + legDir * 0.45f;
         toeDir -= _spineUp * toeDir.Dot(_spineUp) * 0.7f;
         toeDir = toeDir.LengthSquared() > 1e-8f ? toeDir.Normalized() : facing;
-        _stations.Clear();
-        _stations.Add(new TubeStation(ankle, leg.Radius * 0.75f, _p.Body.Darkened(0.1f)));
-        _stations.Add(new TubeStation(foot + toeDir * (leg.Radius * 1.4f),
-            leg.Radius * 0.32f, _p.Body.Darkened(0.2f)));
-        _tube.AddTube(_stations, _spineUp, 5);
+
+        _pts.Clear();
+        _radii.Clear();
+        _colors.Clear();
+        _pts.Add(legRootDeep);
+        _radii.Add(legRootR);
+        _colors.Add(_p.Body);
+        _pts.Add(hipJoint.Lerp(knee, 0.16f));
+        _radii.Add(thick * _kneeBulge);
+        _colors.Add(_p.Body);
+        _pts.Add(hipJoint.Lerp(knee, 0.62f) + pole * (bone * 0.07f));
+        _radii.Add(thick * 1.5f);
+        _colors.Add(_p.Body);
+        _pts.Add(knee);
+        _radii.Add(thick * 1.05f);
+        _colors.Add(_p.Body);
+        _pts.Add(knee.Lerp(ankle, 0.4f) - pole * (bone * 0.05f));
+        _radii.Add(thick * 1.2f);
+        _colors.Add(_p.Body.Darkened(0.05f));
+        _pts.Add(ankle);
+        _radii.Add(thick * 0.78f);
+        _colors.Add(_p.Body.Darkened(0.1f));
+        _pts.Add(foot);
+        _radii.Add(leg.Radius * 0.5f);
+        _colors.Add(_p.Body.Darkened(0.12f));
+        _pts.Add(foot + toeDir * (leg.Radius * 1.5f));
+        _radii.Add(leg.Radius * 0.22f);
+        _colors.Add(_p.Body.Darkened(0.2f));
+        SplineSampler.Sample(_pts, _radii, _colors, 3, _stations);
+        _tube.AddTube(_stations, pole, 10);
         Color clawTip = _p.Head.Lerp(new Color(0.16f, 0.13f, 0.12f), 0.8f);
         foreach (float side in Sides)
         {
@@ -977,10 +1033,12 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         }
     }
 
-    /// <summary>残肢：锚关节 → 内核残肢粒子的两段短管（不收锥——AddTube 锥帽读作钝圆残端），
+    /// <summary>残肢：埋根锥（与完好肢同款——断肢不能反而露出根部拼缝）→ 锚关节 →
+    /// 内核残肢粒子的短管（末段不收锥——AddTube 锥帽读作钝圆残端），
     /// 端头暗红断口瘤沉出创面 + 碎肉小刀片（seed 角度冻结）。断肢瞬间抽搐由
     /// TwitchJitter 叠在残端上。</summary>
-    private void DrawStump(Vector3 anchor, Vector3 stumpEnd, float rootThick, float tipRadius)
+    private void DrawStump(Vector3 rootDeep, float rootDeepR, Vector3 anchor,
+        Vector3 stumpEnd, float rootThick)
     {
         Vector3 end = stumpEnd + TwitchJitter(0.03f);
         Vector3 dir = end - anchor;
@@ -994,8 +1052,11 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         _pts.Clear();
         _radii.Clear();
         _colors.Clear();
+        _pts.Add(rootDeep);
+        _radii.Add(rootDeepR);
+        _colors.Add(_p.Body);
         _pts.Add(anchor);
-        _radii.Add(rootThick);
+        _radii.Add(rootThick * 1.3f);
         _colors.Add(_p.Body);
         _pts.Add(anchor.Lerp(end, 0.6f));
         _radii.Add(rootThick * 0.8f);
@@ -1004,7 +1065,7 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         _radii.Add(rootThick * 0.7f);
         _colors.Add(_p.Body.Lerp(_p.Wound, 0.45f));
         SplineSampler.Sample(_pts, _radii, _colors, 2, _stations);
-        _tube.AddTube(_stations, _spineUp, 6);
+        _tube.AddTube(_stations, _spineUp, 8);
 
         // 断口创面 + 碎肉。
         _tube.AddKnob(end + dir * 0.004f, rootThick * 0.62f, _p.Wound);
