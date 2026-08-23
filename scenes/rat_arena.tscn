@@ -12,6 +12,7 @@ tonemap_mode = 2
 
 [node name="RatArenaWorld" type="Node3D" unique_id=2137416562]
 script = ExtResource("1_world")
+DefaultPreset = "whelp"
 HitImpactHead = 0.4
 HitImpactBody = 0.3
 HitImpactLimb = 0.15

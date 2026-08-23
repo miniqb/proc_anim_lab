@@ -20,6 +20,12 @@ namespace ProcAnim.Core.Species.Lizard;
 /// </summary>
 public sealed class Limb
 {
+	/// <summary>移动意图死区：runSpeed ≤ 此值时视为无输入。全体层共用的唯一死区——真相源
+	/// 放在本类（腿是它的最深消费端），<see cref="LizardLocomotionController.MoveIntentDeadzone"/>
+	/// 转发引用；复用 Limb 的物种（Humanoid / RatFiend）随 Limb 一起获得它，回迁拷贝
+	/// 不必拖整个蜥蜴控制器。</summary>
+	public const float MoveIntentDeadzone = 0.1f;
+
 	// —— 粒子态（语义同 BodyChunk：Vel = 米/tick，LastPos 仅渲染插值/碰撞方向）——
 	public Vector3 Pos;
 	public Vector3 LastPos;
@@ -187,9 +193,9 @@ public sealed class Limb
 		{
 			// 闲置休息位：有移动意图立即退出恢复迈步；闲置中目标每 tick 跟着锚点重算
 			// （≙ relativeHuntPos 旋进身体系），脚自然垂在身侧随身体漂移。
-			// 意图判定统一走 LizardLocomotionController.MoveIntentDeadzone——曾经推进层用 >0、这里用 >0.1，
+			// 意图判定统一走 MoveIntentDeadzone——曾经推进层用 >0、这里用 >0.1，
 			// 0.05 的输入会推着一具永远退不出 IdlePose 的身体滑行（评审 P1-5）。
-			if (IdlePose && runSpeed > LizardLocomotionController.MoveIntentDeadzone)
+			if (IdlePose && runSpeed > MoveIntentDeadzone)
 			{
 				IdlePose = false;
 				_gripFailTicks = 0;
@@ -202,7 +208,7 @@ public sealed class Limb
 			else if (!HasGrip || !OverlappingHuntPos())
 			{
 				FindGrip(ctx, stepDir, up);
-				if (HasGrip || runSpeed > LizardLocomotionController.MoveIntentDeadzone)
+				if (HasGrip || runSpeed > MoveIntentDeadzone)
 				{
 					_gripFailTicks = 0;
 				}
@@ -244,7 +250,7 @@ public sealed class Limb
 				}
 
 				// 步态错开：跑动中若本腿抓得最久且其余腿都已抓稳 → 主动松开迈步。
-				if (ReachingForTerrain && runSpeed > LizardLocomotionController.MoveIntentDeadzone && smoothGait)
+				if (ReachingForTerrain && runSpeed > MoveIntentDeadzone && smoothGait)
 				{
 					bool oldestGrip = true;
 					foreach (Limb other in allLimbs)

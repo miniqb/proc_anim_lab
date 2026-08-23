@@ -11,8 +11,10 @@
 > DaddyLongLegs / Spider / Humanoid / RatFiend——首个可动颌）。最近一轮：RatFiend 鼠煞
 > —— 驼背鼠头人形怪：倾斜站立力偶（常态驼背）、走跑姿态连续混合、断肢（固定断肘/膝）
 > 与爬行（推进 ∝ 抓地肢体数）、枪击部位判定竞技场
-> （见 [ratfiend](docs/ratfiend_controller.md)）。
-> 「默认集成姿态」的闭环待主仓接线后验证（契约 §4.1 / §8.3）。
+> （见 [ratfiend](docs/ratfiend_controller.md)）。**RatFiend 已于 2026-08-23 回迁主仓
+> 替换 Shambler**（姿态 2 第二例，共享层提升为 `scripts/enemies/kernel/`，两仓内核
+> 需手动同步——见契约 §8.3 注与主仓 `docs/ratfiend_port.md`）；
+> 姿态 1（tether）的闭环仍无人验证（契约 §4.1 / §8.3）。
 
 ---
 

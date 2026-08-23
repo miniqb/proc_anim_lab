@@ -1399,6 +1399,19 @@ gameplay 对目标的实际修正、伤害与吞入不进入视觉 tether 层。
 > 验证：追逐接近 / 跨层楼梯自然攀爬 / 关门断路→闲逛 / 开门恢复追逐 / 断手接回闭环。
 > 姿态 1（tether 拴 CharacterBody3D）依旧无人闭环——上面的如实说明对其余物种仍然成立。
 
+> **2026-08-23 主仓接线完成（RatFiend，姿态 2 第二例）**：鼠煞以路线 A 移植进
+> `random-room-runtime` **替换** ShamblerEnemy（普通游荡小怪，多实例 4–10 只/局，记录在
+> 主仓 `docs/ratfiend_port.md`）。共享层随之提升：主仓 `daddy/kernel/` →
+> `scripts/enemies/kernel/`（namespace `RandomRoomRuntime.Enemies.Kernel.*`，物种目录
+> daddy_long_legs / ratfiend / lizard(仅 Limb) 并列）。**为此 lab 先行一步**：
+> `MoveIntentDeadzone` 常量下沉进 `Limb.cs`（`LizardLocomotionController` 留转发 const，
+> 本仓 193 项矩阵全旧哈希通过）——否则拷 Limb 连坐整个蜥蜴控制器。驱动走 MoveTarget
+> 直喂（Shambler 的 BFS 路径点逐点 + LOS 直驱），竞技场攻击层（Strike/Grabbed/Bite +
+> R18~R20 伤害账目）逐字搬入宿主；多实例枪械分发 = `ResolveNearestShot` 静态注册表
+> （Daddy TryInterceptShot 的纯函数推广，nearest-wins 组合）。主仓侧偏差（不回污内核）：
+> 尸体冻结判据肢端阈值放宽（断臂残肢贴地 dangle 的地形推挤微振 ~0.006 m/tick）；
+> 渲染件眼球几何修正（lab 的眼窝球把眼球整个球含——lab 同 bug 待回同步）。
+
 **固定生物例外：拟态草不走两种移动姿态的 tether。**
 宿主安装根始终是位置/导航/伤害权威；出生时把地形点、洞外法线、切向提示和 collider ID
 写入 `TentaclePlantMount`，核心只模拟根外的手和段链。世界原点重置调用 `Shift`；

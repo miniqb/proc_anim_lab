@@ -28,7 +28,7 @@ internal static class Program
     private static string _maxPenetrationContext = "";
 
     // 在完整行为门人工核对后钉定；只有有意改变 RatFiend 内核轨迹时才更新。
-    private const ulong ExpectedHash = 0xA7C06ECCF4698B43UL;
+    private const ulong ExpectedHash = 0xDD5BAB9C1E0492E1UL; // 2026-08-23 短脖轮二刀（NeckLength gaunt 0.30 / whelp 0.25 / broad 0.38）
 
     private static int Main()
     {

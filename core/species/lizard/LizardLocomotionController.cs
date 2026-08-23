@@ -74,8 +74,9 @@ public sealed class LizardLocomotionController
 
 	/// <summary>移动意图死区：RunSpeed ≤ 此值时推进/步态/顶死检测/闲置退出全部视为无输入。
 	/// 曾经推进层用 &gt;0、腿层用 &gt;0.1 —— 0.05 的合法输入会推着一具收着腿（IdlePose
-	/// 退不出来）的身体滑行（外部评审 P1-5）。唯一死区，所有层共用。</summary>
-	public const float MoveIntentDeadzone = 0.1f;
+	/// 退不出来）的身体滑行（外部评审 P1-5）。唯一死区，所有层共用；真相源在
+	/// <see cref="Limb.MoveIntentDeadzone"/>（随 Limb 回迁，此处转发）。</summary>
+	public const float MoveIntentDeadzone = Limb.MoveIntentDeadzone;
 
 	/// <summary>本 tick 是否存在有效移动意图——推进与步态的唯一开关。
 	/// 方向驱动读宿主的 MoveDir；直喂驱动读「尚未到点」，不受 tick 末清掉派生 MoveDir 影响，

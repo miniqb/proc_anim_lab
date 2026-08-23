@@ -57,7 +57,7 @@ public sealed class RatFiendLocomotionController
 
 	public bool AtMoveTarget { get; private set; }
 
-	public const float MoveIntentDeadzone = LizardLocomotionController.MoveIntentDeadzone;
+	public const float MoveIntentDeadzone = Limb.MoveIntentDeadzone;
 
 	public bool HasMoveIntent => RunSpeed > MoveIntentDeadzone
 		&& (MoveTarget is not null ? !AtMoveTarget : MoveDir != Vector3.Zero);

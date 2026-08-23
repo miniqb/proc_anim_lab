@@ -39,7 +39,8 @@ public static class RatFiendFactory
 		HipsMass = 0.5f,
 		HeadMass = 0.1f,
 		ChestHipsDist = 0.62f,
-		NeckLength = 0.45f,
+		NeckLength = 0.38f, // 短脖轮二刀补收：0.45 只是球面相切，42° 对角上切点低于背峰轮廓，
+		                    // 目检仍不贴肩；0.38 嵌入 0.05（半径和 0.43）
 		HunchAngleDegrees = 22f,
 		StandCoupleMax = 0.16f,
 		StandCoupleMin = 0.009f,
@@ -79,7 +80,8 @@ public static class RatFiendFactory
 		HipsMass = 0.18f,
 		HeadMass = 0.04f,
 		ChestHipsDist = 0.42f,
-		NeckLength = 0.45f,
+		NeckLength = 0.25f, // 短脖轮两刀：0.31 目检仍长，压到头球嵌胸球 0.01（半径和 0.26）
+
 		HunchAngleDegrees = 28f,
 		StandCoupleMax = 0.11f,
 		StandCoupleMin = 0.006f,

@@ -25,8 +25,11 @@ public sealed class RatFiendParams
 	/// <summary>胸↔髋刚性杆长（修长躯干；scavenger 0.45）。</summary>
 	public float ChestHipsDist = 0.55f;
 
-	/// <summary>胸↔头 PullOnly 脖长（允许压缩——「耷拉」姿态靠头伺服把头压进脖长球面内）。</summary>
-	public float NeckLength = 0.5f;
+	/// <summary>胸↔头 PullOnly 脖长（允许压缩——「耷拉」姿态靠头伺服把头压进脖长球面内）。
+	/// 0.5→0.38→0.30（2026-08-23 短脖轮两刀）：0.5 是 Scavenger 式长脖弧，鼠头应贴肩。
+	/// 0.38 只是把球面露出段压到 0.04，但渲染脖根在背峰顶、伺服沿 42° 耷拉向挂头，
+	/// 目检仍长；0.30 让头球嵌进胸球 0.04（PullOnly 可压缩、无自碰撞，嵌入合法）。</summary>
+	public float NeckLength = 0.30f;
 
 	// —— 姿态（本物种核心新参数）——
 	/// <summary>驼背角（度）：站立力偶的目标姿态轴从世界上方向朝 Facing 倾斜这么多。
