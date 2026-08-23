@@ -4,7 +4,8 @@
 > 长吻大嘴满口尖牙、大立耳、重度驼背、双手下垂利爪、小尾巴（用户提供的恐怖谷参考图）。
 > 机制基底 = Humanoid（清醒近地失重伺服木偶，零 knockdown 状态机），物种新造三块：
 > **常态驼背**（倾斜站立力偶）、**走↔跑连续姿态混合**（Gait 标量）、**断肢与爬行**
-> （固定断肘/膝 + 推进 ∝ 抓地肢体数）。本项目**首个可动颌**渲染件。
+> （固定断肘/膝 + 推进 ∝ 抓地肢体数），并提供宿主 opt-in 的**显式家具翻越意图**。
+> 本项目**首个可动颌**渲染件。
 
 ## 1. 核心机制
 
@@ -165,6 +166,19 @@ FoldBody → Facing → Gait → CrawlFactor → GroundedCounter → SeverSerial
 ReachedSnapPosition/TerrainContact/Severed）。MouthOpen/HandsOnTarget/CrawlGripCount
 是派生量不折叠；Last* 是派生历史不折叠。普通路线从不调 Sever → 两族基线正交。
 
+### 1.9 显式家具翻越（宿主选路，内核只执行）
+
+`TraversalIntent = RatTraversalIntent(Phase, Target)` 优先于 `MoveTarget/MoveDir`，阶段固定为
+`Approach → MountAndCross → Stabilize`；`AtTraversalTarget` 只报告当前阶段完成，路线选择、
+概率、失败冷却和阶段推进全部归宿主。Mount 的 Target.XZ 是顶面内的远侧引导点，Target.Y
+是顶面标高：该阶段豁免墙滑、双手探向顶面，并复用 `HaulChunkUp` 的 0.035m/tick 上限只写
+胸/髋速度；普通 `HipServo` 暂停，`Body.Tick` 和真实碰撞仍是唯一位置权威。
+
+普通前探新增 `WalkStepMaxRise=0.35m`：高于脚下真实支撑面的家具不再被髋伺服误当成普通
+台阶；0.3m 门槛照旧可走，桌台必须由显式意图授权。`TraversalIntent=null` 时旧路线哈希逐位
+不变。Shift 平移 Target；Teleport/Launch 清意图。内核不判断手数——宿主能力快照至少保留
+一只手才可下发；一臂执行已由 smoke 覆盖。
+
 ## 2. 品种预设
 
 | ID | 定位 | 关键差异 |
@@ -259,8 +273,8 @@ M 嘴开合、B 击飞、V 正式/白盒、1~4 预设。长路线用**有界巡�
 ### 4.2 独立入口与回归
 
 ```bash
-dotnet run --project core/ratfiend_smoke        # 无引擎冒烟（21 门 + 7 消融红灯）
-./tools/run_ratfiend_matrix.sh [输出目录]        # Godot 矩阵 23 项 + smoke
+dotnet run --project core/ratfiend_smoke        # 无引擎冒烟（22 门 + 7 消融红灯）
+./tools/run_ratfiend_matrix.sh [输出目录]        # Godot 矩阵 27 项 + smoke
 ```
 
 **无引擎 smoke**（`core/ratfiend_smoke/Program.cs`，基线 `ExpectedHash =
@@ -300,7 +314,7 @@ ATTACK（2 tick 双手到位/满嘴/放开归零/不可及永不误报）、GRAB
 断肢态/Teleport 作废/Launch 恢复）、QUERY（rays max 21≤40、shapes max 7≤8）、
 PENETRATION（残余穿透 0 <2mm）。
 
-**Godot 矩阵 23 项**（`tools/run_ratfiend_matrix.sh`，哈希 2026-08-22 实跑钉定；
+**Godot 矩阵 27 项**（`tools/run_ratfiend_matrix.sh`，哈希 2026-08-22/23 实跑钉定；
 R8 调头修复重钉 sever-leg / sever-both-legs / broad- / whelp-sever-leg 四条——巡逻
 乒乓折返落在爬行段，正是调头行为改变的路线；R9 新增 crawl-step；R10 站姿、
 **R11 步态修复、R13 直立调头各整表重钉一次**（速度/步态/Facing 进哈希；R13 后纯爬行
@@ -318,6 +332,9 @@ attack（喂目标后 2 tick 双手到位 + 咬合脉冲满嘴 + 放开）、sev
 dusk/broad/whelp 变体（walk + 断腿爬行，变体只跑 walk 会漏检断肢——DropBug 评审 P2
 同款教训）+ 交叉红灯：double-run / 40-vs-400 / perturb / preset-difference /
 **dusk-parity**（dusk 哈希必须与 gaunt 逐位相等——体格同构的免费断言）。
+另含 traversal-a/b、traversal-40、traversal-perturb：0.82m 实体桌必须完成三阶段、越过
+出口平面、连续支撑 8 tick、残余穿透 <1cm、单 tick 粒子位移 <0.25m；宿主阶段与稳定计数
+一并折入新路线哈希，双跑与 40/400Hz 逐行一致，旧 23 条路线不重钉。
 
 ### 4.3 枪击竞技场（探索场景，不进矩阵）
 
@@ -812,9 +829,10 @@ Humanoid 的遗产，其 0.55 撑的是人形直立头位），驼背 + 42° 耷
 固定哈希；矩阵 23 项重钉后 GREEN（dusk 与 gaunt 仍逐位同构）。主 smoke（四物种）不受
 影响。
 
-**⚠️ 两仓状态**：主仓 kernel 镜像仍是 0.5/0.45/0.45（用户要求先只在 lab 看效果）——
-拍板后须手动同步 `scripts/enemies/kernel/species/ratfiend/`（附带效果：头×3 判定区更贴
-躯干，爆头分离度略降，主仓同步时留意手感）。
+**两仓状态**：用户拍板后已于 2026-08-23 同步主仓
+`scripts/enemies/kernel/species/ratfiend/`（归化覆盖，diff 仅脖长三处；主仓
+RatFiendSmoke 十二段 + 灯光巡拍 + 整游戏播种复验全过）。附带效果：头×3 判定区更贴
+躯干，爆头分离度略降——主仓实测手感时留意。
 
 ## 6. 回迁主仓（2026-08-23，替换 Shambler）
 

@@ -57,10 +57,21 @@ public sealed class RatFiendLocomotionController
 
 	public bool AtMoveTarget { get; private set; }
 
+	/// <summary>
+	/// 可选翻越旋钮（宿主逐 tick 写/清），优先于 MoveTarget/MoveDir。内核不选路线、不掷骰，
+	/// 只把明确阶段变成确定性物理运动；默认 null 时既有路线逐位不变。
+	/// </summary>
+	public RatTraversalIntent? TraversalIntent;
+
+	/// <summary>当前翻越阶段已到目标；宿主只在 tick 后读取并推进下一阶段。</summary>
+	public bool AtTraversalTarget { get; private set; }
+
 	public const float MoveIntentDeadzone = Limb.MoveIntentDeadzone;
 
 	public bool HasMoveIntent => RunSpeed > MoveIntentDeadzone
-		&& (MoveTarget is not null ? !AtMoveTarget : MoveDir != Vector3.Zero);
+		&& (TraversalIntent is not null
+			? !AtTraversalTarget
+			: MoveTarget is not null ? !AtMoveTarget : MoveDir != Vector3.Zero);
 
 	/// <summary>意识开关（同人形语义）：false 时全部伺服/推进/手臂链停摆，身体只剩重力与约束。</summary>
 	public bool Conscious = true;
@@ -148,6 +159,12 @@ public sealed class RatFiendLocomotionController
 
 	/// <summary>false = 爬行推进力改为常数引擎（相当于恒 3 肢）——验证「推进 ∝ 抓地肢体数」。</summary>
 	public bool EnableCrawlGripScaling = true;
+
+	/// <summary>
+	/// 普通 MoveTarget 是否拒绝把高家具顶误当作可走地面。宿主只有在能力导航 Active 时
+	/// 开启；默认 false 保留旧移动语义，显式 TraversalIntent 不受此开关影响。
+	/// </summary>
+	public bool EnableOrdinaryHighStepGate;
 
 	// —— 私有状态 ——
 	private readonly bool[] _severed = new bool[4];
@@ -248,6 +265,10 @@ public sealed class RatFiendLocomotionController
 		{
 			MoveTarget = fed + delta;
 		}
+		if (TraversalIntent is { } traversal)
+		{
+			TraversalIntent = traversal with { Target = traversal.Target + delta };
+		}
 		if (GrabTarget is { } grab)
 		{
 			GrabTarget = grab + delta;
@@ -273,6 +294,8 @@ public sealed class RatFiendLocomotionController
 		GroundedCounter = 0;
 		MoveTarget = null;
 		AtMoveTarget = false;
+		TraversalIntent = null;
+		AtTraversalTarget = false;
 		GrabTarget = null;
 		LookTarget = null;
 	}
@@ -315,6 +338,8 @@ public sealed class RatFiendLocomotionController
 			arm.ForceRelease();
 		}
 		GroundedCounter = 0;
+		TraversalIntent = null;
+		AtTraversalTarget = false;
 	}
 
 	// ================================================================== 主循环
@@ -331,17 +356,26 @@ public sealed class RatFiendLocomotionController
 			? -ctx.GravityPerTick.Normalized()
 			: Vector3.Up;
 
-		bool derivedMove = MoveTarget is not null;
-		if (MoveTarget is { } fed)
+		bool derivedMove = TraversalIntent is not null || MoveTarget is not null;
+		bool mounting = TraversalIntent is { Phase: RatTraversalPhase.MountAndCross };
+		if (TraversalIntent is { } traversal)
 		{
+			AtMoveTarget = false;
+			DeriveMoveFromTraversal(traversal, up);
+		}
+		else if (MoveTarget is { } fed)
+		{
+			AtTraversalTarget = false;
 			DeriveMoveFromTarget(fed, up);
 		}
 		else
 		{
 			AtMoveTarget = false;
+			AtTraversalTarget = false;
 		}
 
-		UpdateGrounded(ctx, up, out bool groundHit, out Vector3 groundPoint);
+		UpdateGrounded(ctx, up, mounting, out bool groundHit, out Vector3 groundPoint,
+			out bool highStepBlocked);
 
 		// 爬台阶（手拉体升）的输入：撑稳手的最高标高（读上一 tick 收尾的手臂状态，固定序）。
 		// 撑点高出胸底死区外 = 正在攀台阶 → 豁免滑墙——台阶立面对爬行躯干是「墙」，
@@ -353,7 +387,11 @@ public sealed class RatFiendLocomotionController
 		Vector3 effMove = Conscious && HasMoveIntent
 			? FlattenToGround(MoveDir, up)
 			: Vector3.Zero;
-		if (effMove != Vector3.Zero && !climbing)
+		if (EnableOrdinaryHighStepGate && highStepBlocked && !mounting)
+		{
+			effMove = Vector3.Zero;
+		}
+		if (effMove != Vector3.Zero && !climbing && !mounting)
 		{
 			effMove = SlideAlongWalls(effMove, up);
 		}
@@ -405,7 +443,14 @@ public sealed class RatFiendLocomotionController
 				}
 				ApplyWalkLean(standDrive, driveThrottle);
 				ApplyHeadServo(up);
-				ApplyHipServo(up, groundHit, groundPoint);
+				if (TraversalIntent is { Phase: RatTraversalPhase.MountAndCross } mount)
+				{
+					ApplyTraversalMountDrive(mount, up);
+				}
+				else
+				{
+					ApplyHipServo(up, groundHit, groundPoint);
+				}
 				ApplyLocomotionForce(standDrive, driveThrottle);
 			}
 			else
@@ -437,21 +482,76 @@ public sealed class RatFiendLocomotionController
 		MoveDir = AtMoveTarget || dh.LengthSquared() < 1e-12f ? Vector3.Zero : dh.Normalized();
 	}
 
+	/// <summary>翻越阶段意图导出。MountAndCross 保留 Target.Y 作为顶面标高，但移动方向仍
+	/// 水平导出；到点同时要求髋底越过顶面，避免在障碍近侧靠水平容差假完成。</summary>
+	private void DeriveMoveFromTraversal(in RatTraversalIntent intent, Vector3 up)
+	{
+		Vector3 d = intent.Target - Chest.Pos;
+		Vector3 dh = d - up * d.Dot(up);
+		bool horizontalArrived = dh.Length() <= MoveTargetArriveRadius;
+		AtTraversalTarget = intent.Phase switch
+		{
+			RatTraversalPhase.MountAndCross => horizontalArrived
+				&& Hips.Pos.Dot(up) - Hips.TerrainRadius
+					>= intent.Target.Dot(up) - _p.CrawlClimbDeadzone,
+			RatTraversalPhase.Stabilize => horizontalArrived && Grounded,
+			_ => horizontalArrived
+		};
+		MoveDir = AtTraversalTarget || dh.LengthSquared() < 1e-12f
+			? Vector3.Zero
+			: dh.Normalized();
+	}
+
+	/// <summary>站立翻越的受限竖直牵引。复用爬台阶的速度/增益上限，只写 chunk.Vel；
+	/// Body.Tick 与真实地形碰撞仍是唯一位置权威，不 Shift/Teleport。</summary>
+	private void ApplyTraversalMountDrive(in RatTraversalIntent intent, Vector3 up)
+	{
+		float surfaceHeight = intent.Target.Dot(up);
+		HaulChunkUp(Chest, surfaceHeight, up);
+		HaulChunkUp(Hips, surfaceHeight, up);
+	}
+
 	/// <summary>撑地判定 + 重力开关 + 摩擦切档（Humanoid 同构，法线门统一 ≥0.5）。
 	/// 鼠煞差异：重力开关多一个 CanStand 门——断腿后失重伺服态永不成立（爬行重力常开），
 	/// 摔倒由此涌现。Grounded 本身照常计（爬行手撑地的入场门与摩擦切档用它）。</summary>
-	private void UpdateGrounded(in TickContext ctx, Vector3 up, out bool groundHit, out Vector3 groundPoint)
+	private void UpdateGrounded(in TickContext ctx, Vector3 up, bool allowHighStep,
+		out bool groundHit, out Vector3 groundPoint, out bool highStepBlocked)
 	{
 		groundHit = false;
 		groundPoint = default;
+		highStepBlocked = false;
 		bool leading = Conscious && HasMoveIntent;
 		Vector3 origin = Hips.Pos + (leading ? Facing * HipProbeLead : Vector3.Zero);
 		if (ctx.Terrain.Raycast(origin + up * HipProbeRise,
 				origin - up * (_p.HipRideHeight + _p.GroundProbeSlack), out TerrainHit hit)
 			&& IsGroundNormal(hit.Normal, up))
 		{
-			groundHit = true;
-			groundPoint = hit.Point;
+			bool ordinaryStep = !EnableOrdinaryHighStepGate
+				|| allowHighStep || !leading || IsOrdinaryStepHeight(hit.Point, up);
+			bool supportHit = false;
+			TerrainHit support = default;
+			if (!ordinaryStep
+				&& ctx.Terrain.Raycast(Hips.Pos + up * HipProbeRise,
+					Hips.Pos - up * (_p.HipRideHeight + _p.GroundProbeSlack), out support)
+				&& IsGroundNormal(support.Normal, up))
+			{
+				supportHit = true;
+				ordinaryStep = hit.Point.Dot(up) - support.Point.Dot(up) <= _p.WalkStepMaxRise;
+			}
+			if (ordinaryStep)
+			{
+				groundHit = true;
+				groundPoint = hit.Point;
+			}
+			else
+			{
+				highStepBlocked = true;
+				if (supportHit)
+				{
+					groundHit = true;
+					groundPoint = support.Point;
+				}
+			}
 		}
 		else if (leading
 			&& ctx.Terrain.Raycast(Hips.Pos + up * HipProbeRise,
@@ -469,6 +569,12 @@ public sealed class RatFiendLocomotionController
 		ApplyGravity = !(Conscious && Grounded && CanStand);
 		Body.GravityScale = ApplyGravity ? 1f : 0f;
 		Body.SurfaceFriction = Grounded ? _p.FootedSurfaceFriction : _p.AirborneSurfaceFriction;
+	}
+
+	private bool IsOrdinaryStepHeight(Vector3 point, Vector3 up)
+	{
+		float estimatedSupportHeight = Hips.Pos.Dot(up) - _p.HipRideHeight;
+		return point.Dot(up) - estimatedSupportHeight <= _p.WalkStepMaxRise;
 	}
 
 	private static bool IsGroundNormal(Vector3 normal, Vector3 up) =>
@@ -830,6 +936,16 @@ public sealed class RatFiendLocomotionController
 				Vector3 stumpDangle = Chest.Pos + right * (arm.Side * Chest.Radius * 0.78f)
 					- up * (arm.EffectiveLength * 0.8f);
 				arm.Vel = arm.Vel * _p.StumpDamping + (stumpDangle - arm.Pos) * _p.StumpSpring;
+			}
+			else if (TraversalIntent is { Phase: RatTraversalPhase.MountAndCross } traversal)
+			{
+				// 翻越时双手朝远侧顶面探出；只驱动手端粒子，身体上升仍走受限 Vel 牵引。
+				arm.GrabPos = null;
+				arm.Mode = RatArm.ArmMode.HuntAbsolutePosition;
+				Vector3 to = traversal.Target - Chest.Pos;
+				float dist = to.Length();
+				Vector3 dir = dist < 1e-6f ? Facing : to / dist;
+				arm.HuntPos = Chest.Pos + dir * Mathf.Min(dist, arm.EffectiveLength);
 			}
 			else if (GrabTarget is { } grab)
 			{

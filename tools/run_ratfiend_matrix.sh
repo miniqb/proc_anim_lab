@@ -9,7 +9,7 @@ export LC_ALL=C
 GODOT="${GODOT:-/Applications/Godot_mono.app/Contents/MacOS/Godot}"
 cd "$(dirname "$0")/.."
 OUT="${1:-/private/tmp/proc_anim_ratfiend_matrix}"
-LOG="${OUT}/godot.log"
+LOG="/private/tmp/godot_codex.log"
 SCENE="res://scenes/ratfiend_sandbox.tscn"
 
 # —— 哈希基线（2026-08-23 短脖轮二刀实跑钉定：NeckLength gaunt/dusk 0.5→0.30、
@@ -29,6 +29,7 @@ HASH_BROAD_WALK=64B43366E9A73530
 HASH_BROAD_SEVER_LEG=621C5100A8580E6D
 HASH_WHELP_WALK=872592BFEE30E365
 HASH_WHELP_SEVER_LEG=336901A56EE814F6
+HASH_TRAVERSAL=241E124E85ADDBB6
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -91,6 +92,12 @@ run sever-all           gaunt sever-all           2600 400 "$HASH_SEVER_ALL"
 run attack              gaunt attack              900  400 "$HASH_ATTACK"
 run sever-during-attack gaunt sever-during-attack 1200 400 "$HASH_SEVER_DURING_ATTACK"
 
+# 显式家具翻越：宿主阶段也折入哈希；双跑、40/400Hz 与 1mm 微扰。
+run traversal-a       gaunt traversal 900 400 "$HASH_TRAVERSAL"
+run traversal-b       gaunt traversal 900 400 "$HASH_TRAVERSAL"
+run traversal-40      gaunt traversal 900 40  "$HASH_TRAVERSAL"
+run traversal-perturb gaunt traversal 900 400 - --ratfiend-perturb=0.001
+
 # 变体预设：巡走 + 断腿爬行（断肢/爬行是本物种核心机制，变体只跑 walk 会漏检——
 # DropBug 外部评审 P2 的同款教训）。dusk 是 gaunt 的调色变体，哈希必须逐位相同。
 run dusk-walk       dusk  walk      2000 400 "$HASH_DUSK_WALK"
@@ -107,6 +114,22 @@ else
     fail=1
 fi
 
+if diff <(grep '^\[RATFIEND-DET\]' "$OUT/traversal-a.txt") \
+        <(grep '^\[RATFIEND-DET\]' "$OUT/traversal-b.txt") > /dev/null; then
+    echo "[traversal-double-run] PASS"
+else
+    echo "[traversal-double-run] FAIL：两次 traversal 的 [RATFIEND-DET] 序列不一致"
+    fail=1
+fi
+
+if diff <(grep '^\[RATFIEND-DET\]' "$OUT/traversal-a.txt") \
+        <(grep '^\[RATFIEND-DET\]' "$OUT/traversal-40.txt") > /dev/null; then
+    echo "[traversal-40-vs-400] PASS"
+else
+    echo "[traversal-40-vs-400] FAIL：翻越轨迹受宿主执行频率影响"
+    fail=1
+fi
+
 if diff <(grep '^\[RATFIEND-DET\]' "$OUT/walk-a.txt") \
         <(grep '^\[RATFIEND-DET\]' "$OUT/walk-40.txt") > /dev/null; then
     echo "[40-vs-400] PASS"
@@ -120,10 +143,20 @@ perturb_hash="$(final_hash perturb)"
 dusk_hash="$(final_hash dusk-walk)"
 broad_hash="$(final_hash broad-walk)"
 whelp_hash="$(final_hash whelp-walk)"
+traversal_hash="$(final_hash traversal-a)"
+traversal_perturb_hash="$(final_hash traversal-perturb)"
 if [ -n "$base_hash" ] && [ -n "$perturb_hash" ] && [ "$base_hash" != "$perturb_hash" ]; then
     echo "[perturb] PASS（$base_hash -> $perturb_hash）"
 else
     echo "[perturb] FAIL：1mm 微扰未改变哈希，或未能解析终值"
+    fail=1
+fi
+
+if [ -n "$traversal_hash" ] && [ -n "$traversal_perturb_hash" ] && \
+   [ "$traversal_hash" != "$traversal_perturb_hash" ]; then
+    echo "[traversal-perturb] PASS（$traversal_hash -> $traversal_perturb_hash）"
+else
+    echo "[traversal-perturb] FAIL：翻越路线 1mm 微扰未改变哈希，或未能解析终值"
     fail=1
 fi
 

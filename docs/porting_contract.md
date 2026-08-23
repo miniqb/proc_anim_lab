@@ -104,7 +104,7 @@ core/
 | `species/dropbug/DropBugLocomotionController.cs` | 掉落虫控制器：三节短链自撑、站稳计数与前后不对称重力、运行时收放静息长度的悬挂态、弹道俯冲、蓄力扑击、越障抬升与确定性卡住抖动 | DropBug.Act + DropBugAI 的运动子集 |
 | `species/dropbug/DropBugLeg.cs` | **纯图形件**腿：步频随头部实际位移驱动，静止严格为零；不回传力、不计支撑（反编译实证腿为 `Limb[2,2]` 图形层） | DropBugGraphics |
 | `species/dropbug/DropBugParams.cs` / `DropBugFactory.cs` | 掉落虫独立参数表与三节短链装配；original/nimble/bulky 三稳定 ID（未知 ID 快速失败） | DropBug 构造 |
-| `species/ratfiend/RatFiendLocomotionController.cs` | 鼠煞控制器：倾斜站立力偶（常态驼背）、Gait 走跑姿态混合、断肢（固定断肘/膝）与爬行（推进 ∝ 抓地肢体数）、蠕动、攻击接缝（GrabTarget/MouthDrive/HandsOnTarget） | Scavenger 伺服体制的物种化 + 本物种新造 |
+| `species/ratfiend/RatFiendLocomotionController.cs` / `RatTraversalIntent.cs` | 鼠煞控制器：倾斜站立力偶、Gait、断肢/爬行、蠕动、攻击接缝，以及宿主 opt-in 的 Approach/MountAndCross/Stabilize 家具翻越意图 | Scavenger 伺服体制的物种化 + 本物种新造 |
 | `species/ratfiend/RatArm.cs` | 鼠煞手臂粒子（Humanoid Arm 的物种私有同构版 + Severed/EffectiveLength 断肢语义） | ScavengerHand 机械部分 |
 | `species/ratfiend/RatFiendParams.cs` / `RatFiendFactory.cs` / `RatFiendSeveredLimbState.cs` | 参数表（Snapshot 出生冻结）、gaunt/dusk/broad/whelp 四稳定 ID 装配（未知 ID 快速失败）、断肢交接结构 | — |
 | `species/vulture/VultureFlightController.cs` | 秃鹫飞行控制器：重力常开 + 拍翅同步升力脉冲、悬停锚、滑翔下降、起飞/降落由 MoveTarget 几何涌现、头部伺服 | Vulture.Act |
@@ -824,6 +824,14 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 三旋钮同名同义（`MoveDir` / `RunSpeed` / 可选 `MoveTarget` + `AtMoveTarget`，到点判定
 用水平距离——地面生物），新增的都围绕「驼背猎手 + 断肢」：
 
+- `TraversalIntent`（`RatTraversalIntent?`，默认 null）优先于普通三旋钮；阶段为
+  `Approach / MountAndCross / Stabilize`，宿主在 tick 后读 `AtTraversalTarget` 推进。
+  Mount 的 Target.XZ 是顶面引导点、Target.Y 是顶面标高；内核只以受限速度驱动真实粒子，
+  不选路、不掷骰、不 Shift/Teleport。宿主仅在能力导航 `Active` 时把
+  `EnableOrdinaryHighStepGate` 设为 true：此时普通行走只接受
+  `WalkStepMaxRise=0.35m`，更高家具必须显式授权；`Off/Shadow` 保持 false，恢复 legacy
+  对高表面的运动语义。Shift 平移意图目标，Teleport/Launch 清意图；默认 null 时旧哈希零漂移。
+
 - `GrabTarget`（`Vector3?`，宿主逐 tick 写/清）：攻击抓取目标。非 null 且清醒时双臂脱离
   步态摆动、沿「胸→目标」满伸（可及半径钳制），头 aim 自动转向目标。**抓住判定归宿主**：
   读 `HandsOnTarget[2]`（手到目标真实距离 < GrabContactRadius）。配套
@@ -858,7 +866,8 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   SlewFacing 按转速限拽回，宿主想让拧姿停留须在窗口内掐移动意图（竞技场先例：
   0.25s 吃痛回神窗 + LookTarget 照钉 = 拧身瞪人后甩回猎物）。
 - `Conscious` / `Shift` / `Teleport` / `Launch` 与人形同名同义（断肢状态是拓扑态不是
-  位置态：Teleport 保留断肢、清 GrabTarget/LookTarget/MoveTarget）。
+  位置态：Teleport 保留断肢、清 GrabTarget/LookTarget/MoveTarget/TraversalIntent；Launch
+  也会取消正在执行的 TraversalIntent）。
 - `Facing` 语义：**站立与爬行均限速回转**（`StandTurnRatePerTick` 0.22 /
   `CrawlTurnRatePerTick` 0.06 rad/tick，直立推进沿回转后的 Facing；直立转体期间
   （对齐度 < `TurnAlignGate` 0.9）推进零注入 + 主动刹车 = 原地拧身式掉头——R13，
@@ -1185,7 +1194,7 @@ dotnet run --project core/dropbug_smoke
 #    nimble/bulky 变体各覆盖 walk/hang/dive/pounce（pounce 起跳窗口按预设蓄力时长参数化）。
 ./tools/run_dropbug_matrix.sh
 
-# ⑭ 鼠煞无引擎 smoke：21 门全真断言——装配与出生冻结、确定性主路线（含固定 tick
+# ⑭ 鼠煞无引擎 smoke：22 门全真断言——装配与出生冻结、确定性主路线（含固定 tick
 #    断腿→爬行→断臂）、驼背几何（静立保持 + 消融红灯）、走跑姿态三链单调、摆臂反相、
 #    走姿慢摆（+ 消融红灯）、凝视目标（头直视 + 备抓抬臂 + 消融红灯）、
 #    断肢 API（播种逐位连续/叠断 throw/昏迷可断/stagger 精确）、断臂行走偏差 <5%、
@@ -1195,12 +1204,14 @@ dotnet run --project core/dropbug_smoke
 #    撤拽升消融红灯）、断肢里程单调（+ 抓地缩放消融红灯）、
 #    全断蠕动上界、攻击接缝、抓取分手（spread=0 双手逐位重合基线 + 0.09 分开 0.18m）、
 #    朝向冲击（拧角/符号/无意图保持/SlewFacing 甩回/退化轴/单位长度）、生命周期、
+#    显式家具翻越（三阶段/单臂/双跑/微扰/普通追点消融/8 tick 支撑/生命周期）、
 #    查询预算与 2mm 残余穿透门。
 dotnet run --project core/ratfiend_smoke
 
-# ⑮ 鼠煞 Godot 矩阵：23 配置 = walk 双跑/40vs400Hz/微扰 + run/yank +
+# ⑮ 鼠煞 Godot 矩阵：27 配置 = walk 双跑/40vs400Hz/微扰 + run/yank +
 #    sever-leg/crawl-step/sever-arm-walk/sever-both-legs/sever-all + attack/sever-during-attack +
-#    dusk/broad/whelp 变体（walk + 断腿爬行）+ dusk-parity（调色变体哈希逐位等于 gaunt）。
+#    traversal 双跑/40vs400Hz/微扰 + dusk/broad/whelp 变体（walk + 断腿爬行）+
+#    dusk-parity（调色变体哈希逐位等于 gaunt）。
 ./tools/run_ratfiend_matrix.sh
 
 # ⑯ 蜥蜴 Godot 全矩阵（分钟级；改共享物理内核后必跑）。pipefail + 哈希基线 + 路点下限 +

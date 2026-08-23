@@ -53,6 +53,7 @@ internal static class Program
         Check("ATTACK", CheckAttack, failures);
         Check("GRAB-SPREAD", CheckGrabSpread, failures);
         Check("IMPACT-TWIST", CheckImpactTwist, failures);
+        Check("TRAVERSAL", CheckTraversalIntent, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
         Check("QUERY", CheckQueryBudget, failures);
         Report(
@@ -1174,6 +1175,140 @@ internal static class Program
         return (ok,
             $"twist16°={twisted} heldNoIntent={held} recovered≤3tick={recovered} " +
             $"degenerateAxis={degenerateSafe} unitAfter200={unitKept}");
+    }
+
+    // ================================================================ 生命周期
+
+    private readonly record struct TraversalResult(
+        ulong Hash, bool Completed, bool CrossedExit, bool StableEightTicks, bool Finite,
+        float MaxTickDisplacement, long MaxRays, long MaxShapes, int PhaseChanges);
+
+    /// <summary>0.82m 解析家具：阶段意图必须靠真实粒子积分跨过；普通 MoveTarget 消融
+    /// 必须留在近侧。双跑、微扰、单臂、生命周期与查询预算一并钉住。</summary>
+    private static (bool, string) CheckTraversalIntent()
+    {
+        TraversalResult Run(float perturb, bool severArm)
+        {
+            const float top = 0.82f;
+            const float farPlane = 1.15f;
+            var terrain = new BoxRoomTerrain()
+                .AddBox(new Vector3(-30f, -1f, -8f), new Vector3(30f, 0f, 8f), 1UL)
+                .AddBox(new Vector3(-0.15f, 0f, -20f), new Vector3(farPlane, top, 20f), 2UL);
+            RatFiendLocomotionController rat = NewRat(new Vector3(-2.4f, 0.5f, 0f), Vector3.Right);
+            if (perturb != 0f)
+            {
+                rat.Chest.Pos.X += perturb;
+                rat.Chest.LastPos = rat.Chest.Pos;
+            }
+            if (severArm)
+            {
+                rat.Sever(RatFiendLimbId.ArmLeft);
+            }
+
+            RatTraversalPhase phase = RatTraversalPhase.Approach;
+            int stableTicks = 0;
+            int phaseChanges = 0;
+            bool completed = false;
+            float maxStep = 0f;
+            long maxRays = 0;
+            long maxShapes = 0;
+            long tick = 0;
+            var hasher = new DeterminismHasher();
+            for (int i = 0; i < 1200 && !completed; i++)
+            {
+                Vector3 target = phase switch
+                {
+                    RatTraversalPhase.Approach => new Vector3(-0.65f, 0f, 0f),
+                    RatTraversalPhase.MountAndCross => new Vector3(0.75f, top, 0f),
+                    _ => new Vector3(2.2f, 0f, 0f),
+                };
+                rat.TraversalIntent = new RatTraversalIntent(phase, target);
+                rat.MoveTarget = null;
+                rat.MoveDir = Vector3.Zero;
+                rat.RunSpeed = 1f;
+                Vector3[] before = { rat.Chest.Pos, rat.Hips.Pos, rat.Head.Pos };
+                long raysBefore = terrain.RayCount;
+                long shapesBefore = terrain.ShapeQueryCount;
+                Tick(rat, terrain, ref tick);
+                maxRays = Math.Max(maxRays, terrain.RayCount - raysBefore);
+                maxShapes = Math.Max(maxShapes, terrain.ShapeQueryCount - shapesBefore);
+                maxStep = MathF.Max(maxStep, MathF.Max(
+                    rat.Chest.Pos.DistanceTo(before[0]), MathF.Max(
+                        rat.Hips.Pos.DistanceTo(before[1]), rat.Head.Pos.DistanceTo(before[2]))));
+                rat.FoldState(hasher);
+                hasher.Fold((int)phase);
+
+                if (phase != RatTraversalPhase.Stabilize && rat.AtTraversalTarget)
+                {
+                    phase = (RatTraversalPhase)((int)phase + 1);
+                    phaseChanges++;
+                    stableTicks = 0;
+                }
+                else if (phase == RatTraversalPhase.Stabilize)
+                {
+                    stableTicks = rat.AtTraversalTarget && rat.Grounded ? stableTicks + 1 : 0;
+                    completed = stableTicks >= 8;
+                }
+            }
+            rat.TraversalIntent = null;
+            return new TraversalResult(hasher.Value, completed,
+                rat.Chest.Pos.X > farPlane && rat.Hips.Pos.X > farPlane,
+                stableTicks >= 8, IsFinite(rat), maxStep, maxRays, maxShapes, phaseChanges);
+        }
+
+        bool OrdinaryMoveTargetCrosses(bool enableGate)
+        {
+            const float top = 0.82f;
+            const float farPlane = 1.15f;
+            var terrain = new BoxRoomTerrain()
+                .AddBox(new Vector3(-30f, -1f, -8f), new Vector3(30f, 0f, 8f), 1UL)
+                .AddBox(new Vector3(-0.15f, 0f, -20f), new Vector3(farPlane, top, 20f), 2UL);
+            RatFiendLocomotionController rat = NewRat(new Vector3(-2.4f, 0.5f, 0f), Vector3.Right);
+            rat.EnableOrdinaryHighStepGate = enableGate;
+            long tick = 0;
+            for (int i = 0; i < 700; i++)
+            {
+                rat.TraversalIntent = null;
+                rat.MoveTarget = new Vector3(2.2f, 0f, 0f);
+                rat.RunSpeed = 1f;
+                Tick(rat, terrain, ref tick);
+            }
+            return rat.Chest.Pos.X > farPlane && rat.Hips.Pos.X > farPlane;
+        }
+
+        TraversalResult a = Run(0f, severArm: false);
+        TraversalResult b = Run(0f, severArm: false);
+        TraversalResult p = Run(0.001f, severArm: false);
+        TraversalResult oneArm = Run(0f, severArm: true);
+        bool ablationBlocked = !OrdinaryMoveTargetCrosses(enableGate: true);
+        bool legacyRestored = OrdinaryMoveTargetCrosses(enableGate: false);
+
+        RatFiendLocomotionController life = NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+        life.TraversalIntent = new RatTraversalIntent(
+            RatTraversalPhase.MountAndCross, new Vector3(2f, 0.8f, 0f));
+        Vector3 shift = new(10f, 0f, -3f);
+        life.Shift(shift);
+        bool shiftExact = life.TraversalIntent?.Target == new Vector3(12f, 0.8f, -3f);
+        life.Teleport(Vector3.Zero);
+        bool teleportClears = life.TraversalIntent is null && !life.AtTraversalTarget;
+        life.TraversalIntent = new RatTraversalIntent(RatTraversalPhase.Approach, Vector3.Right);
+        life.Launch(Vector3.Up * 0.1f);
+        bool launchClears = life.TraversalIntent is null && !life.AtTraversalTarget;
+
+        bool ok = a.Completed && a.CrossedExit && a.StableEightTicks && a.Finite
+            && a.PhaseChanges == 2 && a.MaxTickDisplacement < 0.25f
+            && a.MaxRays <= 40 && a.MaxShapes <= 8
+            && a.Hash == b.Hash && p.Hash != a.Hash
+            && oneArm.Completed && oneArm.CrossedExit
+            && ablationBlocked && legacyRestored
+            && shiftExact && teleportClears && launchClears;
+        return (ok,
+            $"done={a.Completed} exit={a.CrossedExit} stable8={a.StableEightTicks} " +
+            $"phases={a.PhaseChanges} maxStep={a.MaxTickDisplacement:F4}m " +
+            $"queries={a.MaxRays}/{a.MaxShapes} det={a.Hash:X16}/{b.Hash:X16} " +
+            $"perturb={p.Hash:X16} oneArm={oneArm.Completed && oneArm.CrossedExit} " +
+            $"moveTargetGate={ablationBlocked}/{legacyRestored} " +
+            $"lifecycle={shiftExact}/{teleportClears}/{launchClears}");
     }
 
     // ================================================================ 生命周期

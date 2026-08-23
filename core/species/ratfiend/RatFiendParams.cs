@@ -67,6 +67,10 @@ public sealed class RatFiendParams
 	/// （探针带上扫 0.35 / 下扫 0.55；超上界探不到地、破下界探针起点陷入地面）——
 	/// 调站高必须与 FeetDown 联动核这条（R11 后 goal ≈ 地上 0.06m，两侧余量都足）。</summary>
 	public float HipRideHeight = 0.66f;
+
+	/// <summary>普通行走前探可把前方表面当作地面的最大步高。更高表面必须由显式
+	/// TraversalIntent 驱动，避免髋伺服把家具误当普通台阶直接抬升。</summary>
+	public float WalkStepMaxRise = 0.35f;
 	public float HipLiftGain = 0.1f;
 	public float HipVelYDamp = 0.5f;
 

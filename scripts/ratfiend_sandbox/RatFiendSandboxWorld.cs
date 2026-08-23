@@ -14,7 +14,7 @@ namespace ProcAnimLab.RatFiendSandbox;
 /// <summary>
 /// 独立 RatFiend（鼠煞）回归沙盒：40 tick 固定序驱动核心，渲染帧只做插值与自由摄像机。
 /// 交互与无头专项矩阵都只经过本场景，不改其它物种沙盒。
-/// 地形：平地 + 0.3m 台阶（walk 路线跨越，crawl-step 路线断腿爬行翻越）+ 转向墙；
+/// 地形：平地 + 0.3m 台阶（walk/crawl-step）+ 0.82m 翻越桌 + 转向墙；
 /// 其余断肢/爬行/攻击路线全在平地完成。
 /// 断肢路线用脚本化固定 tick 调 Sever——普通路线从不调它，两族哈希基线正交。
 /// </summary>
@@ -31,7 +31,7 @@ public partial class RatFiendSandboxWorld : Node3D
     private static readonly string[] Routes =
     {
         "walk", "run", "yank", "sever-leg", "sever-arm-walk", "sever-both-legs",
-        "sever-all", "attack", "sever-during-attack", "crawl-step",
+        "sever-all", "attack", "sever-during-attack", "crawl-step", "traversal",
     };
 
     /// <summary>K 键的断肢演示顺序（爬行观感优先：先断腿看三肢爬，再逐级削弱）。</summary>
@@ -113,6 +113,14 @@ public partial class RatFiendSandboxWorld : Node3D
     private float _recoverStartX;
     private float _travelAfterRecover;
     private float _lastRecoverX;
+    private RatTraversalPhase _traversalPhase;
+    private int _traversalPhaseChanges;
+    private int _traversalStableTicks;
+    private long _traversalCompleteTick = -1;
+    private bool _traversalCrossedExit;
+    private float _traversalMaxTickDisplacement;
+    private float _traversalMaxResidualPenetration;
+    private Vector3[] _traversalLastChunks = Array.Empty<Vector3>();
 
     private bool Deterministic => _determinismTicks > 0;
 
@@ -173,6 +181,14 @@ public partial class RatFiendSandboxWorld : Node3D
         _rat = RatFiendFactory.CreateController(origin, forward, parameters);
         _spawnCenter = BodyCenter();
         _lastCenter = _spawnCenter;
+        _traversalPhase = RatTraversalPhase.Approach;
+        _traversalPhaseChanges = 0;
+        _traversalStableTicks = 0;
+        _traversalCompleteTick = -1;
+        _traversalCrossedExit = false;
+        _traversalMaxTickDisplacement = 0f;
+        _traversalMaxResidualPenetration = 0f;
+        _traversalLastChunks = new[] { _rat.Chest.Pos, _rat.Hips.Pos, _rat.Head.Pos };
         if (_rendererBuilt)
         {
             _renderer.Build(this, _rat);
@@ -314,6 +330,7 @@ public partial class RatFiendSandboxWorld : Node3D
     private void DriveRoute()
     {
         _rat.MoveTarget = null;
+        _rat.TraversalIntent = null;
         _rat.MoveDir = Vector3.Zero;
         _rat.RunSpeed = 0f;
         switch (_route)
@@ -346,7 +363,46 @@ public partial class RatFiendSandboxWorld : Node3D
             case "crawl-step":
                 DriveCrawlStep();
                 break;
+            case "traversal":
+                DriveTraversal();
+                break;
         }
+    }
+
+    private void DriveTraversal()
+    {
+        if (_traversalCompleteTick < 0 && _rat.AtTraversalTarget)
+        {
+            if (_traversalPhase == RatTraversalPhase.Stabilize)
+            {
+                _traversalStableTicks++;
+                if (_traversalStableTicks >= 8)
+                {
+                    _traversalCompleteTick = _tick;
+                    _waypointsReached = 1;
+                }
+            }
+            else
+            {
+                _traversalPhase = (RatTraversalPhase)((int)_traversalPhase + 1);
+                _traversalPhaseChanges++;
+                _traversalStableTicks = 0;
+            }
+        }
+        else if (_traversalCompleteTick < 0
+            && _traversalPhase == RatTraversalPhase.Stabilize)
+        {
+            _traversalStableTicks = 0;
+        }
+
+        Vector3 target = _traversalPhase switch
+        {
+            RatTraversalPhase.Approach => new Vector3(-0.65f, 0f, 12f),
+            RatTraversalPhase.MountAndCross => new Vector3(0.75f, 0.82f, 12f),
+            _ => new Vector3(2.2f, 0f, 12f),
+        };
+        _rat.TraversalIntent = new RatTraversalIntent(_traversalPhase, target);
+        _rat.RunSpeed = _traversalCompleteTick < 0 ? 1f : 0f;
     }
 
     private void DriveWalk()
@@ -608,11 +664,34 @@ public partial class RatFiendSandboxWorld : Node3D
                 _fellTick = _tick;
             }
         }
+
+        if (_route == "traversal")
+        {
+            BodyChunk[] chunks = { _rat.Chest, _rat.Hips, _rat.Head };
+            for (int i = 0; i < chunks.Length; i++)
+            {
+                _traversalMaxTickDisplacement = Mathf.Max(_traversalMaxTickDisplacement,
+                    chunks[i].Pos.DistanceTo(_traversalLastChunks[i]));
+                _traversalLastChunks[i] = chunks[i].Pos;
+                if (_terrain.SpherePenetration(chunks[i].Pos, chunks[i].TerrainRadius,
+                        out _, out float depth))
+                {
+                    _traversalMaxResidualPenetration = Mathf.Max(
+                        _traversalMaxResidualPenetration, depth);
+                }
+            }
+            _traversalCrossedExit |= _rat.Chest.Pos.X > 1.15f && _rat.Hips.Pos.X > 1.15f;
+        }
     }
 
     private void RecordDeterminism()
     {
         _rat.FoldState(_hasher);
+        if (_route == "traversal")
+        {
+            _hasher.Fold((int)_traversalPhase);
+            _hasher.Fold(_traversalStableTicks);
+        }
         if (_tick % 100 == 0 || _tick >= _determinismTicks)
         {
             GD.Print($"[RATFIEND-DET] tick={_tick} hash={_hasher.Value:X16}");
@@ -634,7 +713,11 @@ public partial class RatFiendSandboxWorld : Node3D
                  $"crawlTravel={crawlTravel:F2} stumpDangle={_stumpAlwaysDangle} " +
                  $"attack={_grabSetTick}/{_reachTick}/{_releaseTick} mouthPeak={_mouthPeak:F2} " +
                  $"handsClear={_handsClearAfterRelease} severedHandClear={_severedHandCleared} " +
-                 $"yank={_refootTick}/{_travelAfterRecover:F2}");
+                 $"yank={_refootTick}/{_travelAfterRecover:F2} " +
+                 $"traversal={_traversalPhaseChanges}/{_traversalCompleteTick}/" +
+                 $"{_traversalStableTicks} exit={_traversalCrossedExit} " +
+                 $"maxStep={_traversalMaxTickDisplacement:F4}m " +
+                 $"penetration={_traversalMaxResidualPenetration:E3}m");
 
         var failures = new List<string>();
         if (_nonFinite)
@@ -734,6 +817,19 @@ public partial class RatFiendSandboxWorld : Node3D
                                  $"severedHandClear={_severedHandCleared}）");
                 }
                 break;
+            case "traversal":
+                if (_traversalPhaseChanges != 2 || _traversalCompleteTick < 0
+                    || _traversalStableTicks < 8 || !_traversalCrossedExit
+                    || _traversalMaxTickDisplacement >= 0.25f
+                    || _traversalMaxResidualPenetration >= 0.01f)
+                {
+                    failures.Add($"翻越未达标（phases={_traversalPhaseChanges}, " +
+                                 $"done={_traversalCompleteTick}, stable={_traversalStableTicks}, " +
+                                 $"exit={_traversalCrossedExit}, " +
+                                 $"step={_traversalMaxTickDisplacement:F4}, " +
+                                 $"penetration={_traversalMaxResidualPenetration:E3}）");
+                }
+                break;
         }
 
         bool pass = failures.Count == 0;
@@ -789,6 +885,7 @@ public partial class RatFiendSandboxWorld : Node3D
             "sever-leg" or "sever-both-legs" or "sever-all" or "crawl-step"
                 => new Vector3(1.6f, 0.9f, 2.4f),
             "attack" or "sever-during-attack" => new Vector3(1.4f, 0.8f, 2.2f),
+            "traversal" => new Vector3(1.8f, 1.2f, 3.2f),
             _ => new Vector3(2.0f, 1.2f, 2.8f),
         };
         _camera.GlobalPosition = center + offset;
@@ -995,6 +1092,7 @@ public partial class RatFiendSandboxWorld : Node3D
         "sever-leg" or "sever-both-legs" => new Vector3(-14f, 0.5f, -8f),
         "sever-arm-walk" => new Vector3(-14f, 0.5f, 8f),
         "crawl-step" => new Vector3(-6f, 0.5f, 0f),
+        "traversal" => new Vector3(-2.4f, 0.5f, 12f),
         _ => new Vector3(-3f, 0.5f, 0f),
     };
 
