@@ -120,7 +120,7 @@ core/
 | `deer_smoke/` | 鹿独立无引擎回归（装配、恒重力支撑、多节腿步态、地形、生命周期、确定性与机制消融） | — |
 | `daddy_long_legs_smoke/` | DaddyLongLegs 独立无引擎回归（seed 形态、整链支撑、职责/换步、全向地形、打断、外部够取、生命周期、确定性与机制消融） | — |
 | `dropbug_smoke/` | DropBug 独立无引擎回归（装配、前后不对称重力、悬挂收放与击飞冷却、俯冲、蓄力、越障、卡住、负重、表现腿、生命周期、确定性与九机制消融） | — |
-| `ratfiend_smoke/` | RatFiend 独立无引擎回归（装配、驼背姿态、走跑单调、摆臂反相、断肢 API、断臂行走、断腿爬行、爬行调头、爬行翻台阶、断肢里程单调、全断蠕动、攻击接缝、生命周期、确定性与四机制消融） | — |
+| `ratfiend_smoke/` | RatFiend 独立无引擎回归（装配、驼背姿态、走跑单调、摆臂反相、走姿慢摆、凝视目标、断肢 API、断臂行走、断臂垂位、断腿爬行、爬行调头、爬行翻台阶、断肢里程单调、全断蠕动、攻击接缝、生命周期、确定性与七机制消融） | — |
 
 ### 1.2 依赖面（这是「解耦」的准确定义）
 
@@ -826,16 +826,39 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 
 - `GrabTarget`（`Vector3?`，宿主逐 tick 写/清）：攻击抓取目标。非 null 且清醒时双臂脱离
   步态摆动、沿「胸→目标」满伸（可及半径钳制），头 aim 自动转向目标。**抓住判定归宿主**：
-  读 `HandsOnTarget[2]`（手到目标真实距离 < GrabContactRadius）。伤害/束缚/咬合计时
-  全在宿主（竞技场先例：修正 = 双手中点 − 目标，全量交付）。
+  读 `HandsOnTarget[2]`（手到目标真实距离 < GrabContactRadius）。配套
+  `GrabHandSpread`（float，**opt-in 默认 0**，R19）：双手横向对称分开——默认两手追
+  同一点逐位重合，渲染两套手爪叠置 z-fighting 读成「手在颤抖」（竞技场先例 0.09m）。
+  伤害/束缚/咬合计时全在宿主（竞技场先例 R18：束缚站位 = 锁镜头窗内把玩家指数收敛到
+  生物正面定距——锁输入态玩家水平自驱为零，分步修正不被抵消；瞄准点要随爬行降高，
+  爬行胸高 + 臂长够不到站立眼高点；R19：攻击发起门距也要随爬行收窄到手可及圈
+  ≤ 臂长 + GrabContactRadius——站立靠冲刺动量滑进可及圈，爬行推进弱且伸手期离地
+  断供，门外起手只会反复空放）。
 - `MouthDrive`（float 0..1，宿主输入）：嘴开度的攻击驱动分量，咬合时拉满。
   `MouthOpen = clamp(0.15 + 0.55·RunBlend + MouthDrive)` 纯派生；`LastMouthOpen`
   供渲染 `lerp(Last, Cur, alpha)` 插值。
+- `LookTarget`（`Vector3?`，宿主逐 tick 写/清；**opt-in 默认 null**）：凝视目标 =
+  猎杀姿态。非 null 且清醒时头 aim 覆盖为直视该点 + 走/跑手臂混合权重下限抬到
+  `LookArmRaise`（0.85——低速逼近也举手备抓，站定凝视不落身侧）。不碰步态/嘴、
+  不追点抓取（那是 GrabTarget——双臂满伸真抓）；爬行撑地优先于抬臂。优先级
+  GrabTarget > LookTarget > 爬行看路 > 姿态混合。Shift 平移、Teleport 作废。
+  配套张嘴走 MouthDrive（竞技场先例：追杀全程常开 0.6、咬合窗 1.0）。
 - `Sever(RatFiendLimbId, staggerImpulse = default)` → `RatFiendSeveredLimbState`
   （见 §2.10）；`IsSevered` / `SeveredLimbCount` / `SeverSerial`（单调事件序号，
   渲染抽搐/宿主特效按沿触发）。
+- `Impact(chunk, velocityPerTick)`（R18，**opt-in——回归路线不调用，基线零漂移**）：
+  单 chunk 速度注入（枪击部位顿挫）。与 `Launch`（全身击飞 + 释放肢体 + 清撑地）互补：
+  不碰肢体与撑地，踉跄退步由站立伺服 + plant-and-trail 涌现。竞技场用法：头命中注头
+  chunk（另 0.5× 到胸——脖是 PullOnly，纯头冲量只甩头不退身；方向可加向上偏置甩头
+  带仰角），躯干注胸+髋，四肢命中转注相邻躯干 chunk（手/脚是追目标粒子，直接推会被
+  追猎伺服一 tick 吃掉）。
+- `ImpactTwist(yawRadians, up)`（R19，**opt-in——回归路线不调用，基线零漂移**）：绕 up
+  拧转 `Facing`（侧向命中肢体的躯干拧身——Facing 是伺服目标轴，点质量 chunk 靠冲量
+  拧不出 yaw）。转向由宿主按 力臂×枪向 的转矩符号决定；恢复涌现——有移动意图时
+  SlewFacing 按转速限拽回，宿主想让拧姿停留须在窗口内掐移动意图（竞技场先例：
+  0.25s 吃痛回神窗 + LookTarget 照钉 = 拧身瞪人后甩回猎物）。
 - `Conscious` / `Shift` / `Teleport` / `Launch` 与人形同名同义（断肢状态是拓扑态不是
-  位置态：Teleport 保留断肢、清 GrabTarget/MoveTarget）。
+  位置态：Teleport 保留断肢、清 GrabTarget/LookTarget/MoveTarget）。
 - `Facing` 语义：**站立与爬行均限速回转**（`StandTurnRatePerTick` 0.22 /
   `CrawlTurnRatePerTick` 0.06 rad/tick，直立推进沿回转后的 Facing；直立转体期间
   （对齐度 < `TurnAlignGate` 0.9）推进零注入 + 主动刹车 = 原地拧身式掉头——R13，
@@ -1162,13 +1185,17 @@ dotnet run --project core/dropbug_smoke
 #    nimble/bulky 变体各覆盖 walk/hang/dive/pounce（pounce 起跳窗口按预设蓄力时长参数化）。
 ./tools/run_dropbug_matrix.sh
 
-# ⑭ 鼠煞无引擎 smoke：16 门全真断言——装配与出生冻结、确定性主路线（含固定 tick
+# ⑭ 鼠煞无引擎 smoke：21 门全真断言——装配与出生冻结、确定性主路线（含固定 tick
 #    断腿→爬行→断臂）、驼背几何（静立保持 + 消融红灯）、走跑姿态三链单调、摆臂反相、
+#    走姿慢摆（+ 消融红灯）、凝视目标（头直视 + 备抓抬臂 + 消融红灯）、
 #    断肢 API（播种逐位连续/叠断 throw/昏迷可断/stagger 精确）、断臂行走偏差 <5%、
+#    断臂垂位（肩侧垂位弹簧防中线收敛 + 消融红灯）、
 #    断腿爬行（摔倒涌现/步频/Pair 清空）、爬行调头（Facing 限速回转 + 头髋不穿插 +
 #    身体轴真转过来 + 瞬时置向消融红灯）、爬行翻台阶（0.3m 台阶手拉体升 +
 #    撤拽升消融红灯）、断肢里程单调（+ 抓地缩放消融红灯）、
-#    全断蠕动上界、攻击接缝、生命周期、查询预算与 2mm 残余穿透门。
+#    全断蠕动上界、攻击接缝、抓取分手（spread=0 双手逐位重合基线 + 0.09 分开 0.18m）、
+#    朝向冲击（拧角/符号/无意图保持/SlewFacing 甩回/退化轴/单位长度）、生命周期、
+#    查询预算与 2mm 残余穿透门。
 dotnet run --project core/ratfiend_smoke
 
 # ⑮ 鼠煞 Godot 矩阵：23 配置 = walk 双跑/40vs400Hz/微扰 + run/yank +

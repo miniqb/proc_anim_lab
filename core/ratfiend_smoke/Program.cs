@@ -28,7 +28,7 @@ internal static class Program
     private static string _maxPenetrationContext = "";
 
     // 在完整行为门人工核对后钉定；只有有意改变 RatFiend 内核轨迹时才更新。
-    private const ulong ExpectedHash = 0x1B0FC96919D881E9UL;
+    private const ulong ExpectedHash = 0xA7C06ECCF4698B43UL;
 
     private static int Main()
     {
@@ -40,14 +40,19 @@ internal static class Program
         Check("WALK", CheckWalkAndHunch, failures);
         Check("POSTURE", CheckPostureMonotone, failures);
         Check("ARM-SWING", CheckArmSwing, failures);
+        Check("WALK-SWING", CheckWalkSwing, failures);
+        Check("LOOK-TARGET", CheckLookTarget, failures);
         Check("SEVER-API", CheckSeverApi, failures);
         Check("SEVER-ARM-WALK", CheckSeverArmWalk, failures);
+        Check("ARM-STUMP", CheckArmStump, failures);
         Check("SEVER-LEG-CRAWL", CheckSeverLegCrawl, failures);
         Check("CRAWL-TURN", CheckCrawlTurn, failures);
         Check("CRAWL-STEP", CheckCrawlStep, failures);
         Check("SEVER-MONOTONE", CheckSeverMonotone, failures);
         Check("SEVER-ALL", CheckSeverAll, failures);
         Check("ATTACK", CheckAttack, failures);
+        Check("GRAB-SPREAD", CheckGrabSpread, failures);
+        Check("IMPACT-TWIST", CheckImpactTwist, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
         Check("QUERY", CheckQueryBudget, failures);
         Report(
@@ -58,8 +63,9 @@ internal static class Program
 
         bool pass = failures.Count == 0;
         Console.WriteLine(pass
-            ? "[RATFIEND-CORE-SMOKE] PASS：固定哈希、装配、驼背姿态、走跑单调、摆臂反相、" +
-              "断肢 API、断臂行走、断腿爬行、爬行调头、爬行翻台阶、断肢里程单调、全断蠕动、攻击接缝与生命周期均通过"
+            ? "[RATFIEND-CORE-SMOKE] PASS：固定哈希、装配、驼背姿态、走跑单调、摆臂反相、走姿慢摆、凝视目标、" +
+              "断肢 API、断臂行走、断臂垂位、断腿爬行、爬行调头、爬行翻台阶、断肢里程单调、全断蠕动、" +
+              "攻击接缝、抓取分手、朝向冲击与生命周期均通过"
             : $"[RATFIEND-CORE-SMOKE] FAIL：{string.Join("；", failures)}");
         return pass ? 0 : 1;
     }
@@ -425,6 +431,147 @@ internal static class Program
         return (ok, $"antiPhase={antiFrac:P0}（≥60%） maxSpread={maxSpread:F3}m（≥0.1）");
     }
 
+    // ================================================================ 走姿慢摆
+
+    /// <summary>走姿慢摆（R15）：walk 档（RunSpeed 0.6）单步腾空段（Gripping==false 的连续
+    /// tick 段）显著长于跑档，且步频（腾空起点间隔）与消融基线相当——慢的是摆动过程，
+    /// 不是步频。消融对照：LegSwingSpeedFactor=1 时 walk 腾空段必然缩回快摆基线。</summary>
+    private static (bool, string) CheckWalkSwing()
+    {
+        (float meanSwing, float meanCycle, int swings, float mileage) Measure(
+            float runSpeed, float? swingFactor)
+        {
+            var terrain = FlatFloor();
+            RatFiendParams p = RatFiendFactory.Gaunt();
+            if (swingFactor is { } f)
+            {
+                p.LegSwingSpeedFactor = f;
+            }
+            RatFiendLocomotionController rat =
+                RatFiendFactory.CreateController(new Vector3(-40f, 0.5f, 0f), Vector3.Right, p);
+            long tick = 0;
+            float startX = rat.Chest.Pos.X;
+            var swingLen = new int[2];
+            var wasGripping = new bool[2];
+            var lastSwingStart = new long[2] { -1, -1 };
+            int swingTotal = 0, swingCount = 0;
+            long cycleTotal = 0;
+            int cycleCount = 0;
+            for (int i = 1; i <= 1200; i++)
+            {
+                rat.MoveDir = Vector3.Right;
+                rat.RunSpeed = runSpeed;
+                Tick(rat, terrain, ref tick);
+                for (int l = 0; l < 2; l++)
+                {
+                    bool grip = rat.Legs[l].Gripping;
+                    if (i <= 400)
+                    {
+                        wasGripping[l] = grip; // 预热窗：只跟踪状态，不计量
+                        continue;
+                    }
+                    if (!grip)
+                    {
+                        if (wasGripping[l])
+                        {
+                            if (lastSwingStart[l] >= 0)
+                            {
+                                cycleTotal += tick - lastSwingStart[l];
+                                cycleCount++;
+                            }
+                            lastSwingStart[l] = tick;
+                        }
+                        swingLen[l]++;
+                    }
+                    else if (!wasGripping[l] && swingLen[l] > 0)
+                    {
+                        swingTotal += swingLen[l];
+                        swingCount++;
+                        swingLen[l] = 0;
+                    }
+                    wasGripping[l] = grip;
+                }
+            }
+            return (swingCount == 0 ? 0f : (float)swingTotal / swingCount,
+                cycleCount == 0 ? 0f : (float)cycleTotal / cycleCount,
+                swingCount, rat.Chest.Pos.X - startX);
+        }
+
+        var walk = Measure(0.6f, null);
+        var run = Measure(1f, null);
+        var ablated = Measure(0.6f, 1f);
+        bool ok = walk.swings >= 20 && run.swings >= 20 && ablated.swings >= 20
+            && walk.meanSwing > ablated.meanSwing * 1.4f
+            && run.meanSwing < walk.meanSwing
+            && walk.meanCycle > ablated.meanCycle * 0.75f
+            && walk.meanCycle < ablated.meanCycle * 1.35f
+            && walk.mileage > 20f;
+        return (ok,
+            $"walkSwing={walk.meanSwing:F1}tick vs ablated={ablated.meanSwing:F1}" +
+            $"（>1.4×消融红灯） runSwing={run.meanSwing:F1}（<walk） " +
+            $"walkCycle={walk.meanCycle:F1}tick vs ablated={ablated.meanCycle:F1}" +
+            $"（±35% 步频不变） swings={walk.swings}/{run.swings}/{ablated.swings}（≥20） " +
+            $"mileage={walk.mileage:F1}m（≥20）");
+    }
+
+    // ================================================================ 凝视目标
+
+    /// <summary>凝视目标（R16/R16b）：低速走姿（RunSpeed 0.35，竞技场近身油门档——头手本该
+    /// 耷拉的工况）下逐 tick 喂前方眼高 LookTarget，头轴（Chest→Head 与世界 up 的点积）与
+    /// 手前伸量（hand−Chest 沿 Facing）都必须明显抬起；不喂即消融红灯（回到耷拉基线）。
+    /// 附带生命周期：Shift 平移凝视点、Teleport 作废。哈希中立由 DET 门自动背书
+    /// （回归路线从不设置 LookTarget）。</summary>
+    private static (bool, string) CheckLookTarget()
+    {
+        (float headDot, float armReach) Measure(bool stare)
+        {
+            var terrain = FlatFloor();
+            RatFiendLocomotionController rat = NewRat(new Vector3(-40f, 0.5f, 0f), Vector3.Right);
+            long tick = 0;
+            float dotSum = 0f, reachSum = 0f;
+            int n = 0;
+            for (int i = 1; i <= 900; i++)
+            {
+                rat.MoveDir = Vector3.Right;
+                rat.RunSpeed = 0.35f;
+                rat.LookTarget = stare
+                    ? rat.Chest.Pos + new Vector3(4f, 1.2f, 0f) // 前方眼高「猎物」，镜像宿主逐 tick 喂法
+                    : null;
+                Tick(rat, terrain, ref tick);
+                if (i <= 300)
+                {
+                    continue; // 预热窗
+                }
+                Vector3 axis = rat.Head.Pos - rat.Chest.Pos;
+                if (axis.LengthSquared() > 1e-10f)
+                {
+                    dotSum += axis.Normalized().Dot(Vector3.Up);
+                    reachSum += ((rat.Arms[0].Pos - rat.Chest.Pos).Dot(rat.Facing)
+                        + (rat.Arms[1].Pos - rat.Chest.Pos).Dot(rat.Facing)) * 0.5f;
+                    n++;
+                }
+            }
+            return n == 0 ? (-2f, -2f) : (dotSum / n, reachSum / n);
+        }
+
+        (float stare, float stareReach) = Measure(true);
+        (float droop, float droopReach) = Measure(false);
+
+        RatFiendLocomotionController probe = NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+        probe.LookTarget = new Vector3(1f, 2f, 3f);
+        probe.Shift(new Vector3(10f, 0f, -5f));
+        bool shiftOk = probe.LookTarget == new Vector3(11f, 2f, -2f);
+        probe.Teleport(Vector3.Zero);
+        bool teleportOk = probe.LookTarget is null;
+
+        bool ok = stare > droop + 0.3f && droop < 0f && stare > -0.05f
+            && stareReach > droopReach + 0.3f && shiftOk && teleportOk;
+        return (ok,
+            $"headDot stare={stare:F2} vs droop={droop:F2}（差 ≥0.3 消融红灯；droop<0、stare≥-0.05） " +
+            $"armReach stare={stareReach:F2}m vs droop={droopReach:F2}（差 ≥0.3，R16b 备抓抬臂） " +
+            $"shift={(shiftOk ? "ok" : "FAIL")} teleportClear={(teleportOk ? "ok" : "FAIL")}");
+    }
+
     // ================================================================ 断肢 API
 
     private static (bool, string) CheckSeverApi()
@@ -532,6 +679,46 @@ internal static class Program
         return (ok,
             $"baseline={baseline:F2}m armless={armless:F2}m deviation={deviation:P1}（<5%） " +
             $"stumpOverreach={maxReach:F3}m（<0.05） alwaysDangle={dangle}");
+    }
+
+    /// <summary>双断臂站立残肢垂位（R17）：Dangle 的臂长钳制锚在胸心，无肩侧偏置时纯自重
+    /// 平衡在胸心正下方——两截残肢收敛到中线，正面读成「倒三角围脖」。断言站立稳态下
+    /// 每截残肢横向偏向自己肩侧、两残端不并拢、整体垂在胸下。
+    /// 消融红灯：去掉断臂分支的肩侧垂位弹簧 → 本门必红（side≈0、split≈0）。</summary>
+    private static (bool, string) CheckArmStump()
+    {
+        var terrain = FlatFloor();
+        RatFiendLocomotionController rat = NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+        long tick = 0;
+        for (int i = 1; i <= 300; i++)
+        {
+            Tick(rat, terrain, ref tick);   // 站立稳态（无移动意图）
+        }
+        rat.Sever(RatFiendLimbId.ArmLeft);
+        rat.Sever(RatFiendLimbId.ArmRight);
+        for (int i = 1; i <= 400; i++)
+        {
+            Tick(rat, terrain, ref tick);
+        }
+
+        Vector3 right = rat.Facing.Cross(Vector3.Up).Normalized();
+        float side0 = (rat.Arms[0].Pos - rat.Chest.Pos).Dot(right) * rat.Arms[0].Side;
+        float side1 = (rat.Arms[1].Pos - rat.Chest.Pos).Dot(right) * rat.Arms[1].Side;
+        float split = (rat.Arms[0].Pos - rat.Arms[1].Pos).Length();
+        float drop0 = (rat.Arms[0].Pos - rat.Chest.Pos).Dot(Vector3.Up);
+        float drop1 = (rat.Arms[1].Pos - rat.Chest.Pos).Dot(Vector3.Up);
+        // 静定断言：终帧不仅位置对、还得是收敛定点（残摆 ≥3cm 振幅的峰值速度即超阈，
+        // 实测定点每 tick 位移 <1e-4，50× 裕量）——焊死「振荡恰好在对的相位采样」的缺口。
+        float still0 = rat.Arms[0].Vel.Length();
+        float still1 = rat.Arms[1].Vel.Length();
+
+        bool ok = side0 > 0.08f && side1 > 0.08f && split > 0.18f
+            && drop0 < -0.3f && drop1 < -0.3f
+            && still0 < 0.005f && still1 < 0.005f;
+        return (ok,
+            $"side=({side0:F3}m, {side1:F3}m)（各 >0.08 且偏向本肩侧） " +
+            $"split={split:F3}m（>0.18 不并拢） drop=({drop0:F3}m, {drop1:F3}m)（各 <-0.3 垂在胸下） " +
+            $"still=({still0:F4}, {still1:F4})m/tick（各 <0.005 静止收敛）");
     }
 
     // ================================================================ 断腿爬行
@@ -883,6 +1070,110 @@ internal static class Program
         return (ok,
             $"reachTick={reachTick}（≤80） mouthFull={mouthFull} released={releasedClean} " +
             $"mouthBack={mouthBack} neverFarGrab={neverFar} overreach={maxReachLen:F3}m（<0.05）");
+    }
+
+    /// <summary>R19 抓取分手（opt-in `GrabHandSpread`）：默认 0 时两手追同一目标点**逐位重合**
+    /// （渲染两套手爪叠置 z-fighting 读成「手在颤抖」的根因——重合本身要钉死当基线事实）；
+    /// 设 0.09 后双手横向对称分开 ≈2×0.09×(臂长钳制径向缩放 0.997)≈0.179m 且抓住判定不受
+    /// 影响。守的是：后续重构（改 right 推导 / 钳制挪到偏移后）把分开压塌回重合，或把偏移
+    /// 大到破坏 HandsOnTarget——矩阵与 DET 哈希对这个 opt-in 路径全盲。</summary>
+    private static (bool, string) CheckGrabSpread()
+    {
+        var terrain = FlatFloor();
+
+        // 档 A：默认 spread=0 —— 双手逐位重合 + 抓住判定成立（旧行为基线）。
+        RatFiendLocomotionController rat = NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+        long tick = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            Tick(rat, terrain, ref tick);
+        }
+        Vector3 target = rat.Chest.Pos + rat.Facing * 0.9f;
+        for (int i = 0; i < 80; i++)
+        {
+            rat.GrabTarget = target;
+            Tick(rat, terrain, ref tick);
+        }
+        float sep0 = (rat.Arms[0].Pos - rat.Arms[1].Pos).Length();
+        bool coincident = sep0 < 1e-4f;
+        bool held0 = rat.HandsOnTarget[0] && rat.HandsOnTarget[1];
+
+        // 档 B：spread=0.09 —— 双手分开落在 [0.15, 0.21]，抓住判定仍双双成立。
+        RatFiendLocomotionController spread = NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+        spread.GrabHandSpread = 0.09f;
+        tick = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            Tick(spread, terrain, ref tick);
+        }
+        Vector3 target2 = spread.Chest.Pos + spread.Facing * 0.9f;
+        for (int i = 0; i < 80; i++)
+        {
+            spread.GrabTarget = target2;
+            Tick(spread, terrain, ref tick);
+        }
+        float sep1 = (spread.Arms[0].Pos - spread.Arms[1].Pos).Length();
+        bool separated = sep1 is > 0.15f and < 0.21f;
+        bool held1 = spread.HandsOnTarget[0] && spread.HandsOnTarget[1];
+
+        bool ok = coincident && held0 && separated && held1
+            && IsFinite(rat) && IsFinite(spread);
+        return (ok,
+            $"sep(spread=0)={sep0:E2}m（<1e-4 重合） held0={held0} " +
+            $"sep(spread=0.09)={sep1:F3}m（0.15~0.21） held1={held1}");
+    }
+
+    /// <summary>R19 朝向冲击（opt-in `ImpactTwist`）：拧转角度/轴向符号、无意图时保持拧姿、
+    /// 有意图时 SlewFacing 按转速限甩回、退化轴回退、连拧不丢单位长度。守的是：Rotated 轴向
+    /// 符号约定或 SlewFacing 恢复被重构改翻——竞技场「打右臂右肩后拧」的转矩语义建立在
+    /// 这个符号之上，矩阵与 DET 哈希对它全盲。</summary>
+    private static (bool, string) CheckImpactTwist()
+    {
+        var terrain = FlatFloor();
+        RatFiendLocomotionController rat = NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+        long tick = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            Tick(rat, terrain, ref tick);
+        }
+
+        // 拧 +16°：与 Godot Rotated 同式的期望向量逐位对比方向（点积门）。
+        float yaw = MathF.PI * 16f / 180f;
+        Vector3 before = rat.Facing;
+        rat.ImpactTwist(yaw, Vector3.Up);
+        Vector3 expected = before.Rotated(Vector3.Up, yaw);
+        bool twisted = rat.Facing.Dot(expected) > 0.9999f;
+
+        // 无移动意图：拧姿逐 tick 保持（吃痛回神窗语义的内核侧依据）。
+        for (int i = 0; i < 10; i++)
+        {
+            Tick(rat, terrain, ref tick);
+        }
+        bool held = rat.Facing.Dot(expected) > 0.999f;
+
+        // 恢复意图：SlewFacing（0.22 rad/tick）3 tick 内甩回意图方向。
+        bool recovered = false;
+        for (int i = 0; i < 3; i++)
+        {
+            rat.MoveDir = Vector3.Right;
+            rat.RunSpeed = 1f;
+            Tick(rat, terrain, ref tick);
+            recovered |= rat.Facing.Dot(Vector3.Right) > 0.999f;
+        }
+
+        // 退化轴（零向量 up → 回退世界上）与连拧 200 次的单位长度守恒。
+        rat.ImpactTwist(0.5f, Vector3.Zero);
+        bool degenerateSafe = IsFinite(rat) && MathF.Abs(rat.Facing.Length() - 1f) < 1e-4f;
+        for (int i = 0; i < 200; i++)
+        {
+            rat.ImpactTwist(0.3f, Vector3.Up);
+        }
+        bool unitKept = MathF.Abs(rat.Facing.Length() - 1f) < 1e-4f && IsFinite(rat);
+
+        bool ok = twisted && held && recovered && degenerateSafe && unitKept;
+        return (ok,
+            $"twist16°={twisted} heldNoIntent={held} recovered≤3tick={recovered} " +
+            $"degenerateAxis={degenerateSafe} unitAfter200={unitKept}");
     }
 
     // ================================================================ 生命周期

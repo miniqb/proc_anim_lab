@@ -50,28 +50,28 @@ internal readonly struct RatFiendRenderProfile
         // dusk：暗剪影变体——近黑暖灰身 + 骨白鼠颅浮在上面（最「雨世界」的读法）。
         "dusk" => new RatFiendRenderProfile(
             new Color(0.105f, 0.095f, 0.090f), new Color(0.62f, 0.58f, 0.52f),
-            new Color(0.85f, 0.82f, 0.72f), new Color(0.13f, 0.055f, 0.055f),
+            new Color(0.85f, 0.82f, 0.72f), new Color(0.30f, 0.08f, 0.065f),
             new Color(0.88f, 0.89f, 0.85f), new Color(0.07f, 0.06f, 0.06f),
             new Color(0.24f, 0.09f, 0.08f), new Color(0.14f, 0.10f, 0.10f),
             gauntness: 0.85f, hunch: 0.7f, aggression: 0.8f, nervous: 0.35f, energy: 0.45f),
         // broad：重型——更沉的土灰、驼得浅一点、牙更长、迟钝少眨眼。
         "broad" => new RatFiendRenderProfile(
             new Color(0.50f, 0.47f, 0.44f), new Color(0.58f, 0.54f, 0.50f),
-            new Color(0.82f, 0.78f, 0.66f), new Color(0.14f, 0.055f, 0.055f),
+            new Color(0.82f, 0.78f, 0.66f), new Color(0.31f, 0.085f, 0.07f),
             new Color(0.85f, 0.85f, 0.80f), new Color(0.10f, 0.09f, 0.09f),
             new Color(0.24f, 0.09f, 0.08f), new Color(0.34f, 0.26f, 0.26f),
             gauntness: 0.6f, hunch: 0.6f, aggression: 0.9f, nervous: 0.15f, energy: 0.3f),
         // whelp：幼体——更苍白、神经质勤眨眼、牙短。
         "whelp" => new RatFiendRenderProfile(
             new Color(0.60f, 0.58f, 0.56f), new Color(0.66f, 0.63f, 0.60f),
-            new Color(0.86f, 0.83f, 0.74f), new Color(0.13f, 0.055f, 0.055f),
+            new Color(0.86f, 0.83f, 0.74f), new Color(0.31f, 0.085f, 0.07f),
             new Color(0.90f, 0.91f, 0.87f), new Color(0.12f, 0.11f, 0.11f),
             new Color(0.26f, 0.10f, 0.09f), new Color(0.42f, 0.34f, 0.34f),
             gauntness: 0.9f, hunch: 0.8f, aggression: 0.5f, nervous: 0.8f, energy: 0.8f),
         // gaunt：基线——参考图的苍白灰皮修长鬼怪。
         _ => new RatFiendRenderProfile(
             new Color(0.55f, 0.53f, 0.50f), new Color(0.63f, 0.60f, 0.56f),
-            new Color(0.85f, 0.82f, 0.72f), new Color(0.13f, 0.055f, 0.055f),
+            new Color(0.85f, 0.82f, 0.72f), new Color(0.30f, 0.08f, 0.065f),
             new Color(0.88f, 0.89f, 0.85f), new Color(0.10f, 0.09f, 0.09f),
             new Color(0.24f, 0.09f, 0.08f), new Color(0.38f, 0.30f, 0.30f),
             gauntness: 0.85f, hunch: 0.7f, aggression: 0.7f, nervous: 0.35f, energy: 0.45f),
@@ -116,6 +116,10 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
     private float _snoutDroop;    // ×headR
     private float _jawRestDeg;
     private float _jawGapeDeg;
+
+    /// <summary>张嘴的颅骨后仰份额（R16b）：动态张角的这一份由颅骨绕颌铰点上掀承担，
+    /// 其余归下颌——嘴缝中线基本保持在视线轴上（动物大张口的真实动作）。</summary>
+    private const float UpperGapeShare = 0.35f;
     private float _fangMult;
     private float _earLen;        // ×headR
     private float _earSplay;
@@ -176,15 +180,20 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
 
     private WoundBladeSpec[] _woundBlades = Array.Empty<WoundBladeSpec>();
 
+    /// <summary>咬合撕扯动作时长（秒）：闭口沿触发的头前突+下压+侧向撕扯窗口
+    /// （R18 从 0.12s/0.02m 前突加强——用户实测「不够明显」）。</summary>
+    private const float BiteLungeSeconds = 0.22f;
+
     // —— 渲染侧化妆状态（私有，不写回内核、不进哈希）——
     private Vector3 _spineUp = Vector3.Up;
     private Vector3 _headFwd = Vector3.Right;
     private Vector3 _dorsalDraw = Vector3.Back;
     private bool _dorsalInitialized;
+    private Vector3 _bobOffset;       // 步态起伏偏移（R18，低通；脚/手钉地不吃它）
     private readonly Vector3[] _armPole = new Vector3[2];
     private readonly bool[] _armPoleInit = new bool[2];
     private float _mouthSmoothed = 0.15f;
-    private float _prevMouthSmoothed = 0.15f;
+    private float _prevMouthDrive;    // 上帧宿主咬合驱动（撕咬触发器读它的 1→0 沿）
     private float _biteLunge;         // 咬合前突剩余秒
     private float _twitchTimer;       // 断肢抽搐剩余秒
     private int _prevSeverSerial;
@@ -370,9 +379,16 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
             : _spineUp.Cross(Vector3.Right).Normalized();
 
         UpdateDorsal(facing, crawl, dt);
+        UpdateGaitBob(hips, facing, right, runN, crawl, alpha, dt);
         UpdateMouth(alpha, dt, runN, struggling);
         UpdateExpression(dt, struggling);
         UpdateTwitch(dt);
+
+        // 步态起伏只搬躯干系（胸/髋/头 → 躯干/脖/头/肩/髋关节全体跟随）；脚与手仍读
+        // 内核原位——踩点不动，起伏被腿/臂 IK 的膝肘弯曲自然吸收，正是真实步行的形态。
+        chest += _bobOffset;
+        hips += _bobOffset;
+        headPos += _bobOffset;
 
         _tube.BeginFrame();
         DrawTorso(chest, hips, right, crawl, runN, struggling, out Vector3 neckRoot);
@@ -417,14 +433,51 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         }
     }
 
+    /// <summary>步态起伏（R18，用户实测「走跑像平移、太木讷」）：读双腿沿 Facing 的前后
+    /// 展开差作相位（摆臂同款手法——随真实步频、零新状态），派生竖直起伏 + 侧向摇摆：
+    /// 双支撑（两腿劈开）时身体最低、单腿越过髋下时最高（真实步行的 2×步频竖直振荡），
+    /// 侧摆随迈步左右交替。幅度按走→跑升档、爬行与昏迷归零；脚踩点不吃偏移（见 Draw）。</summary>
+    private void UpdateGaitBob(Vector3 hips, Vector3 facing, Vector3 right,
+        float runN, float crawl, float alpha, float dt)
+    {
+        Vector3 target = Vector3.Zero;
+        if (_c.Conscious && _c.Legs.Count == 2)
+        {
+            // 运动门：Gait 一起步就给起伏（走档 Gait≈0.35 已满门），站定平滑归零。
+            float move = Mathf.Clamp(_c.Gait / 0.30f, 0f, 1f) * (1f - crawl);
+            if (move > 1e-3f)
+            {
+                float legLen = Mathf.Max(_c.Params.LegLength, 1e-3f);
+                float fwd0 = (_c.Legs[0].LerpPos(alpha) - hips).Dot(facing);
+                float fwd1 = (_c.Legs[1].LerpPos(alpha) - hips).Dot(facing);
+                float phase = Mathf.Clamp((fwd0 - fwd1) / legLen, -1f, 1f);
+                float vertAmp = Mathf.Lerp(0.014f, 0.038f, runN);
+                float latAmp = Mathf.Lerp(0.010f, 0.026f, runN);
+                target = Vector3.Up * ((0.5f - Mathf.Abs(phase)) * 2f * vertAmp * move)
+                    + right * (phase * latAmp * move);
+            }
+        }
+        float k = 1f - Mathf.Exp(-10f * dt);
+        _bobOffset = _bobOffset.Lerp(target, k);
+    }
+
     /// <summary>嘴开度平滑：target = 内核插值开度（含 Gait 派生 + 宿主咬合驱动）+ 渲染附加
     /// （闲置微呼吸颌 / 跑步喘 / 挣扎加张 / 抽搐尖叫）。非对称低通（开 25 / 合 18）——
     /// 咬合尖峰不能被糊掉，低通只吃 40Hz 台阶。下行沿（咬合闭口）触发 0.12s 头前突。</summary>
     private void UpdateMouth(float alpha, float dt, float runN, bool struggling)
     {
         float target = Mathf.Lerp(_c.LastMouthOpen, _c.MouthOpen, alpha);
-        target += 0.04f * Mathf.Sin(_time * 1.3f) * (1f - runN);   // 闲置微呼吸颌
-        target += 0.05f * Mathf.Sin(_time * 7f) * runN;            // 跑步喘
+        if (_c.Conscious)
+        {
+            target += 0.04f * Mathf.Sin(_time * 1.3f) * (1f - runN);   // 闲置微呼吸颌
+            target += 0.05f * Mathf.Sin(_time * 7f) * runN;            // 跑步喘
+            // R18 张闭起伏（用户实测「固定角度太木讷」）：双正弦负偏置调制——只朝闭合
+            // 方向脉动（张开侧被 clamp(1) 吃掉，正偏置在血盆大口档完全不可见），幅度随
+            // 当前开度升档（闭着的嘴不打颤）。与呼吸/喘分频（2.3/5.3 vs 1.3/7）避免拍频。
+            float flutter = 0.5f * Mathf.Sin(_time * 2.3f)
+                + 0.5f * Mathf.Sin(_time * 5.3f + 1.4f) - 0.85f;
+            target += 0.075f * flutter * (0.30f + 0.70f * Mathf.Clamp(target, 0f, 1f));
+        }
         if (struggling)
         {
             target += 0.15f;
@@ -435,21 +488,24 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         }
         target = Mathf.Clamp(target, 0f, 1f);
 
-        _prevMouthSmoothed = _mouthSmoothed;
         float kOpen = 1f - Mathf.Exp(-25f * dt);
         float kClose = 1f - Mathf.Exp(-18f * dt);
         _mouthSmoothed += (target - _mouthSmoothed)
             * (target > _mouthSmoothed ? kOpen : kClose);
 
-        // 咬合冲击：快速闭口且下穿 0.5 → 头前突 + 牙短暂提亮。
-        if (dt > 1e-5f)
+        // 咬合冲击触发器（R18b 评审修复）：直接读宿主咬合脚本的 MouthDrive 满开→全闭沿
+        // （1→0）。旧版在平滑域测「rate>3 且下穿 0.5」——满跑时内核嘴开度地板 =
+        // MouthBase + MouthRunGain = 0.70 > 0.5，Bite 态（边追边咬）的撕咬顿挫整段
+        // 失效；且 lerp(Last, Cur, alpha) 插值会把 40Hz 阶跃摊到多帧，平滑量域测不出
+        // 干净的沿。脚本量是阶跃、不经低通、帧率无关。阈 0.75/0.25 只认满开→全闭
+        // （追逐龇嘴 ChaseMouthDrive 0.6→0 的扑空收招不误触）；Conscious 门防死亡清嘴
+        // 误触（刚断气的尸体做前突撕扯是最出戏的假活——同轮死亡门控的一部分）。
+        float drive = Mathf.Clamp(_c.MouthDrive, 0f, 1f);
+        if (_c.Conscious && _prevMouthDrive >= 0.75f && drive <= 0.25f)
         {
-            float rate = (_prevMouthSmoothed - _mouthSmoothed) / dt;
-            if (rate > 3f && _mouthSmoothed < 0.5f && _prevMouthSmoothed >= 0.5f)
-            {
-                _biteLunge = 0.12f;
-            }
+            _biteLunge = BiteLungeSeconds;
         }
+        _prevMouthDrive = drive;
         _biteLunge = Mathf.Max(0f, _biteLunge - dt);
     }
 
@@ -486,7 +542,7 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         _earFlickTimer -= dt;
         if (_earFlickTimer <= 0f)
         {
-            _earFlick = 1f;
+            _earFlick = _c.Conscious ? 1f : 0f; // 尸体耳不颤（R18）
             _earFlickTimer = Mathf.Lerp(6f, 1.5f, _p.Nervous)
                 * (0.5f + (float)_blinkRng.NextDouble());
         }
@@ -533,7 +589,9 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         float hipsR = _c.Hips.Radius;
 
         float breathRate = Mathf.Lerp(0.45f, 1.2f, crawl) * Mathf.Tau;
-        float breathGate = Mathf.Pow(1f - runN, 2f) * Mathf.Lerp(1f, 0.6f, crawl);
+        // 昏迷/死亡不呼吸（R18：尸体胸廓还在起伏是最出戏的假活）。
+        float breathGate = Mathf.Pow(1f - runN, 2f) * Mathf.Lerp(1f, 0.6f, crawl)
+            * (_c.Conscious ? 1f : 0f);
         float breathPulse = (Mathf.Sin(_time * breathRate) + 1f) * 0.5f * breathGate;
         float breathScale = 1f + 0.05f * breathPulse;
 
@@ -647,30 +705,70 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         float headR = _c.Head.Radius * _headSize;
         Vector3 offset = headPos - chest;
         Vector3 headOffsetDir = offset.LengthSquared() > 1e-8f ? offset.Normalized() : facing;
-        float downBias = Mathf.Lerp(0.50f, -0.05f, runN) * (1f - 0.6f * crawl);
-        Vector3 gaze = facing * 0.55f + headOffsetDir * 0.35f - _spineUp * downBias;
+        Vector3 gaze;
+        if ((_c.GrabTarget ?? _c.LookTarget) is { } focus)
+        {
+            // 猎杀/攻击凝视（R16b）：化妆朝向直指目标。默认公式的 downBias 是纯化妆
+            // 分量，会盖过物理头伺服（被抓/凝视时 runN→0 → 强压 0.5 竖直分量，吻部
+            // 朝下与内核「直视目标」脱节）——有目标时整段绕开，物理偏移只垫底防抖。
+            Vector3 toFocus = focus - headPos;
+            gaze = toFocus.LengthSquared() > 1e-8f
+                ? toFocus.Normalized() * 0.75f + headOffsetDir * 0.25f
+                : facing;
+        }
+        else
+        {
+            float downBias = Mathf.Lerp(0.50f, -0.05f, runN) * (1f - 0.6f * crawl);
+            gaze = facing * 0.55f + headOffsetDir * 0.35f - _spineUp * downBias;
+        }
         gaze = gaze.LengthSquared() > 1e-8f ? gaze.Normalized() : facing;
         float k = 1f - Mathf.Exp(-10f * dt);
         _headFwd = _headFwd.Lerp(gaze, k);
         Vector3 headFwd = _headFwd.LengthSquared() > 1e-8f ? _headFwd.Normalized() : facing;
-        Vector3 headUp = _spineUp - headFwd * _spineUp.Dot(headFwd);
+        // 头系 up 参照混向世界上（R18 爬行头倒转修复）：纯用 _spineUp 时，脊轴转水平后
+        // 它与 headFwd 近共线，去轴残差的符号翻向下 → headUp 反指、整头绕视轴滚 180°
+        // （颌朝天）。混合权重 = max(crawl, 躯干轴水平度)——只用 crawl 会在尸体上自行
+        // 撤销（死亡 Conscious=false → Crawling=false → CrawlFactor 衰减归零，趴平的
+        // 尸体退回旧病灶公式，头在定格前回滚——R18b 评审实证）；躯干轴水平这一几何事实
+        // 与意识无关，用它兜底。站立时脊轴近竖直 → 水平度 ≈0.1，混入量 ~2° 不改站姿。
+        float upBlend = Mathf.Max(Mathf.Clamp(crawl, 0f, 1f),
+            1f - Mathf.Abs(_spineUp.Dot(Vector3.Up)));
+        Vector3 headUpRef = _spineUp.Lerp(Vector3.Up, upBlend);
+        headUpRef = headUpRef.LengthSquared() > 1e-6f ? headUpRef.Normalized() : Vector3.Up;
+        Vector3 headUp = headUpRef - headFwd * headUpRef.Dot(headFwd);
         headUp = headUp.LengthSquared() > 1e-6f ? headUp.Normalized() : Vector3.Up;
         Vector3 headRight = headFwd.Cross(headUp).Normalized();
 
         Vector3 drawPos = headPos + TwitchJitter(0.02f);
         if (_biteLunge > 0f)
         {
-            drawPos += headFwd * (0.02f * (_biteLunge / 0.12f)); // 咬合前突
+            // 咬合撕扯（R18 加强）：sin 包络的前突 + 下压 + 高频侧向撕扯——闭口瞬间
+            // 头猛地向前下方顿一口再左右撕两下，回程由包络自然收干净。
+            float env = Mathf.Sin(_biteLunge / BiteLungeSeconds * Mathf.Pi);
+            drawPos += headFwd * (0.09f * env) - headUp * (0.05f * env)
+                + headRight * (Mathf.Sin(_time * 32f) * 0.022f * env);
         }
 
+        // 张嘴 = 双颌对开（R16b）：颅骨绕颌铰点后仰承担 UpperGapeShare 份额的张角
+        // （血盆大口正对视线——只掉下巴时嘴缝中线永远比鼻尖低半个张角，全开读成
+        // 「头朝下」），下颌承担剩余；jawRest 静息微张全归下颌（站姿吻部不上翘）。
+        // 铰点/headRight 轴不动 → 咬合点与下颌公式不变，牙眼耳跟随各自的帧。
+        Vector3 jawPivot = drawPos - headFwd * (headR * 0.15f) - headUp * (headR * 0.32f);
+        float theta = Mathf.DegToRad(
+            _jawRestDeg + (_jawGapeDeg - _jawRestDeg) * _mouthSmoothed);
+        float upperRad = (theta - Mathf.DegToRad(_jawRestDeg)) * UpperGapeShare;
+        Vector3 snoutFwd = headFwd.Rotated(headRight, upperRad);
+        Vector3 snoutUp = headUp.Rotated(headRight, upperRad);
+        Vector3 snoutPos = jawPivot + (drawPos - jawPivot).Rotated(headRight, upperRad);
+
         // 颅吻一体扫管（楔形颅 → 细长吻，鼻尖渐暗；无共享球 → 无拼缝亮度断层）。
-        _snoutPts[0] = drawPos - headFwd * (headR * 0.55f);
-        _snoutPts[1] = drawPos + headFwd * (headR * 0.10f) + headUp * (headR * 0.08f);
-        _snoutPts[2] = drawPos + headFwd * (headR * 0.70f);
-        _snoutPts[3] = drawPos + headFwd * (headR * (0.7f + _snoutLen * 0.45f))
-            - headUp * (headR * _snoutDroop * 0.5f);
-        _snoutPts[4] = drawPos + headFwd * (headR * (0.7f + _snoutLen))
-            - headUp * (headR * _snoutDroop);
+        _snoutPts[0] = snoutPos - snoutFwd * (headR * 0.55f);
+        _snoutPts[1] = snoutPos + snoutFwd * (headR * 0.10f) + snoutUp * (headR * 0.08f);
+        _snoutPts[2] = snoutPos + snoutFwd * (headR * 0.70f);
+        _snoutPts[3] = snoutPos + snoutFwd * (headR * (0.7f + _snoutLen * 0.45f))
+            - snoutUp * (headR * _snoutDroop * 0.5f);
+        _snoutPts[4] = snoutPos + snoutFwd * (headR * (0.7f + _snoutLen))
+            - snoutUp * (headR * _snoutDroop);
         _snoutRadii[0] = headR * 0.62f;
         _snoutRadii[1] = headR * 0.58f;
         _snoutRadii[2] = headR * 0.40f;
@@ -689,13 +787,11 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
             _colors.Add(_p.Head.Lerp(snoutDark, Mathf.Pow(t, 2.2f)));
         }
         SplineSampler.Sample(_pts, _radii, _colors, 3, _stations);
-        _tube.AddTube(_stations, headUp, 12);
+        _tube.AddTube(_stations, snoutUp, 12);
 
         // 可动下颌：绕耳下铰点旋转（张角单独低通在 _mouthSmoothed 里；jawRest ≥3° 永不咬死）。
-        Vector3 jawPivot = drawPos - headFwd * (headR * 0.15f) - headUp * (headR * 0.32f);
-        float theta = Mathf.DegToRad(
-            _jawRestDeg + (_jawGapeDeg - _jawRestDeg) * _mouthSmoothed);
-        Vector3 jawDir = headFwd.Rotated(headRight, -theta);
+        // 相对未后仰的 headFwd 转 −(theta − upperRad)：与上掀颅骨合成完整张角 theta。
+        Vector3 jawDir = headFwd.Rotated(headRight, -(theta - upperRad));
         Vector3 jawUp = headRight.Cross(jawDir).Normalized();
         float jawLen = headR * (0.6f + _snoutLen * 0.55f);
 
@@ -714,20 +810,26 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
         SplineSampler.Sample(_pts, _radii, _colors, 3, _stations);
         _tube.AddTube(_stations, jawUp, 8);
 
-        // 口腔暗喉：沿两颌角平分线，半径 × clamp(mouth·1.6)——闭嘴缩进颌内不可见。
+        // 口腔喉管：沿两颌角平分线，半径 × clamp(mouth·1.6)——闭嘴缩进颌内不可见。
+        // R18 重做（用户实测「嘴心黑区远看像鼻子」）：旧版细长暗锥从铰点伸到嘴前缘
+        // （0.05→1.05·headR、终点近黑），远景读成嘴中央一粒突出的暗鼻头。改成
+        // 「宽根短锥 + 由深到浅」：根缩进颅内、主体加宽填满两颌间的楔口、收口退到
+        // 0.88·headR 不再探出唇线，配色喉底暗 → 口腔亮红——远景读成整张打开的红嘴。
         Vector3 snoutAxisDir = (_snoutPts[4] - _snoutPts[2]).Normalized();
         Vector3 bisector = (snoutAxisDir + jawDir).Normalized();
         float mawScale = Mathf.Clamp(_mouthSmoothed * 1.6f, 0.15f, 1f);
         _stations.Clear();
-        _stations.Add(new TubeStation(jawPivot + bisector * (headR * 0.05f),
-            headR * 0.26f * mawScale, _p.Maw));
-        _stations.Add(new TubeStation(jawPivot + bisector * (headR * 1.05f),
-            headR * 0.05f * mawScale, _p.Maw.Darkened(0.3f)));
+        _stations.Add(new TubeStation(jawPivot - bisector * (headR * 0.10f),
+            headR * 0.34f * mawScale, _p.Maw.Darkened(0.35f)));
+        _stations.Add(new TubeStation(jawPivot + bisector * (headR * 0.45f),
+            headR * 0.30f * mawScale, _p.Maw));
+        _stations.Add(new TubeStation(jawPivot + bisector * (headR * 0.88f),
+            headR * 0.06f * mawScale, _p.Maw.Darkened(0.15f)));
         _tube.AddTube(_stations, jawUp, 8);
 
-        DrawTeeth(headFwd, headUp, headRight, jawPivot, jawDir, jawUp, jawLen, headR);
-        DrawEyes(drawPos, headFwd, headUp, headRight, headR);
-        DrawEars(drawPos, headFwd, headUp, headRight, headR, runN);
+        DrawTeeth(snoutFwd, snoutUp, headRight, jawPivot, jawDir, jawUp, jawLen, headR);
+        DrawEyes(snoutPos, snoutFwd, snoutUp, headRight, headR);
+        DrawEars(snoutPos, snoutFwd, snoutUp, headRight, headR, runN);
     }
 
     /// <summary>牙 = (头帧, 张角) 的纯函数（抗抖第三件：零累积状态）。上牙挂上吻管下缘
@@ -738,7 +840,7 @@ internal sealed class RatFiendFormalRenderer : IFormalRenderer
     {
         Color gum = _p.Head.Lerp(_p.Maw, 0.35f);
         Color toothCol = _biteLunge > 0f
-            ? _p.Teeth.Lightened(0.25f * (_biteLunge / 0.12f))
+            ? _p.Teeth.Lightened(0.25f * (_biteLunge / BiteLungeSeconds))
             : _p.Teeth;
 
         // 上牙：沿吻段（station 2→4）分段线性取唇线位置与半径。

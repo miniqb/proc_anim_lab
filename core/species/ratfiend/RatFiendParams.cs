@@ -156,6 +156,18 @@ public sealed class RatFiendParams
 	public float LegPhaseMinGap = 0.2f;
 	public bool SmoothenLegMovement = true;
 
+	/// <summary>走姿慢摆（R15）：摆动期 HuntSpeed 的走端缩放系数（跑端恒 1，对标手臂
+	/// ArmSwingSpeedFactor 先例）。步频由前瞻释放循环决定、基本不受影响，变慢的是单步
+	/// 抬脚→落下的腾空过程（此前 ~1.8×腿长/LegSpeed ≈ 3 tick 摆完，40Hz 下像瞬移）。
+	/// 可行域下界：LegSpeed×此值 ≥ 0.12（CLAUDE.md §6.5），否则脚追不上身体。</summary>
+	public float LegSwingSpeedFactor = 0.45f;
+
+	/// <summary>慢摆的混合窗（对 Gait）：≤Start 全额减速、≥End 恢复全速。窗口刻意比
+	/// RunBlend 姿态窗（0.35~0.95）更靠后——walk 档（RunSpeed 0.6 → Gait≈0.6）必须落在
+	/// 全额减速带内；若复用姿态窗，r≈0.42 会把减速稀释掉近一半。</summary>
+	public float LegSwingBlendStart = 0.62f;
+	public float LegSwingBlendEnd = 0.95f;
+
 	// —— 手臂（RatArm）——
 	public float ArmLength = 1.15f;
 	public float HandRadius = 0.06f;
@@ -181,6 +193,11 @@ public sealed class RatFiendParams
 	public float RunReachForward = 0.8f;
 	public float RunReachLateral = 0.22f;
 	public float RunReachUp = 0.05f;
+
+	/// <summary>凝视备抓抬臂（R16b）：LookTarget 非空时走/跑手臂混合权重的下限——低速逼近
+	/// 猎物手也保持前伸备抓（举着），不随 Gait 落回垂摆。仅在 LookTarget 设置时生效
+	/// （opt-in 派生，哈希中立同 LookTarget）。</summary>
+	public float LookArmRaise = 0.85f;
 
 	// —— 攻击接缝 ——
 	/// <summary>手到 GrabTarget 的「抓住」判定半径（米，HandsOnTarget 观测）。</summary>

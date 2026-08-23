@@ -69,8 +69,22 @@ public sealed class RatFiendLocomotionController
 	/// 沿「胸→目标」前伸（可及半径钳制），头 aim 转向目标。抓住判定归宿主（读 HandsOnTarget）。</summary>
 	public Vector3? GrabTarget;
 
+	/// <summary>凝视目标（世界点，宿主逐 tick 写/清）：非 null 且清醒时 = 猎杀姿态——
+	/// 头 aim 直视该点 + 走/跑手臂混合权重下限抬到 LookArmRaise（低速逼近也举手备抓，
+	/// R16b）。不碰步态/嘴（张嘴走既有 MouthDrive）、不追点抓取（那是 GrabTarget——
+	/// 双臂满伸真抓）。GrabTarget 非空时让位；爬行撑地优先于抬臂（推进链不可劫持）。
+	/// opt-in：默认 null，回归路线从不设置 → 既有基线零漂移（§6.6 惯例）。</summary>
+	public Vector3? LookTarget;
+
 	/// <summary>嘴开度的宿主驱动分量 ∈ [0,1]（咬合时拉满；叠加在 Gait 派生的基础开度上）。</summary>
 	public float MouthDrive;
+
+	/// <summary>抓取双手的横向对称分开（米，R19 opt-in——默认 0 = 旧行为逐位不变，回归
+	/// 路线不设置 → 基线零漂移）：GrabTarget 分支里两手各朝自己一侧偏开 Side×此值。
+	/// 默认两手追同一个点、逐位重合——渲染两套手爪几何完全叠置，z-fighting 闪烁读成
+	/// 「手一直在颤抖」（R19 竞技场实测：束缚稳态两手逐 tick 位移逐位相同、亚毫米静止，
+	/// 抖的不是物理是深度冲突）。分开后读成「掐住两肩」。</summary>
+	public float GrabHandSpread;
 
 	// —— 参数快照（出生冻结，运行时只读）——
 	private readonly RatFiendParams _p;
@@ -238,6 +252,10 @@ public sealed class RatFiendLocomotionController
 		{
 			GrabTarget = grab + delta;
 		}
+		if (LookTarget is { } look)
+		{
+			LookTarget = look + delta;
+		}
 	}
 
 	/// <summary>teleport：平移并作废一切位置态记忆（断肢状态保留——它不是位置态）。</summary>
@@ -256,6 +274,28 @@ public sealed class RatFiendLocomotionController
 		MoveTarget = null;
 		AtMoveTarget = false;
 		GrabTarget = null;
+		LookTarget = null;
+	}
+
+	/// <summary>部位冲击（R18，opt-in——回归路线不调用 → 基线零漂移）：给单个 chunk 注入
+	/// 速度增量（枪击命中点的顿挫）。与 <see cref="Launch"/>（全身击飞 + 释放肢体 + 清撑地）
+	/// 的区别是幅度小且局部：不碰肢体与撑地，站立伺服/腿的 plant-and-trail 自己消化——
+	/// 身体被推得后滑时踩住的脚相对落后超阈重迈，踉跄后退步涌现。宿主传打中的 chunk
+	/// （头/胸/髋），断肢命中的踉跄仍走 Sever 的 staggerImpulse 通道。</summary>
+	public void Impact(BodyChunk chunk, Vector3 velocityPerTick)
+	{
+		chunk.Vel += velocityPerTick;
+	}
+
+	/// <summary>朝向冲击（R19，opt-in——回归路线不调用 → 基线零漂移）：绕 up 轴扭转 Facing
+	/// （侧向命中肢体的躯干拧转，宿主按 力臂×枪向 的转矩符号定正负）。Facing 是全套伺服的
+	/// 目标轴——扭转即整身姿态偏转；恢复交给既有机制涌现：有移动意图时 SlewFacing 按转速限
+	/// 拽回意图方向（拧身—甩回的踉跄），宿主的吃痛窗内无意图则保持拧姿。头伺服若在盯目标
+	/// （GrabTarget/LookTarget）会当场反向咬住目标点——身体拧、瞪视不移，正是吃痛的凶相。</summary>
+	public void ImpactTwist(float yawRadians, Vector3 up)
+	{
+		Vector3 axis = SafeNormalized(up, Vector3.Up);
+		Facing = SafeNormalized(Facing.Rotated(axis, yawRadians), Facing);
 	}
 
 	/// <summary>宿主冲量注入（击飞）：全 chunk 同一速度增量，腿手松开、撑地清零；
@@ -474,14 +514,16 @@ public sealed class RatFiendLocomotionController
 	}
 
 	/// <summary>头部双伺服（Humanoid 同构，aim 按姿态混合）：
-	/// 耷拉（前下 ≈42°）↔ 抬头平视 按 r 连续混合；爬行覆盖为微抬头看路；攻击（GrabTarget
-	/// 非空）覆盖为直视目标。轴外顶沿 aim 顶（低头时顶向前下——与伺服目标同向，防打架）。</summary>
+	/// 耷拉（前下 ≈42°）↔ 抬头平视 按 r 连续混合；爬行覆盖为微抬头看路；攻击/凝视
+	/// （GrabTarget ?? LookTarget 非空）覆盖为直视目标（Grab 优先；凝视也压过爬行——
+	/// 断腿爬行的追杀同样盯猎物）。轴外顶沿 aim 顶（低头时顶向前下——与伺服目标同向，
+	/// 防打架）。</summary>
 	private void ApplyHeadServo(Vector3 up)
 	{
 		Vector3 aim;
-		if (GrabTarget is { } grab)
+		if ((GrabTarget ?? LookTarget) is { } focus)
 		{
-			aim = Dir(Chest.Pos, grab);
+			aim = Dir(Chest.Pos, focus);
 		}
 		else if (Crawling)
 		{
@@ -691,6 +733,17 @@ public sealed class RatFiendLocomotionController
 		float runSpeed = Conscious && effMove != Vector3.Zero ? RunSpeed : 0f;
 		Vector3 right = SafeNormalized(Facing.Cross(up), Vector3.Right);
 
+		// R15 走姿慢摆：摆动期逼近速度按 Gait 调制——walk 带宽内全额减速（慢下来的是
+		// 抬脚→落下的腾空段；步频由前瞻释放循环决定基本不动），Gait 越过慢摆窗才恢复
+		// 全速。踩住的脚在吸附分支里被钳在落点，不受此缩放影响（TickArms 摆臂同款手法）。
+		// 爬行豁免（按 CrawlFactor 混回全速）：爬行蹬地是推进链的一部分，慢摆削抓地
+		// 占空比——矩阵 crawl-step 在 RunSpeed 0.6 下卡台阶前的红灯实证（smoke 爬行断言
+		// 全部驱动 RunSpeed 1.0，Gait 越窗后豁不豁免同值，故只有矩阵路线暴露）。
+		float swingScale = Mathf.Lerp(
+			Mathf.Lerp(_p.LegSwingSpeedFactor, 1f,
+				SaturatedInverseLerp(_p.LegSwingBlendStart, _p.LegSwingBlendEnd, Gait)),
+			1f, CrawlFactor);
+
 		// R11 反相自举：前瞻落点是公共的（髋前 ≈0.46m），两腿一旦近同相（前后间距塌缩），
 		// 纯时间错位会被逐周期原样保留——出生 stagger 只有 0.1m，长步幅慢步频下走成
 		// 双脚并排的「并步跳」。两脚同时踩稳、间距 < LegPhaseMinGap 且居后脚已过髋
@@ -712,6 +765,7 @@ public sealed class RatFiendLocomotionController
 			Limb leg = Legs[i];
 			if (!LegSevered(i))
 			{
+				leg.HuntSpeed = _p.LegSpeed * swingScale;
 				leg.Tick(ctx, stepDir, up, Legs, _p.SmoothenLegMovement, runSpeed);
 				continue;
 			}
@@ -738,10 +792,12 @@ public sealed class RatFiendLocomotionController
 
 	/// <summary>
 	/// 手臂优先级链（Humanoid TickArms 的物种版）：对每只手固定序取第一条命中的分支——
-	/// ① 昏迷 → 垂落；② 断臂 → 垂落（残肢短摆，EffectiveLength 钳制，永不参与撑地）；
+	/// ① 昏迷 → 垂落；② 断臂 → 垂落（残肢短摆 + 肩侧垂位弹簧防中线收敛，
+	///    EffectiveLength 钳制，永不参与撑地）；
 	/// ③ 攻击抓取（GrabTarget）→ 沿「胸→目标」前伸（可及半径钳制）；
 	/// ④ 爬行 → 撑地子链（plant-and-trail：锁点身体爬过 = trail，失效/轮到本手重找）；
-	/// ⑤ 走/跑混合 → 垂摆（读对侧腿相位，天然反相随步频）↔ 前伸欲抓，按 r 连续混合；
+	/// ⑤ 走/跑混合 → 垂摆（读对侧腿相位，天然反相随步频）↔ 前伸欲抓，按 r 连续混合
+	///    （LookTarget 非空时权重下限 LookArmRaise = 猎杀备抓，站定凝视也进本分支）；
 	/// ⑥ 闲置 → 慢速垂到身侧。链尾统一 RatArm.Tick 做臂长约束/腋窝排斥/出地形。
 	/// </summary>
 	private void TickArms(in TickContext ctx, Vector3 up, Vector3 effMove)
@@ -761,8 +817,19 @@ public sealed class RatFiendLocomotionController
 			}
 			else if (arm.Severed)
 			{
+				// 残肢垂位偏置（R17）：Dangle 的臂长钳制锚在胸心，纯自重的平衡点是胸心
+				// 正下方——双断臂时两截残肢会收敛到中线，正面读成「倒三角围脖」。照断腿
+				// 残肢的先例加带肩侧偏的垂位弹簧（侧偏 = 渲染肩位同款 Chest.Radius·0.78），
+				// 自重/臂长钳制/出地形仍由链尾 RatArm.Tick 完成。注意目标位本身不可达
+				// （下垂 0.8·EffLen + 重力沉降 DangleGravity/StumpSpring 超出可及半径，
+				// 与腿残肢先例同构）：真实平衡位是钳制球面上沿合力方向的近竖直投影，
+				// 侧偏靠弹簧的切向残量存活、被重力约 3:1 稀释——StumpSpring 降到 ~0.04
+				// 以下侧偏就塌回中线（smoke [ARM-STUMP] 会红），调参前先算这笔账。
 				arm.GrabPos = null;
 				arm.Mode = RatArm.ArmMode.Dangle;
+				Vector3 stumpDangle = Chest.Pos + right * (arm.Side * Chest.Radius * 0.78f)
+					- up * (arm.EffectiveLength * 0.8f);
+				arm.Vel = arm.Vel * _p.StumpDamping + (stumpDangle - arm.Pos) * _p.StumpSpring;
 			}
 			else if (GrabTarget is { } grab)
 			{
@@ -772,19 +839,29 @@ public sealed class RatFiendLocomotionController
 				Vector3 to = grab - Chest.Pos;
 				float dist = to.Length();
 				Vector3 dir = dist < 1e-6f ? Facing : to / dist;
-				arm.HuntPos = Chest.Pos + dir * Mathf.Min(dist, arm.EffectiveLength);
+				Vector3 huntPos = Chest.Pos + dir * Mathf.Min(dist, arm.EffectiveLength);
+				if (GrabHandSpread != 0f)
+				{
+					// 显式零判而非无脑加零向量：−0.0 + 0.0 = +0.0 会翻符号位，
+					// 默认路径必须与旧行为逐位相同（哈希基线零漂移的硬要求）。
+					huntPos += right * (arm.Side * GrabHandSpread);
+				}
+				arm.HuntPos = huntPos;
 			}
 			else if (Crawling)
 			{
 				TickCrawlArm(ctx, up, right, arm, myTurn);
 			}
-			else if (effMove != Vector3.Zero)
+			else if (effMove != Vector3.Zero || LookTarget is not null)
 			{
 				// 走/跑混合。摆动读对侧腿脚端沿 Facing 的超前量（右臂随左腿）：零新增状态、
 				// 天然反相、随真实步频自适应——sin(TickIndex) 会与步频脱钩，低通速度没有相位。
+				// R16b 凝视备抓：LookTarget 非空时混合权重下限抬到 LookArmRaise——低速逼近
+				// 猎物手保持前伸备抓不落回垂摆；站定凝视（effMove 零）也进本分支不落身侧。
 				Limb opposite = Legs[1 - i];
 				float swing = Mathf.Clamp(
 					(opposite.Pos - Hips.Pos).Dot(Facing) / _p.LegLength, -1f, 1f);
+				float armR = LookTarget is not null ? Mathf.Max(r, _p.LookArmRaise) : r;
 				Vector3 walkTarget = Chest.Pos
 					+ right * (arm.Side * (Chest.Radius + arm.Radius + 0.02f))
 					+ Facing * (_p.ArmWalkForwardBias + swing * _p.ArmSwingAmplitude)
@@ -795,8 +872,8 @@ public sealed class RatFiendLocomotionController
 					+ up * (arm.EffectiveLength * _p.RunReachUp);
 				arm.GrabPos = null;
 				arm.Mode = RatArm.ArmMode.HuntRelativePosition;
-				arm.HuntPos = walkTarget.Lerp(runTarget, r);
-				arm.HuntSpeed = arm.DefaultHuntSpeed * Mathf.Lerp(_p.ArmSwingSpeedFactor, 1f, r);
+				arm.HuntPos = walkTarget.Lerp(runTarget, armR);
+				arm.HuntSpeed = arm.DefaultHuntSpeed * Mathf.Lerp(_p.ArmSwingSpeedFactor, 1f, armR);
 			}
 			else
 			{

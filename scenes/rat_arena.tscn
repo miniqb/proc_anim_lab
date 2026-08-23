@@ -1,6 +1,6 @@
-[gd_scene format=3]
+[gd_scene format=3 uid="uid://q11ojptie0b0"]
 
-[ext_resource type="Script" path="res://scripts/rat_sandbox/RatArenaWorld.cs" id="1_world"]
+[ext_resource type="Script" uid="uid://by5k8rlc15utk" path="res://scripts/rat_sandbox/RatArenaWorld.cs" id="1_world"]
 
 [sub_resource type="Environment" id="environment"]
 background_mode = 1
@@ -10,32 +10,38 @@ ambient_light_color = Color(0.55, 0.63, 0.76, 1)
 ambient_light_energy = 0.62
 tonemap_mode = 2
 
-[node name="RatArenaWorld" type="Node3D"]
+[node name="RatArenaWorld" type="Node3D" unique_id=2137416562]
 script = ExtResource("1_world")
+HitImpactHead = 0.4
+HitImpactBody = 0.3
+HitImpactLimb = 0.15
+HeadAimAssist = 0.03
+TorsoAimAssist = 0.03
+LimbAimAssist = 0.06
 
-[node name="Camera3D" type="Camera3D" parent="."]
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1289620247]
 transform = Transform3D(1, 0, 0, 0, 0.9145, 0.4048, 0, -0.4048, 0.9145, 13, 14, 36)
 current = true
 fov = 62.0
 far = 200.0
 
-[node name="KeyLight" type="DirectionalLight3D" parent="."]
+[node name="KeyLight" type="DirectionalLight3D" parent="." unique_id=56714348]
 transform = Transform3D(0.75121397, 0.5439634, -0.37387356, -0.122137785, 0.671199, 0.7311458, 0.6486601, -0.50358284, 0.5706526, 0, 0, 0)
 light_color = Color(0.8, 0.89, 1, 1)
 light_energy = 1.25
 shadow_enabled = true
 
-[node name="WarmFill" type="OmniLight3D" parent="."]
+[node name="WarmFill" type="OmniLight3D" parent="." unique_id=1034071528]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22, 8, 10)
 light_color = Color(1, 0.56, 0.34, 1)
 light_energy = 5.0
 omni_range = 28.0
 
-[node name="CoolFill" type="OmniLight3D" parent="."]
+[node name="CoolFill" type="OmniLight3D" parent="." unique_id=376776750]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 13, 2.8, 10)
 light_color = Color(0.45, 0.6, 0.9, 1)
 light_energy = 3.0
 omni_range = 24.0
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=216717669]
 environment = SubResource("environment")

@@ -56,6 +56,8 @@ public static class RatFiendFactory
 		StepLength = 0.65f,
 		LiftFeet = 0.25f,
 		LegLateral = 0.18f,
+		LegSwingSpeedFactor = 0.55f, // 0.24×0.45=0.108 破 §6.5 速度下界；0.55 → 0.132
+
 		HipRideHeight = 0.7f,
 		ArmLength = 1.3f,
 		HandRadius = 0.075f,

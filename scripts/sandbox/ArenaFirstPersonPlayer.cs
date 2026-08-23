@@ -49,6 +49,20 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
     private float _pitch;
     private Vector3 _shakeOffset;
     private Vector3 _shakeEuler;
+    private Vector3 _externalVelocity;
+
+    /// <summary>外部冲量衰减（每物理步保留系数）：0.85^n 几何衰减，40Hz 下 ≈0.5s 耗尽，
+    /// 3m/s 冲量净位移 ≈ 3×dt/(1−0.85) ≈ 0.5m。</summary>
+    private const float ExternalVelocityDecay = 0.85f;
+
+    /// <summary>
+    /// 外部冲量通道（鼠煞竞技场放人推离用，opt-in——默认零、不叠加时行为逐帧不变）：
+    /// 「无输入即刻停」语义会把直接写进 <see cref="CharacterBody3D.Velocity"/> 的推离
+    /// 速度在下一物理步一步归零（位移恒零，推离成死机制——R18 评审实证）；本通道在
+    /// 归零/覆写**之后**叠加、逐步几何衰减，推离才真的把人推开。锁定/冻结期不叠加
+    /// （被抓着不该被外力挪动），解锁后残余继续生效。
+    /// </summary>
+    public void AddImpulse(Vector3 velocity) => _externalVelocity += velocity;
 
     public bool Active { get; private set; }
 
@@ -184,6 +198,7 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
     {
         GlobalPosition = floorPosition + new Vector3(0f, SpawnClearance, 0f);
         Velocity = Vector3.Zero;
+        _externalVelocity = Vector3.Zero;
         Vector3 to = lookAt - GlobalPosition;
         // Godot 里 -Z 是前方：yaw 使 -basis.Z 指向目标。
         if (to.LengthSquared() > 1e-6f)
@@ -240,6 +255,12 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
             velocity.X = Mathf.MoveToward(velocity.X, 0f, MoveSpeed);
             velocity.Z = Mathf.MoveToward(velocity.Z, 0f, MoveSpeed);
         }
+
+        // 外部冲量在归零/覆写之后叠加（见 AddImpulse）；未用时恒零，行为逐帧不变。
+        velocity += _externalVelocity;
+        _externalVelocity *= ExternalVelocityDecay;
+        if (_externalVelocity.LengthSquared() < 1e-6f)
+            _externalVelocity = Vector3.Zero;
 
         Velocity = velocity;
         MoveAndSlide();
