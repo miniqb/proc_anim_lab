@@ -54,7 +54,16 @@
 会被丢弃并按新输入重新探测；停驶不会把残留 `MoveDir` 当成重捕获命令。
 
 每节通过平行运输维护 `Forward`、`Side`、`SupportNormal` 局部坐标系，并独立执行重力抵消、
-法向贴面伺服和路径切向推进。因此同一时刻可以前半在墙上、后半仍在地面。非相邻节只在
+法向贴面伺服和路径切向推进。因此同一时刻可以前半在墙上、后半仍在地面。
+
+贴面伺服（劲度 `SurfaceServo`）本身是一根弹簧。移动时切向速度由推进伺服（增益 0.35）持续
+压住，但**停驶那一支整块消失**：切向只剩 `Body.AirFriction` 衰减，阻尼比 ζ≈0.06，整条身体
+会绕轨迹目标以 2π/√`SurfaceServo` ≈ 13 tick 的周期前后弹好几秒（short 预设实测峰值回退
+0.13m ≈ 15% 体长、14 次换向、约 6 秒才收敛）。`StanceDamping` 就是补上的那一项站立摩擦：
+停驶时按支撑可信度消去切平面内的残余速度，把 ζ 拉到临界附近（四预设的临界值都在 0.48~0.53，
+故取共享默认 `0.55`；再高会让长体收尾变成缓慢蠕行）。它排在**重力抵消之前**，否则会连斜坡上
+的抗重力冲量一起吃掉；也按 `SupportConfidence` 缩放，所以坠落与 `Launch` 当帧不受影响。
+置 0 即退回旧的无阻尼贴面弹簧，是 smoke 里的消融红灯。非相邻节只在
 确定性空间桶内做有上限的对称排斥，且跳过索引距离不超过 2 的相邻结构，避免穿身同时保持
 长体查询接近线性增长。相邻刚性连接参与碰撞后结构恢复，但只撤销碰撞相对约束松弛末新增的
 违反；候选仍须通过接触可行锥与 MTD，因此不会用“拉直”重新压进地形。
@@ -121,6 +130,9 @@ controller.Tick(new TickContext(gravityPerTick, terrain, tick));
   `Wall → LowerFloor` 顺序、尾端预算、下降后续行、路径不回访身体内部及非相邻节不成团；
 - 显式 `RequestedLeadEnd` 头尾切换、`MoveTarget` 到达/清除、`Shift`、`Teleport`、`Launch`、
   支撑恢复和确定性自避；
+- 停驶收敛（`idle=`）：走 160 tick 后停 80 tick，质心沿行进轴的**峰值回退**不超过 0.04m、
+  速度换向不超过 2 次（实测 0.015m / 0 次）；同一场景把 `StanceDamping` 归零必须明显更晃
+  （实测 0.194m / 10 次）——阈值配消融红灯，避免将来被无关改动顺手调绿；
 - 薄墙足端恢复：short 中心扫掠、armored 低速大脚球壳 MTD、同侧撞墙不误复位，以及
   停驶 stance 的既有抓点被墙隔断；两条动态恢复与 stance 遮挡均在 4 tick 内完成；
 - 18 节 long 在解析 0.4m×3m 窄墙上的 Start/End 镜像前向翻越：领端和尾端球体都必须
@@ -143,18 +155,18 @@ Godot 全矩阵当前共 **45 项 = 20 项 Lizard + 13 项 Centipede + 4 项 Vul
 | `centipede/long` | `B66DAAB5D006190E` |
 | `centipede/armored` | `A6EDF4704829C261` |
 | `centipede/ribbon` | `EB6011908D0FAA19` |
-| `centipede-course-short` | `BB6696619749832D` |
-| `centipede-course-long` | `A2BE4857DB102C19` |
-| `centipede-step-down-armored` | `ECC5207E14979A28` |
-| `centipede-narrow-wall-long-end` | `413E289A97ABD487` |
-| `centipede-embed-long` | `2C8B2D67731F2B7E` |
-| `centipede-wallside-long` | `501B7C44E06FA68B` |
+| `centipede-course-short` | `129EDA823C087292` |
+| `centipede-course-long` | `78F8033FEF622F18` |
+| `centipede-step-down-armored` | `C39A33DB45EBB367` |
+| `centipede-narrow-wall-long-end` | `7611E4B219C400F9` |
+| `centipede-embed-long` | `9C41F605B14C3EE7` |
+| `centipede-wallside-long` | `13B10CEAF34AAF6E` |
 
 真实 Jolt 课程硬指标：short/long 的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、
 `maxConnectionRun=3/8`，最大尾端滞后/预算为 `15/80`、`89/184` tick，穿透均为 `0m`。
 固定头下阶梯中领/尾端在 tick `51/121` 落地，滞后 `70/120`，净前进 `3.387m`，
 终态非相邻间距为半径和 `1.917×`，严重成团连续 `0` tick。
-固定 End 窄墙场景完成一次前向翻越后停驶 `381` tick，终态连接偏差 `7%`、
+固定 End 窄墙场景完成一次前向翻越后停驶 `381` tick，终态连接偏差 `5%`、
 最大深断链连续 `15` tick，身体与脚端穿透均为 `0m`。
 
 ## 6. 默认非目标

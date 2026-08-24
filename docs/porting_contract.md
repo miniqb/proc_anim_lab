@@ -523,7 +523,9 @@ RatFiendLocomotionController rat = RatFiendFactory.CreateController(origin, forw
   → 腿 → 支撑法线更新 → 持久拉直需求衰减。
 - `CentipedeLocomotionController.Tick` 同样由宿主一次性调用：应用 `RequestedLeadEnd`/派生意图 →
   延伸表面轨迹 → 逐节目标与自避 → 逐节力/`Body.Tick` → 行波足端 → 支撑观察。
-  宿主不得拆开或另排其中阶段。
+  宿主不得拆开或另排其中阶段。逐节力内部序也钉死：贴面伺服 → 法向阻尼 →
+  **停驶切向阻尼** → 重力抵消 → 推进 → 限速。切向阻尼必须排在重力抵消**之前**，
+  否则会连斜坡上的抗重力冲量一起吃掉。
 - `SpiderLocomotionController.Tick` 内部序同样不可拆分：解析方向/路径点 →
   读取上 tick 抓地并更新重力开关 → 按抓地贡献施加归一化推进与线性链拖尾姿态力 → `Body.Tick` →
   顶死换步 → `SpiderLeg.Tick`（足端积分、可达环、碰撞、两段 IK）→ 汇总下一 tick
@@ -1257,16 +1259,20 @@ Godot 侧新增 13 项 Centipede 矩阵：四预设巡逻、short 双跑/40Hz/�
 
 - short/long/armored/ribbon：`0F040547BFD02043` / `B66DAAB5D006190E` /
   `A6EDF4704829C261` / `EB6011908D0FAA19`；
-- course-short/course-long/step-down-armored：`BB6696619749832D` /
-  `A2BE4857DB102C19` / `ECC5207E14979A28`；
-- narrow-wall-long-end：`413E289A97ABD487`；
-- embed-long/wallside-long：`2C8B2D67731F2B7E` / `501B7C44E06FA68B`。
+- course-short/course-long/step-down-armored：`129EDA823C087292` /
+  `78F8033FEF622F18` / `C39A33DB45EBB367`；
+- narrow-wall-long-end：`7611E4B219C400F9`；
+- embed-long/wallside-long：`9C41F605B14C3EE7` / `13B10CEAF34AAF6E`。
+
+> 2026-08-24 停驶切向阻尼（`CentipedeParams.StanceDamping`）重定基线：只有含停驶段的
+> 六项换哈希，四预设巡逻逐字节不变；`walkDistance`、穿透、深断链全部不变，停驶终态
+> 连接偏差与抓地腿数变好。
 
 真实 Jolt 课程中，short/long 的 `maxNoneRun=4/10`、`maxBlockedRun=0/0`、
 `maxConnectionRun=3/8`，最大尾端滞后分别为 15/89 tick，对应预算 80/184 tick，
 穿透均为 `0m`。固定头下阶梯的领/尾端于 tick 51/121 落地，净前进 3.387m，
 终态非相邻间距为半径和 1.917 倍，严重成团连续 0 tick。
-固定 End 窄墙场景完成一次前向翻越后停驶 381 tick，终态连接偏差 7%，穿透 `0m`。
+固定 End 窄墙场景完成一次前向翻越后停驶 381 tick，终态连接偏差 5%，穿透 `0m`。
 
 DaddyLongLegs 的本轮地形卡腿专项覆盖：物理半径裁边的 tick-end 邻边审计、比 `TerrainSkin`
 更薄的墙、阻断边沿链迁移但触手 episode 连续、正交双墙、候选末端球失败与候选自避失败、失败

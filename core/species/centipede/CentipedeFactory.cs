@@ -317,6 +317,7 @@ public static class CentipedeFactory
 			SurfaceProbeDistance = parameters.SurfaceProbeDistance,
 			SurfaceServo = parameters.SurfaceServo,
 			SurfaceDamping = parameters.SurfaceDamping,
+			StanceDamping = parameters.StanceDamping,
 			SupportBlend = parameters.SupportBlend,
 			TrailSampleSpacing = parameters.TrailSampleSpacing,
 			CornerProbeSteps = parameters.CornerProbeSteps,

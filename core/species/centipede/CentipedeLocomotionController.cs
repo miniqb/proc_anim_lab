@@ -181,6 +181,8 @@ public sealed class CentipedeLocomotionController
     public float SurfaceProbeDistance = 0.45f;
     public float SurfaceServo = 0.22f;
     public float SurfaceDamping = 0.35f;
+    /// <summary>站立切向阻尼：停驶时每 tick 消去的贴面平面速度比例（0=旧的无阻尼弹簧）。</summary>
+    public float StanceDamping = 0.55f;
     public float SupportBlend = 0.25f;
     public float TrailSampleSpacing = 0.04f;
     public int CornerProbeSteps = 6;
@@ -1253,6 +1255,17 @@ public sealed class CentipedeLocomotionController
             float normalVelocity = chunk.Vel.Dot(segment.SupportNormal);
             chunk.Vel -= segment.SupportNormal * normalVelocity
                 * (SurfaceDamping * segment.SupportConfidence);
+            if (!HasMoveIntent && StanceDamping > 0f)
+            {
+                // 站立摩擦。移动时切向速度由下面的推进伺服（增益 0.35）持续压住，停驶后
+                // 那一支整块消失，贴面伺服（劲度 SurfaceServo）就退化成只靠 AirFriction
+                // 衰减的欠阻尼弹簧（ζ≈0.06），整条身体会以 2π/√SurfaceServo ≈ 13 tick
+                // 的周期沿轨迹前后弹好几秒。这里在切平面内把残余速度按支撑可信度压掉，
+                // 使 ζ 落到临界附近；放在重力抵消之前，才不会连斜坡上的抗重力冲量一起吃掉。
+                Vector3 planar = chunk.Vel
+                    - segment.SupportNormal * chunk.Vel.Dot(segment.SupportNormal);
+                chunk.Vel -= planar * (StanceDamping * segment.SupportConfidence);
+            }
             chunk.Vel -= ctx.GravityPerTick * segment.SupportConfidence;
 
             if (HasMoveIntent)

@@ -164,6 +164,8 @@ public sealed class CentipedeParams
     public float SurfaceProbeDistance = 0.65f;
     public float SurfaceServo = 0.2f;
     public float SurfaceDamping = 0.55f;
+    /// <summary>停驶时每 tick 消去的贴面切向速度比例；0 退回旧的无阻尼贴面弹簧。</summary>
+    public float StanceDamping = 0.55f;
     public float SupportBlend = 0.25f;
     public float TrailSampleSpacing = 0.1f;
     public int CornerProbeSteps = 9;
@@ -211,6 +213,7 @@ public sealed class CentipedeParams
         CentipedeSegmentParams.RequirePositive(SurfaceProbeDistance, nameof(SurfaceProbeDistance));
         CentipedeSegmentParams.RequireNonNegative(SurfaceServo, nameof(SurfaceServo));
         CentipedeSegmentParams.RequireUnit(SurfaceDamping, nameof(SurfaceDamping));
+        CentipedeSegmentParams.RequireUnit(StanceDamping, nameof(StanceDamping));
         CentipedeSegmentParams.RequireUnitPositive(SupportBlend, nameof(SupportBlend));
         CentipedeSegmentParams.RequirePositive(TrailSampleSpacing, nameof(TrailSampleSpacing));
         if (CornerProbeSteps < 1)

@@ -986,11 +986,37 @@ public static class CentipedeSmoke
             && recoveredAfter is >= 1 and <= 4 && once && resetExact;
     }
 
+    /// <summary>
+    /// 停驶收敛。除了腿相位与支撑，这里还盯住整条身体沿轨迹的前后摆：贴面伺服本身是
+    /// 一根弹簧，切向若无阻尼就只剩 AirFriction 衰减（ζ≈0.06），停驶后身体会以
+    /// 2π/√SurfaceServo ≈ 13 tick 的周期来回弹数秒。断言取消融形式——同一场景把
+    /// StanceDamping 归零必须明显更晃，避免阈值被将来的无关改动“顺手调绿”。
+    /// </summary>
     private static bool CheckIdleHold(out string message)
     {
+        IdleRun damped = RunIdleHold(CentipedeFactory.Short().StanceDamping);
+        IdleRun ablated = RunIdleHold(0f);
+
+        bool calm = damped.MaxRetrograde <= 0.04f && damped.Reversals <= 2;
+        bool ablationRed = ablated.MaxRetrograde >= damped.MaxRetrograde * 2f
+            && ablated.Reversals > damped.Reversals;
+        message = $"80tick phase-held={damped.PhaseHeld}, " +
+                  $"gripping={damped.Gripping}/{damped.LegCount}, " +
+                  $"support={damped.SupportRatio:P0}, retro={damped.MaxRetrograde:F4}m " +
+                  $"(<=0.04), reversals={damped.Reversals} (<=2), " +
+                  $"ablation(damping=0)={ablated.MaxRetrograde:F4}m/{ablated.Reversals}, " +
+                  $"finite={damped.Finite}";
+        return damped.PhaseHeld && damped.Gripping > 0 && damped.SupportRatio >= 0.8f
+            && calm && ablationRed && damped.Finite;
+    }
+
+    private static IdleRun RunIdleHold(float stanceDamping)
+    {
         var terrain = new PlaneTerrainQuery(0f);
+        CentipedeParams parameters = CentipedeFactory.Short();
+        parameters.StanceDamping = stanceDamping;
         CentipedeLocomotionController controller = CentipedeFactory.CreateController(
-            new Vector3(0f, 0.5f, 0f), CentipedeFactory.Short());
+            new Vector3(0f, 0.5f, 0f), parameters);
         Vector3 gravity = GravityPerTick();
         long tick = 0;
         for (int i = 0; i < 160; i++)
@@ -1003,24 +1029,56 @@ public static class CentipedeSmoke
         controller.MoveDir = Vector3.Zero;
         controller.MoveTarget = null;
         controller.RunSpeed = 0f;
+        // 停驶后只看质心沿行进轴的轨迹：峰值回退量就是肉眼看到的“往回甩”，
+        // 速度换号次数则是“弹了几个来回”。
+        float peak = float.NegativeInfinity;
+        float retrograde = 0f;
+        int reversals = 0;
+        float previousVelocity = 0f;
         for (int i = 0; i < 80; i++)
         {
             controller.Tick(new TickContext(gravity, terrain, ++tick));
+            CenterOfMass(controller.Body, out float position, out float velocity);
+            peak = Mathf.Max(peak, position);
+            retrograde = Mathf.Max(retrograde, peak - position);
+            if (i > 0 && Mathf.Abs(velocity) > 5e-4f
+                && Mathf.Sign(velocity) != Mathf.Sign(previousVelocity))
+            {
+                reversals++;
+            }
+            previousVelocity = velocity;
         }
 
         int gripping = 0;
-        bool settled = true;
+        bool phaseHeld = true;
         foreach (CentipedeLeg leg in controller.Legs)
         {
             gripping += leg.Gripping ? 1 : 0;
-            settled &= !leg.IsSwinging && Mathf.Abs(leg.Phase) <= Epsilon;
+            phaseHeld &= !leg.IsSwinging && Mathf.Abs(leg.Phase) <= Epsilon;
         }
-        bool supported = controller.SupportRatio >= 0.8f;
-        message = $"80tick phase-held={settled}, gripping={gripping}/{controller.Legs.Count}, " +
-                  $"support={controller.SupportRatio:P0}, finite={controller.DeterministicStateIsFinite}";
-        return settled && gripping > 0 && supported
-            && controller.DeterministicStateIsFinite;
+        return new IdleRun(phaseHeld, gripping, controller.Legs.Count,
+            controller.SupportRatio, retrograde, reversals,
+            controller.DeterministicStateIsFinite);
     }
+
+    /// <summary>沿 +X（行进轴）的质量加权质心位置与速度。</summary>
+    private static void CenterOfMass(Body body, out float position, out float velocity)
+    {
+        float mass = 0f;
+        position = 0f;
+        velocity = 0f;
+        foreach (BodyChunk chunk in body.Chunks)
+        {
+            position += chunk.Pos.X * chunk.Mass;
+            velocity += chunk.Vel.X * chunk.Mass;
+            mass += chunk.Mass;
+        }
+        position /= mass;
+        velocity /= mass;
+    }
+
+    private readonly record struct IdleRun(bool PhaseHeld, int Gripping, int LegCount,
+        float SupportRatio, float MaxRetrograde, int Reversals, bool Finite);
 
     private static bool CheckFiniteAndQueryScaling(out string message)
     {
