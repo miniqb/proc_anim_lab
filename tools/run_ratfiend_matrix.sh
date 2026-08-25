@@ -29,7 +29,9 @@ HASH_BROAD_WALK=64B43366E9A73530
 HASH_BROAD_SEVER_LEG=621C5100A8580E6D
 HASH_WHELP_WALK=872592BFEE30E365
 HASH_WHELP_SEVER_LEG=336901A56EE814F6
-HASH_TRAVERSAL=241E124E85ADDBB6
+# R22 翻越手撑（2026-08-25）：Mount 手撑桌面 + 拽升/油门 ∝ 撑稳手数——仅本路线重钉，
+# 其余 15 条基线必须原样通过（机制只在 TraversalIntent=MountAndCross 分支内活动）。
+HASH_TRAVERSAL=439134869AF45272
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then

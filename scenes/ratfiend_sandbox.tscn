@@ -1,6 +1,6 @@
-[gd_scene format=3]
+[gd_scene format=3 uid="uid://cvgwo5ig0j6fp"]
 
-[ext_resource type="Script" path="res://scripts/ratfiend_sandbox/RatFiendSandboxWorld.cs" id="1_world"]
+[ext_resource type="Script" uid="uid://cggfy2v75j8au" path="res://scripts/ratfiend_sandbox/RatFiendSandboxWorld.cs" id="1_world"]
 
 [sub_resource type="BoxShape3D" id="shape_floor"]
 size = Vector3(44, 0.4, 44)
@@ -9,7 +9,7 @@ size = Vector3(44, 0.4, 44)
 size = Vector3(44, 0.4, 44)
 
 [sub_resource type="StandardMaterial3D" id="mat_floor"]
-albedo_color = Color(0.20, 0.21, 0.24, 1)
+albedo_color = Color(0.2, 0.21, 0.24, 1)
 roughness = 0.9
 
 [sub_resource type="BoxShape3D" id="shape_step"]
@@ -19,7 +19,7 @@ size = Vector3(7, 0.3, 6)
 size = Vector3(7, 0.3, 6)
 
 [sub_resource type="StandardMaterial3D" id="mat_step"]
-albedo_color = Color(0.28, 0.30, 0.33, 1)
+albedo_color = Color(0.28, 0.3, 0.33, 1)
 roughness = 0.85
 
 [sub_resource type="BoxShape3D" id="shape_wall"]
@@ -29,7 +29,7 @@ size = Vector3(1, 3, 6)
 size = Vector3(1, 3, 6)
 
 [sub_resource type="StandardMaterial3D" id="mat_wall"]
-albedo_color = Color(0.33, 0.30, 0.28, 1)
+albedo_color = Color(0.33, 0.3, 0.28, 1)
 roughness = 0.8
 
 [sub_resource type="BoxShape3D" id="shape_traversal_table"]
@@ -46,62 +46,61 @@ ambient_light_color = Color(0.6, 0.66, 0.76, 1)
 ambient_light_energy = 0.55
 tonemap_mode = 2
 
-[node name="RatFiendSandboxWorld" type="Node3D"]
+[node name="RatFiendSandboxWorld" type="Node3D" unique_id=873868957]
 script = ExtResource("1_world")
 
-[node name="Terrain" type="Node3D" parent="."]
+[node name="Terrain" type="Node3D" parent="." unique_id=952418261]
 
-[node name="Floor" type="StaticBody3D" parent="Terrain"]
-position = Vector3(0, -0.2, 0)
+[node name="Floor" type="StaticBody3D" parent="Terrain" unique_id=1739954787]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.2, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Floor" unique_id=671979906]
 shape = SubResource("shape_floor")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Floor" unique_id=1719613051]
 mesh = SubResource("mesh_floor")
 surface_material_override/0 = SubResource("mat_floor")
 
-[node name="Step" type="StaticBody3D" parent="Terrain"]
-position = Vector3(6.5, 0.15, 0)
+[node name="Step" type="StaticBody3D" parent="Terrain" unique_id=546274417]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.5, 0.15, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/Step" unique_id=1639951127]
 shape = SubResource("shape_step")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/Step" unique_id=39083761]
 mesh = SubResource("mesh_step")
 surface_material_override/0 = SubResource("mat_step")
 
-[node name="TurnWall" type="StaticBody3D" parent="Terrain"]
-position = Vector3(-9, 1.5, 0)
+[node name="TurnWall" type="StaticBody3D" parent="Terrain" unique_id=377938350]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -9, 1.5, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/TurnWall"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/TurnWall" unique_id=1967741691]
 shape = SubResource("shape_wall")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/TurnWall"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/TurnWall" unique_id=1566905805]
 mesh = SubResource("mesh_wall")
 surface_material_override/0 = SubResource("mat_wall")
 
-[node name="TraversalTable" type="StaticBody3D" parent="Terrain"]
-position = Vector3(0.5, 0.41, 12)
+[node name="TraversalTable" type="StaticBody3D" parent="Terrain" unique_id=1339654926]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0.41, 12)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/TraversalTable"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Terrain/TraversalTable" unique_id=461284870]
 shape = SubResource("shape_traversal_table")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/TraversalTable"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Terrain/TraversalTable" unique_id=1972691720]
 mesh = SubResource("mesh_traversal_table")
 surface_material_override/0 = SubResource("mat_step")
 
-[node name="Camera3D" type="Camera3D" parent="."]
-position = Vector3(9.5, 6.5, 12.5)
-rotation = Vector3(-0.3, 0.58, 0)
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1301201689]
+transform = Transform3D(0.8364627, -0.16195215, 0.5235473, 0, 0.9553365, 0.29552022, -0.54802394, -0.24719164, 0.7991033, 9.5, 6.5, 12.5)
 current = true
 fov = 62.0
 
-[node name="KeyLight" type="DirectionalLight3D" parent="."]
-rotation = Vector3(-0.78, -0.55, -0.3)
+[node name="KeyLight" type="DirectionalLight3D" parent="." unique_id=1520889249]
+transform = Transform3D(0.70581603, 0.6031153, -0.37158546, -0.21008933, 0.67916167, 0.7032794, 0.6765252, -0.41831964, 0.60607123, 0, 0, 0)
 light_color = Color(0.85, 0.9, 1, 1)
 light_energy = 1.15
 shadow_enabled = true
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1165338244]
 environment = SubResource("env")

@@ -833,6 +833,13 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
   `EnableOrdinaryHighStepGate` 设为 true：此时普通行走只接受
   `WalkStepMaxRise=0.35m`，更高家具必须显式授权；`Off/Shadow` 保持 false，恢复 legacy
   对高表面的运动语义。Shift 平移意图目标，Teleport/Launch 清意图；默认 null 时旧哈希零漂移。
+  **R22 翻越手撑**（2026-08-25，改的是 Mount 阶段内部语义，输入面不变）：Mount 期双手
+  plant-and-trail 撑顶面（探针几何复用 CrawlProbe*，命中低于顶面 `MountSurfaceTolerance`
+  拒收），拽升强度 = `MountHaulBase + MountHaulPerHand × 撑稳手数`、未越顶的前向推进
+  油门 = `MountDriveBase + MountDrivePerHand × 撑稳手数`（钳 1；双手 = R22 前满速）——
+  翻越能力 ∝ 撑稳手数（断臂翻越显著变慢，宿主 2s 无进展看门狗语义不变：单手爬升速率
+  仍远超进展阈）。新增只读观测 `PlantedHandCount`（CrawlGripCount 的手臂分量，
+  一 tick 滞后固定序）。**仅 traversal 路线基线重钉**，其余基线逐位不变。
 
 - `GrabTarget`（`Vector3?`，宿主逐 tick 写/清）：攻击抓取目标。非 null 且清醒时双臂脱离
   步态摆动、沿「胸→目标」满伸（可及半径钳制），头 aim 自动转向目标。**抓住判定归宿主**：

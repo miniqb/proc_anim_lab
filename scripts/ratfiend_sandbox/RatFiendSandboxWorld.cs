@@ -32,6 +32,7 @@ public partial class RatFiendSandboxWorld : Node3D
     {
         "walk", "run", "yank", "sever-leg", "sever-arm-walk", "sever-both-legs",
         "sever-all", "attack", "sever-during-attack", "crawl-step", "traversal",
+        "traversal-loop",
     };
 
     /// <summary>K 键的断肢演示顺序（爬行观感优先：先断腿看三肢爬，再逐级削弱）。</summary>
@@ -120,7 +121,15 @@ public partial class RatFiendSandboxWorld : Node3D
     private bool _traversalCrossedExit;
     private float _traversalMaxTickDisplacement;
     private float _traversalMaxResidualPenetration;
+    private int _traversalMaxPlantedHands;
     private Vector3[] _traversalLastChunks = Array.Empty<Vector3>();
+    private bool _traversalLoopForward = true;
+    private int _traversalLoopDwell;
+    private int _traversalLoops;
+    private RatTraversalIntent? _autoVault;
+    private Vector3 _autoVaultDir;
+    private int _autoVaultTicks;
+    private Vector3 _driveDir; // --ratfiend-drive：交互模式恒向驾驶（演示/验证钩子）
 
     private bool Deterministic => _determinismTicks > 0;
 
@@ -188,7 +197,12 @@ public partial class RatFiendSandboxWorld : Node3D
         _traversalCrossedExit = false;
         _traversalMaxTickDisplacement = 0f;
         _traversalMaxResidualPenetration = 0f;
+        _traversalMaxPlantedHands = 0;
         _traversalLastChunks = new[] { _rat.Chest.Pos, _rat.Hips.Pos, _rat.Head.Pos };
+        _traversalLoopForward = true;
+        _traversalLoopDwell = 0;
+        _traversalLoops = 0;
+        _autoVault = null;
         if (_rendererBuilt)
         {
             _renderer.Build(this, _rat);
@@ -230,10 +244,22 @@ public partial class RatFiendSandboxWorld : Node3D
         {
             DriveRoute();
         }
+        else if (_route == "traversal-loop")
+        {
+            // 演示路线在窗口模式也自跑：翻越意图接管移动（WASD 不参与），
+            // 相机飞行 / K 断肢 / R 重生 / 1-4 预设热键照常可用。
+            ProcessPendingInteraction();
+            _rat.MoveTarget = null;
+            _rat.TraversalIntent = null;
+            _rat.MoveDir = Vector3.Zero;
+            _rat.RunSpeed = 0f;
+            DriveTraversalLoop();
+        }
         else
         {
             SampleInput();
             ProcessPendingInteraction();
+            MaybeAutoVault();
         }
 
         _rat.Tick(new TickContext(_gravityPerTick, _terrain, _tick));
@@ -260,7 +286,7 @@ public partial class RatFiendSandboxWorld : Node3D
             _rat.RunSpeed = 0f;
             return;
         }
-        Vector3 direction = Vector3.Zero;
+        Vector3 direction = _driveDir;
         if (Input.IsPhysicalKeyPressed(Key.W)) direction.Z -= 1f;
         if (Input.IsPhysicalKeyPressed(Key.S)) direction.Z += 1f;
         if (Input.IsPhysicalKeyPressed(Key.A)) direction.X -= 1f;
@@ -325,6 +351,76 @@ public partial class RatFiendSandboxWorld : Node3D
         }
     }
 
+    /// <summary>交互模式的自动翻越检测（≙ 主仓 RatFiendTraversalExecutor 的沙盒极简替身）：
+    /// 驾驶方向 0.9m 内探到竖直立面、且立面之后是高出脚下 0.35~1.15m（普通高抬步之外、
+    /// 主仓 CrossObstacle MaxRise 之内）的可站顶面时，合成 MountAndCross 意图——内核接管
+    /// 导向并触发 R22 手撑。到点 / 用户转向背离 / 4s 看门狗即撤销还给 WASD。只在交互
+    /// 模式运行，不进任何确定性路线。</summary>
+    private void MaybeAutoVault()
+    {
+        _rat.TraversalIntent = null;
+        Vector3 wish = _rat.MoveDir;
+        if (_autoVault is { } active)
+        {
+            _autoVaultTicks++;
+            bool steeredAway = wish != Vector3.Zero && wish.Dot(_autoVaultDir) < 0.2f;
+            if (_rat.AtTraversalTarget || steeredAway || _autoVaultTicks > 160)
+            {
+                _autoVault = null;
+            }
+            else
+            {
+                // 翻越是承诺动作：接管期间恒满油（≙ 主仓执行器 RunSpeed=1），
+                // 相机飞行把 RunSpeed 归零也不中断，靠看门狗兜底。
+                _rat.TraversalIntent = active;
+                _rat.RunSpeed = 1f;
+                return;
+            }
+        }
+        if (wish == Vector3.Zero || _rat.RunSpeed <= 0f)
+        {
+            return;
+        }
+
+        Vector3 up = Vector3.Up;
+        Vector3 fwd = wish.Normalized();
+        Vector3 chest = _rat.Chest.Pos;
+        if (!_terrain.Raycast(chest, chest - up * 2f, out TerrainHit floorHit))
+        {
+            return; // 悬空/出界：无脚下基准
+        }
+        float floorY = floorHit.Point.Y;
+        // 立面探测高度 0.45m：高于 WalkStepMaxRise（0.35）——普通台阶不触发。
+        Vector3 from = new(chest.X, floorY + 0.45f, chest.Z);
+        if (!_terrain.Raycast(from, from + fwd * 0.9f, out TerrainHit wall)
+            || Mathf.Abs(wall.Normal.Dot(up)) > 0.4f)
+        {
+            return;
+        }
+        // 立面之后探顶面：起点高于最大可翻高度，法线必须朝上（斜坡/内壁拒收）。
+        Vector3 overTop = new(wall.Point.X + fwd.X * 0.25f, floorY + 1.6f,
+            wall.Point.Z + fwd.Z * 0.25f);
+        if (!_terrain.Raycast(overTop, overTop - up * 1.55f, out TerrainHit top)
+            || top.Normal.Dot(up) < 0.5f)
+        {
+            return;
+        }
+        float rise = top.Point.Y - floorY;
+        if (rise is < 0.35f or > 1.15f)
+        {
+            return;
+        }
+        Vector3 guide = wall.Point + fwd * 0.9f;
+        _autoVault = new RatTraversalIntent(RatTraversalPhase.MountAndCross,
+            new Vector3(guide.X, top.Point.Y, guide.Z));
+        _autoVaultDir = fwd;
+        _autoVaultTicks = 0;
+        _rat.TraversalIntent = _autoVault;
+        _rat.RunSpeed = 1f;
+        GD.Print($"[RATFIEND-SANDBOX] auto-vault rise={rise:F2}m top={top.Point.Y:F2} " +
+                 $"guide=({guide.X:F2},{guide.Z:F2}) tick={_tick}");
+    }
+
     // ============================================================ 无头路线
 
     private void DriveRoute()
@@ -366,6 +462,9 @@ public partial class RatFiendSandboxWorld : Node3D
             case "traversal":
                 DriveTraversal();
                 break;
+            case "traversal-loop":
+                DriveTraversalLoop();
+                break;
         }
     }
 
@@ -403,6 +502,59 @@ public partial class RatFiendSandboxWorld : Node3D
         };
         _rat.TraversalIntent = new RatTraversalIntent(_traversalPhase, target);
         _rat.RunSpeed = _traversalCompleteTick < 0 ? 1f : 0f;
+    }
+
+    /// <summary>演示专用（不进矩阵）：桌子两侧往返翻越。相位机与 traversal 相同，
+    /// 完成一趟后原地站 1.2s 再折返——手撑窗口每 ~6s 重现一次，肉眼可反复观察；
+    /// 三段目标按桌心 x=0.5 镜像。窗口模式无需 --ratfiend-determinism 即自跑。</summary>
+    private void DriveTraversalLoop()
+    {
+        if (_traversalLoopDwell > 0)
+        {
+            _traversalLoopDwell--;
+            if (_traversalLoopDwell == 0)
+            {
+                _traversalLoopForward = !_traversalLoopForward;
+                _traversalPhase = RatTraversalPhase.Approach;
+            }
+            return; // 意图已清空 → 原地站立
+        }
+
+        if (_rat.AtTraversalTarget)
+        {
+            if (_traversalPhase == RatTraversalPhase.Stabilize)
+            {
+                _traversalStableTicks++;
+                if (_traversalStableTicks >= 8)
+                {
+                    _traversalLoops++;
+                    _waypointsReached++;
+                    _traversalStableTicks = 0;
+                    _traversalLoopDwell = 48;
+                    return;
+                }
+            }
+            else
+            {
+                _traversalPhase = (RatTraversalPhase)((int)_traversalPhase + 1);
+                _traversalPhaseChanges++;
+                _traversalStableTicks = 0;
+            }
+        }
+        else if (_traversalPhase == RatTraversalPhase.Stabilize)
+        {
+            _traversalStableTicks = 0;
+        }
+
+        float sign = _traversalLoopForward ? 1f : -1f;
+        Vector3 target = _traversalPhase switch
+        {
+            RatTraversalPhase.Approach => new Vector3(0.5f - 1.15f * sign, 0f, 12f),
+            RatTraversalPhase.MountAndCross => new Vector3(0.5f + 0.25f * sign, 0.82f, 12f),
+            _ => new Vector3(0.5f + 1.7f * sign, 0f, 12f),
+        };
+        _rat.TraversalIntent = new RatTraversalIntent(_traversalPhase, target);
+        _rat.RunSpeed = 1f;
     }
 
     private void DriveWalk()
@@ -665,7 +817,7 @@ public partial class RatFiendSandboxWorld : Node3D
             }
         }
 
-        if (_route == "traversal")
+        if (_route is "traversal" or "traversal-loop")
         {
             BodyChunk[] chunks = { _rat.Chest, _rat.Hips, _rat.Head };
             for (int i = 0; i < chunks.Length; i++)
@@ -681,6 +833,12 @@ public partial class RatFiendSandboxWorld : Node3D
                 }
             }
             _traversalCrossedExit |= _rat.Chest.Pos.X > 1.15f && _rat.Hips.Pos.X > 1.15f;
+            if (_traversalPhase == RatTraversalPhase.MountAndCross)
+            {
+                // R22 翻越手撑：Mount 期撑稳手数峰值（完好路线必须两手都撑上桌面）。
+                _traversalMaxPlantedHands = Math.Max(_traversalMaxPlantedHands,
+                    _rat.PlantedHandCount);
+            }
         }
     }
 
@@ -717,7 +875,8 @@ public partial class RatFiendSandboxWorld : Node3D
                  $"traversal={_traversalPhaseChanges}/{_traversalCompleteTick}/" +
                  $"{_traversalStableTicks} exit={_traversalCrossedExit} " +
                  $"maxStep={_traversalMaxTickDisplacement:F4}m " +
-                 $"penetration={_traversalMaxResidualPenetration:E3}m");
+                 $"penetration={_traversalMaxResidualPenetration:E3}m " +
+                 $"planted={_traversalMaxPlantedHands} loops={_traversalLoops}");
 
         var failures = new List<string>();
         if (_nonFinite)
@@ -821,13 +980,23 @@ public partial class RatFiendSandboxWorld : Node3D
                 if (_traversalPhaseChanges != 2 || _traversalCompleteTick < 0
                     || _traversalStableTicks < 8 || !_traversalCrossedExit
                     || _traversalMaxTickDisplacement >= 0.25f
-                    || _traversalMaxResidualPenetration >= 0.01f)
+                    || _traversalMaxResidualPenetration >= 0.01f
+                    || _traversalMaxPlantedHands != 2)
                 {
                     failures.Add($"翻越未达标（phases={_traversalPhaseChanges}, " +
                                  $"done={_traversalCompleteTick}, stable={_traversalStableTicks}, " +
                                  $"exit={_traversalCrossedExit}, " +
                                  $"step={_traversalMaxTickDisplacement:F4}, " +
-                                 $"penetration={_traversalMaxResidualPenetration:E3}）");
+                                 $"penetration={_traversalMaxResidualPenetration:E3}, " +
+                                 $"planted={_traversalMaxPlantedHands}）");
+                }
+                break;
+            case "traversal-loop":
+                // 演示路线的确定性自检：至少往返各一趟，且每趟 Mount 都双手撑稳。
+                if (_traversalLoops < 2 || _traversalMaxPlantedHands != 2)
+                {
+                    failures.Add($"往返翻越未达标（loops={_traversalLoops}, " +
+                                 $"planted={_traversalMaxPlantedHands}）");
                 }
                 break;
         }
@@ -851,6 +1020,10 @@ public partial class RatFiendSandboxWorld : Node3D
         {
             UpdateShowcaseCamera();
         }
+        else if (_driveDir != Vector3.Zero && !WantCameraFly)
+        {
+            UpdateShowcaseCamera(); // 恒向驾驶演示：解放键盘时顺带跟拍
+        }
         else
         {
             UpdateCameraFly((float)delta);
@@ -872,7 +1045,8 @@ public partial class RatFiendSandboxWorld : Node3D
             $"{LimbFlag(RatFiendLimbId.LegLeft)}{LimbFlag(RatFiendLimbId.LegRight)}   " +
             $"serial  {_rat.SeverSerial}\n" +
             $"grab  {(_rat.GrabTarget is not null ? "on" : "off")}   " +
-            $"hands  {(_rat.HandsOnTarget[0] ? "L" : "-")}{(_rat.HandsOnTarget[1] ? "R" : "-")}");
+            $"hands  {(_rat.HandsOnTarget[0] ? "L" : "-")}{(_rat.HandsOnTarget[1] ? "R" : "-")}   " +
+            $"vault  {(_autoVault is not null ? $"on planted={_rat.PlantedHandCount}" : "off")}");
     }
 
     private string LimbFlag(RatFiendLimbId id) => _rat.IsSevered(id) ? "X" : "o";
@@ -885,7 +1059,7 @@ public partial class RatFiendSandboxWorld : Node3D
             "sever-leg" or "sever-both-legs" or "sever-all" or "crawl-step"
                 => new Vector3(1.6f, 0.9f, 2.4f),
             "attack" or "sever-during-attack" => new Vector3(1.4f, 0.8f, 2.2f),
-            "traversal" => new Vector3(1.8f, 1.2f, 3.2f),
+            "traversal" or "traversal-loop" => new Vector3(1.8f, 1.2f, 3.2f),
             _ => new Vector3(2.0f, 1.2f, 2.8f),
         };
         _camera.GlobalPosition = center + offset;
@@ -1042,6 +1216,17 @@ public partial class RatFiendSandboxWorld : Node3D
                         throw new FormatException("perturb 必须有限");
                     }
                 }
+                else if (argument.StartsWith("--ratfiend-drive=", StringComparison.Ordinal))
+                {
+                    _driveDir = argument["--ratfiend-drive=".Length..].ToLowerInvariant() switch
+                    {
+                        "+x" => Vector3.Right,
+                        "-x" => Vector3.Left,
+                        "+z" => Vector3.Back,
+                        "-z" => Vector3.Forward,
+                        _ => throw new FormatException("drive 只接受 +x|-x|+z|-z"),
+                    };
+                }
                 else if (argument == "--ratfiend-formal=off")
                 {
                     _formalView = false;
@@ -1092,7 +1277,7 @@ public partial class RatFiendSandboxWorld : Node3D
         "sever-leg" or "sever-both-legs" => new Vector3(-14f, 0.5f, -8f),
         "sever-arm-walk" => new Vector3(-14f, 0.5f, 8f),
         "crawl-step" => new Vector3(-6f, 0.5f, 0f),
-        "traversal" => new Vector3(-2.4f, 0.5f, 12f),
+        "traversal" or "traversal-loop" => new Vector3(-2.4f, 0.5f, 12f),
         _ => new Vector3(-3f, 0.5f, 0f),
     };
 

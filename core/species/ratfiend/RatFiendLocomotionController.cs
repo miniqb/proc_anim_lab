@@ -145,6 +145,10 @@ public sealed class RatFiendLocomotionController
 	/// <summary>当前抓地肢体数（爬行推进的引擎计数：撑稳的手 + 抓稳的存活腿；直立时也计，供观测）。</summary>
 	public int CrawlGripCount { get; private set; }
 
+	/// <summary>当前撑稳手数（CrawlGripCount 的手臂分量，同一 tick 滞后固定序）：
+	/// 翻越拽升强度的引擎计数（R22），宿主/smoke 亦可观测「手是否真撑上了桌面」。</summary>
+	public int PlantedHandCount { get; private set; }
+
 	/// <summary>断肢事件序号（单调递增；渲染抽搐/宿主特效按沿触发，避免轮询 bool 丢事件）。</summary>
 	public int SeverSerial { get; private set; }
 
@@ -414,7 +418,8 @@ public sealed class RatFiendLocomotionController
 
 		// 抓地计数读上一 tick 收尾的肢体状态（腿 GripCounter / 手撑稳三条件）——
 		// 推进消费在 Body.Tick 之前、肢体更新之后的一 tick 滞后是确定性的固定序。
-		CrawlGripCount = CountGrips();
+		PlantedHandCount = CountPlantedHands();
+		CrawlGripCount = PlantedHandCount + CountGrippingLegs();
 
 		Vector3 postureUp = PostureUp(up);
 		Uprightness = ComputeUprightness(postureUp);
@@ -441,7 +446,17 @@ public sealed class RatFiendLocomotionController
 					BrakeHorizontal(Chest, up);
 					BrakeHorizontal(Hips, up);
 				}
-				ApplyWalkLean(standDrive, driveThrottle);
+				// R22 翻越手撑油门：未越顶的 Mount 期，推进（注入+天花板）按撑稳手数缩放
+				// ——爬升的大头是推进楔升（消融实证），手数只接拽升管不住能力。
+				// 越顶后与非翻越路径恒 1（×1f 逐位恒等，旧基线零漂移）。
+				float mountDrive = 1f;
+				if (TraversalIntent is { Phase: RatTraversalPhase.MountAndCross } gate
+					&& !HipsAboveSurface(gate, up))
+				{
+					mountDrive = Mathf.Clamp(
+						_p.MountDriveBase + _p.MountDrivePerHand * PlantedHandCount, 0f, 1f);
+				}
+				ApplyWalkLean(standDrive, driveThrottle * mountDrive);
 				ApplyHeadServo(up);
 				if (TraversalIntent is { Phase: RatTraversalPhase.MountAndCross } mount)
 				{
@@ -451,7 +466,7 @@ public sealed class RatFiendLocomotionController
 				{
 					ApplyHipServo(up, groundHit, groundPoint);
 				}
-				ApplyLocomotionForce(standDrive, driveThrottle);
+				ApplyLocomotionForce(standDrive, driveThrottle * mountDrive, mountDrive);
 			}
 			else
 			{
@@ -491,9 +506,7 @@ public sealed class RatFiendLocomotionController
 		bool horizontalArrived = dh.Length() <= MoveTargetArriveRadius;
 		AtTraversalTarget = intent.Phase switch
 		{
-			RatTraversalPhase.MountAndCross => horizontalArrived
-				&& Hips.Pos.Dot(up) - Hips.TerrainRadius
-					>= intent.Target.Dot(up) - _p.CrawlClimbDeadzone,
+			RatTraversalPhase.MountAndCross => horizontalArrived && HipsAboveSurface(intent, up),
 			RatTraversalPhase.Stabilize => horizontalArrived && Grounded,
 			_ => horizontalArrived
 		};
@@ -502,13 +515,21 @@ public sealed class RatFiendLocomotionController
 			: dh.Normalized();
 	}
 
+	/// <summary>髋底已越过意图顶面（死区容差内）——Mount 到点的竖直硬条件，也是 R22
+	/// 翻越油门「越顶恢复全速」的门（同一表达式，防两处漂移）。</summary>
+	private bool HipsAboveSurface(in RatTraversalIntent intent, Vector3 up) =>
+		Hips.Pos.Dot(up) - Hips.TerrainRadius >= intent.Target.Dot(up) - _p.CrawlClimbDeadzone;
+
 	/// <summary>站立翻越的受限竖直牵引。复用爬台阶的速度/增益上限，只写 chunk.Vel；
-	/// Body.Tick 与真实地形碰撞仍是唯一位置权威，不 Shift/Teleport。</summary>
+	/// Body.Tick 与真实地形碰撞仍是唯一位置权威，不 Shift/Teleport。
+	/// R22：强度 = MountHaulBase + MountHaulPerHand × 撑稳手数——手撑上桌面才有全力
+	/// （RW Scavenger knucklePos 力偶的 3D 化；基础分量 &lt; 重力，悬空段全靠手撑）。</summary>
 	private void ApplyTraversalMountDrive(in RatTraversalIntent intent, Vector3 up)
 	{
 		float surfaceHeight = intent.Target.Dot(up);
-		HaulChunkUp(Chest, surfaceHeight, up);
-		HaulChunkUp(Hips, surfaceHeight, up);
+		float strength = _p.MountHaulBase + _p.MountHaulPerHand * PlantedHandCount;
+		HaulChunkUp(Chest, surfaceHeight, up, strength);
+		HaulChunkUp(Hips, surfaceHeight, up, strength);
 	}
 
 	/// <summary>撑地判定 + 重力开关 + 摩擦切档（Humanoid 同构，法线门统一 ≥0.5）。
@@ -664,7 +685,7 @@ public sealed class RatFiendLocomotionController
 	/// 天花板不对称（胸 ×(1+bias) / 髋 ×(1−bias)）是行进驼背的唯一有效差分通道——
 	/// 巡航时两 chunk 双双钉在天花板上，力偶/阻尼差通道都被钳制吸收或带静立漂移副作用
 	/// （见 RatFiendParams.HunchSpeedBias 注释）。</summary>
-	private void ApplyLocomotionForce(Vector3 effMove, float throttle)
+	private void ApplyLocomotionForce(Vector3 effMove, float throttle, float ceilingScale = 1f)
 	{
 		if (effMove == Vector3.Zero)
 		{
@@ -678,7 +699,9 @@ public sealed class RatFiendLocomotionController
 		// 后全被余量钳制吸收——走/跑巡航速度逐位相同（实测三档全是 0.0859/tick=3.4m/s），
 		// 「走」就是用跑的速度挪碎步。乘 RunSpeed 后巡航 ≈ 0.9×天花板×油门：
 		// 0.35 档 ≈1.2m/s（人样步行）、1.0 档 ≈3.4m/s（满速追击，与修复前一致）。
-		float ceiling = _p.MaxMoveSpeed * RunSpeed;
+		// R22：天花板另乘翻越油门（ceilingScale，非翻越恒 1）——BaseSpeed ≫ 天花板余量，
+		// 只压注入会被余量钳制吃回（R11 同款教训），巡航速度纹丝不动。
+		float ceiling = _p.MaxMoveSpeed * RunSpeed * ceilingScale;
 		float chestRoom = ceiling * (1f + bias) - Chest.Vel.Dot(effMove);
 		if (chestRoom > 0f)
 		{
@@ -761,8 +784,8 @@ public sealed class RatFiendLocomotionController
 		return false;
 	}
 
-	/// <summary>抓地肢体计数：撑稳的手 + 抓稳的存活腿。</summary>
-	private int CountGrips()
+	/// <summary>撑稳手计数（抓地计数的手臂分量；翻越拽升引擎 R22 单独消费）。</summary>
+	private int CountPlantedHands()
 	{
 		int count = 0;
 		for (int i = 0; i < Arms.Count; i++)
@@ -772,6 +795,13 @@ public sealed class RatFiendLocomotionController
 				count++;
 			}
 		}
+		return count;
+	}
+
+	/// <summary>抓稳的存活腿计数（抓地计数的腿分量）。</summary>
+	private int CountGrippingLegs()
+	{
+		int count = 0;
 		for (int i = 0; i < Legs.Count; i++)
 		{
 			if (!LegSevered(i) && Legs[i].Gripping)
@@ -799,18 +829,19 @@ public sealed class RatFiendLocomotionController
 	}
 
 	/// <summary>拽升单 chunk：底面低于撑点标高（死区外）→ 竖直速度朝 CrawlClimbMaxRise 伺服，
-	/// 注入量 ≤ 增益 × 高差（临顶自然减力，防过冲振铃）。</summary>
-	private void HaulChunkUp(BodyChunk chunk, float gripHeight, Vector3 up)
+	/// 注入量 ≤ 增益 × 高差（临顶自然减力，防过冲振铃）。strength 同乘天花板与增益
+	/// （R22 翻越手撑；爬行路径恒传 1——×1f 逐位恒等，基线零漂移）。</summary>
+	private void HaulChunkUp(BodyChunk chunk, float gripHeight, Vector3 up, float strength = 1f)
 	{
 		float deficit = gripHeight - (chunk.Pos.Dot(up) - chunk.TerrainRadius) - _p.CrawlClimbDeadzone;
 		if (deficit <= 0f)
 		{
 			return;
 		}
-		float room = _p.CrawlClimbMaxRise - chunk.Vel.Dot(up);
+		float room = _p.CrawlClimbMaxRise * strength - chunk.Vel.Dot(up);
 		if (room > 0f)
 		{
-			chunk.Vel += up * Mathf.Min(_p.CrawlClimbGain * deficit, room);
+			chunk.Vel += up * Mathf.Min(_p.CrawlClimbGain * strength * deficit, room);
 		}
 	}
 
@@ -939,13 +970,7 @@ public sealed class RatFiendLocomotionController
 			}
 			else if (TraversalIntent is { Phase: RatTraversalPhase.MountAndCross } traversal)
 			{
-				// 翻越时双手朝远侧顶面探出；只驱动手端粒子，身体上升仍走受限 Vel 牵引。
-				arm.GrabPos = null;
-				arm.Mode = RatArm.ArmMode.HuntAbsolutePosition;
-				Vector3 to = traversal.Target - Chest.Pos;
-				float dist = to.Length();
-				Vector3 dir = dist < 1e-6f ? Facing : to / dist;
-				arm.HuntPos = Chest.Pos + dir * Mathf.Min(dist, arm.EffectiveLength);
+				TickMountArm(ctx, up, right, arm, myTurn, traversal);
 			}
 			else if (GrabTarget is { } grab)
 			{
@@ -1002,6 +1027,57 @@ public sealed class RatFiendLocomotionController
 			}
 
 			arm.Tick(ctx);
+		}
+	}
+
+	/// <summary>翻越手撑子链（R22——TickCrawlArm 的顶面版，同一套 plant-and-trail 骨架）：
+	/// 探针从「意图顶面标高 + CrawlProbeRise」竖直下探，命中低于顶面容差即拒收——手只许
+	/// 撑在桌面上，不许把途中的地板当撑点；未撑住时朝本手一侧的桌面落点前伸（可及半径
+	/// 钳制）——不再两手叠追远侧同一点悬空（R22 前的病灶：翻越全程像僵尸举手，且两手
+	/// 几何重叠）。锁定后身体爬过 = trail，越窗重找；撑稳判定沿用 HandPlanted 三条件，
+	/// 计入 PlantedHandCount → 拽升强度。无 Grounded 入场门（与爬行相反）：翻越中段身体
+	/// 悬空正是手最该撑住的时刻（RW knucklePos 力偶恰在双 chunk 离地时触发）。</summary>
+	private void TickMountArm(in TickContext ctx, Vector3 up, Vector3 right, RatArm arm,
+		bool myTurn, in RatTraversalIntent intent)
+	{
+		float surfaceHeight = intent.Target.Dot(up);
+		if (arm.GrabPos is { } existing)
+		{
+			Vector3 fromChest = existing - Chest.Pos;
+			float along = fromChest.Dot(Facing);
+			if (along < -_p.CrawlBehindWindow
+				|| along > arm.EffectiveLength * _p.CrawlAheadWindowFactor
+				|| fromChest.Length() > arm.EffectiveLength * _p.CrawlReachFactor)
+			{
+				arm.GrabPos = null;
+			}
+		}
+		Vector3 probeFoot = Chest.Pos + Facing * (arm.EffectiveLength * _p.CrawlProbeForward)
+			+ right * (arm.Side * _p.CrawlProbeSide);
+		Vector3 probeFlat = probeFoot - up * probeFoot.Dot(up);
+		if (arm.GrabPos is null && myTurn)
+		{
+			Vector3 from = probeFlat + up * (surfaceHeight + _p.CrawlProbeRise);
+			if (ctx.Terrain.Raycast(from, from - up * _p.CrawlProbeDepth, out TerrainHit hit)
+				&& IsGroundNormal(hit.Normal, up)
+				&& hit.Point.Dot(up) >= surfaceHeight - _p.MountSurfaceTolerance)
+			{
+				arm.GrabPos = hit.Point;
+			}
+		}
+		if (arm.GrabPos is { } lockPos)
+		{
+			arm.Mode = RatArm.ArmMode.HuntAbsolutePosition;
+			arm.HuntPos = lockPos;
+		}
+		else
+		{
+			Vector3 landing = probeFlat + up * surfaceHeight;
+			Vector3 to = landing - Chest.Pos;
+			float dist = to.Length();
+			Vector3 dir = dist < 1e-6f ? Facing : to / dist;
+			arm.Mode = RatArm.ArmMode.HuntAbsolutePosition;
+			arm.HuntPos = Chest.Pos + dir * Mathf.Min(dist, arm.EffectiveLength);
 		}
 	}
 

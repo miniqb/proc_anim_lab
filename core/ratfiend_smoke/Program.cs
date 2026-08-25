@@ -1181,28 +1181,36 @@ internal static class Program
 
     private readonly record struct TraversalResult(
         ulong Hash, bool Completed, bool CrossedExit, bool StableEightTicks, bool Finite,
-        float MaxTickDisplacement, long MaxRays, long MaxShapes, int PhaseChanges);
+        float MaxTickDisplacement, long MaxRays, long MaxShapes, int PhaseChanges,
+        int MaxPlantedHands, int MountTicks);
 
     /// <summary>0.82m 解析家具：阶段意图必须靠真实粒子积分跨过；普通 MoveTarget 消融
     /// 必须留在近侧。双跑、微扰、单臂、生命周期与查询预算一并钉住。</summary>
     private static (bool, string) CheckTraversalIntent()
     {
-        TraversalResult Run(float perturb, bool severArm)
+        TraversalResult Run(float perturb, int severArms, float top = 0.82f,
+            Action<RatFiendParams>? tweak = null)
         {
-            const float top = 0.82f;
             const float farPlane = 1.15f;
             var terrain = new BoxRoomTerrain()
                 .AddBox(new Vector3(-30f, -1f, -8f), new Vector3(30f, 0f, 8f), 1UL)
                 .AddBox(new Vector3(-0.15f, 0f, -20f), new Vector3(farPlane, top, 20f), 2UL);
-            RatFiendLocomotionController rat = NewRat(new Vector3(-2.4f, 0.5f, 0f), Vector3.Right);
+            RatFiendParams tuned = RatFiendFactory.Gaunt();
+            tweak?.Invoke(tuned);
+            RatFiendLocomotionController rat = RatFiendFactory.CreateController(
+                new Vector3(-2.4f, 0.5f, 0f), Vector3.Right, tuned);
             if (perturb != 0f)
             {
                 rat.Chest.Pos.X += perturb;
                 rat.Chest.LastPos = rat.Chest.Pos;
             }
-            if (severArm)
+            if (severArms >= 1)
             {
                 rat.Sever(RatFiendLimbId.ArmLeft);
+            }
+            if (severArms >= 2)
+            {
+                rat.Sever(RatFiendLimbId.ArmRight);
             }
 
             RatTraversalPhase phase = RatTraversalPhase.Approach;
@@ -1213,8 +1221,10 @@ internal static class Program
             long maxRays = 0;
             long maxShapes = 0;
             long tick = 0;
+            int maxPlanted = 0;
+            int mountTicks = 0;
             var hasher = new DeterminismHasher();
-            for (int i = 0; i < 1200 && !completed; i++)
+            for (int i = 0; i < 1500 && !completed; i++)
             {
                 Vector3 target = phase switch
                 {
@@ -1238,6 +1248,14 @@ internal static class Program
                 rat.FoldState(hasher);
                 hasher.Fold((int)phase);
 
+                if (phase == RatTraversalPhase.MountAndCross)
+                {
+                    // R22 翻越手撑观测：Mount 期撑稳手数峰值（完好=2、单臂=1 由断言钉住）
+                    // 与 Mount 期时长（拽升 ∝ 撑手数的可观测后果，高桌上手数越少越慢）。
+                    maxPlanted = Math.Max(maxPlanted, rat.PlantedHandCount);
+                    mountTicks++;
+                }
+
                 if (phase != RatTraversalPhase.Stabilize && rat.AtTraversalTarget)
                 {
                     phase = (RatTraversalPhase)((int)phase + 1);
@@ -1253,7 +1271,8 @@ internal static class Program
             rat.TraversalIntent = null;
             return new TraversalResult(hasher.Value, completed,
                 rat.Chest.Pos.X > farPlane && rat.Hips.Pos.X > farPlane,
-                stableTicks >= 8, IsFinite(rat), maxStep, maxRays, maxShapes, phaseChanges);
+                stableTicks >= 8, IsFinite(rat), maxStep, maxRays, maxShapes, phaseChanges,
+                maxPlanted, mountTicks);
         }
 
         bool OrdinaryMoveTargetCrosses(bool enableGate)
@@ -1276,10 +1295,22 @@ internal static class Program
             return rat.Chest.Pos.X > farPlane && rat.Hips.Pos.X > farPlane;
         }
 
-        TraversalResult a = Run(0f, severArm: false);
-        TraversalResult b = Run(0f, severArm: false);
-        TraversalResult p = Run(0.001f, severArm: false);
-        TraversalResult oneArm = Run(0f, severArm: true);
+        TraversalResult a = Run(0f, severArms: 0);
+        TraversalResult b = Run(0f, severArms: 0);
+        TraversalResult p = Run(0.001f, severArms: 0);
+        TraversalResult oneArm = Run(0f, severArms: 1);
+        // R22 高桌三连（1.05m，贴近主仓 MaxRise=1.15 能力门）：矮桌上 Mount 段太短、
+        // 强度差被 Approach 淹没；高桌悬空段不可避免（重力全程对抗拽升），手数单调性
+        // 在这里才可测——双手快于单手、双臂全断（强度 0.5 < 重力）翻不上去，
+        // 正是宿主「能力快照 ≥1 臂才下发翻越」的物理背书。
+        TraversalResult tallTwo = Run(0f, severArms: 0, top: 1.05f);
+        TraversalResult tallOne = Run(0f, severArms: 1, top: 1.05f);
+        TraversalResult tallZero = Run(0f, severArms: 2, top: 1.05f);
+        // R22 油门消融红灯：把手数从油门上摘掉（Base=1 恒满油）——楔升立刻抹平手数差，
+        // 双手与零手的 Mount 时长比塌回 ~1×（正证「能力 ∝ 手数」的载体是油门而非拽升；
+        // 拽升全归零满油门仍 22 tick 翻上 1.05m 的对照实验见 §5.18）。
+        TraversalResult ablatedZero = Run(0f, severArms: 2, top: 1.05f,
+            tweak: p => { p.MountDriveBase = 1f; p.MountDrivePerHand = 0f; });
         bool ablationBlocked = !OrdinaryMoveTargetCrosses(enableGate: true);
         bool legacyRestored = OrdinaryMoveTargetCrosses(enableGate: false);
 
@@ -1300,6 +1331,17 @@ internal static class Program
             && a.MaxRays <= 40 && a.MaxShapes <= 8
             && a.Hash == b.Hash && p.Hash != a.Hash
             && oneArm.Completed && oneArm.CrossedExit
+            // R22 翻越手撑：完好双手都撑上桌面、单臂恰撑一只（矮桌+高桌同断言）；
+            // 高桌上能力严格单调：Mount 段双手 < 单手 < 双臂全断（后者若在预算内翻不完
+            // 视作最慢，同样满足单调）；油门消融（恒满油）抹平手数差 = 载体红灯。
+            && a.MaxPlantedHands == 2 && oneArm.MaxPlantedHands == 1
+            && tallTwo.Completed && tallTwo.CrossedExit && tallTwo.MaxPlantedHands == 2
+            && tallOne.Completed && tallOne.CrossedExit && tallOne.MaxPlantedHands == 1
+            && tallZero.Finite && tallZero.MaxPlantedHands == 0
+            && tallTwo.MountTicks < tallOne.MountTicks
+            && (!tallZero.Completed || tallOne.MountTicks < tallZero.MountTicks)
+            && ablatedZero.Completed
+            && ablatedZero.MountTicks * 3 < tallZero.MountTicks * 2
             && ablationBlocked && legacyRestored
             && shiftExact && teleportClears && launchClears;
         return (ok,
@@ -1307,6 +1349,10 @@ internal static class Program
             $"phases={a.PhaseChanges} maxStep={a.MaxTickDisplacement:F4}m " +
             $"queries={a.MaxRays}/{a.MaxShapes} det={a.Hash:X16}/{b.Hash:X16} " +
             $"perturb={p.Hash:X16} oneArm={oneArm.Completed && oneArm.CrossedExit} " +
+            $"planted={a.MaxPlantedHands}/{oneArm.MaxPlantedHands} " +
+            $"tallMount two/one/zero={tallTwo.MountTicks}/{tallOne.MountTicks}/" +
+            $"{(tallZero.Completed ? tallZero.MountTicks.ToString() : "stuck")} " +
+            $"ablatedZero={ablatedZero.MountTicks}（恒满油红灯） " +
             $"moveTargetGate={ablationBlocked}/{legacyRestored} " +
             $"lifecycle={shiftExact}/{teleportClears}/{launchClears}");
     }

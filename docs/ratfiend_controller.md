@@ -171,13 +171,21 @@ ReachedSnapPosition/TerrainContact/Severed）。MouthOpen/HandsOnTarget/CrawlGri
 `TraversalIntent = RatTraversalIntent(Phase, Target)` 优先于 `MoveTarget/MoveDir`，阶段固定为
 `Approach → MountAndCross → Stabilize`；`AtTraversalTarget` 只报告当前阶段完成，路线选择、
 概率、失败冷却和阶段推进全部归宿主。Mount 的 Target.XZ 是顶面内的远侧引导点，Target.Y
-是顶面标高：该阶段豁免墙滑、双手探向顶面，并复用 `HaulChunkUp` 的 0.035m/tick 上限只写
-胸/髋速度；普通 `HipServo` 暂停，`Body.Tick` 和真实碰撞仍是唯一位置权威。
+是顶面标高：该阶段豁免墙滑；普通 `HipServo` 暂停，`Body.Tick` 和真实碰撞仍是唯一位置权威。
+
+**Mount 期身体动力（R22 手撑桌面，见 §5.18）**：双手 plant-and-trail 撑顶面（探针几何
+复用 CrawlProbe*、从「顶面标高 + CrawlProbeRise」竖直下探、命中低于顶面
+`MountSurfaceTolerance` 拒收——手只许撑桌面不许撑地板；未撑住时朝本手一侧的桌面落点
+前伸，两手横向分开）。拽升 = `HaulChunkUp` × (`MountHaulBase` + `MountHaulPerHand` ×
+撑稳手数)；未越顶的前向推进油门（注入+天花板同乘）= `MountDriveBase` +
+`MountDrivePerHand` × 撑稳手数（钳 1，双手 = 满速）——**翻越能力 ∝ 撑稳手数**。
+撑稳判定与爬行同一 `HandPlanted` 三条件，计数走只读观测 `PlantedHandCount`。
 
 普通前探新增 `WalkStepMaxRise=0.35m`：高于脚下真实支撑面的家具不再被髋伺服误当成普通
 台阶；0.3m 门槛照旧可走，桌台必须由显式意图授权。`TraversalIntent=null` 时旧路线哈希逐位
-不变。Shift 平移 Target；Teleport/Launch 清意图。内核不判断手数——宿主能力快照至少保留
-一只手才可下发；一臂执行已由 smoke 覆盖。
+不变。Shift 平移 Target；Teleport/Launch 清意图。宿主能力快照至少保留一只手才可下发
+（R22 后有物理背书：断臂翻越显著变慢，1.05m 高桌 Mount 段双手 18 / 单手 24 / 双臂全断
+50 tick）；一臂执行与手数单调性均由 smoke 覆盖。
 
 ## 2. 品种预设
 
@@ -335,6 +343,24 @@ dusk/broad/whelp 变体（walk + 断腿爬行，变体只跑 walk 会漏检断�
 另含 traversal-a/b、traversal-40、traversal-perturb：0.82m 实体桌必须完成三阶段、越过
 出口平面、连续支撑 8 tick、残余穿透 <1cm、单 tick 粒子位移 <0.25m；宿主阶段与稳定计数
 一并折入新路线哈希，双跑与 40/400Hz 逐行一致，旧 23 条路线不重钉。
+
+演示专用路线 `traversal-loop`（**不进矩阵**，R22 随行）：桌两侧往返翻越（目标按桌心
+镜像），每趟落地站 1.2s 再折返——手撑窗口只有 ~0.5s、一次性路线肉眼极易错过，循环版
+让它每 ~3s 重现一次。**窗口模式无需 `--ratfiend-determinism` 即自跑**（WASD 被意图接管，
+相机/K/R/1-4 热键照常）；确定性模式下自检 loops≥2 + planted=2：
+
+```bash
+/Applications/Godot_mono.app/Contents/MacOS/Godot --path . --log-file /private/tmp/godot_codex.log \
+  scenes/ratfiend_sandbox.tscn -- --ratfiend-route=traversal-loop [--ratfiend-tps=20 慢放]
+```
+
+**交互模式自动翻越**（R22 随行，仅窗口 WASD 模式，不进任何确定性路线）：手撑由宿主喂的
+MountAndCross 意图触发，手动驾驶原本没人喂意图 → 撞桌只有普通楔升 + 举手跑姿。沙盒现内建
+主仓 `RatFiendTraversalExecutor` 的极简替身：驾驶方向 0.9m 内探到竖直立面、其后顶面高出
+脚下 0.35~1.15m（普通高抬步之外、主仓 CrossObstacle MaxRise 之内）即合成 Mount 意图
+（0.3m 台阶实证不触发），内核接管导向并撑手；到点 / 转向背离 / 4s 看门狗撤销还给 WASD。
+HUD 加 `vault on planted=N` 观测。另有 `--ratfiend-drive=+x|-x|+z|-z` 恒向驾驶钩子
+（解放键盘 + 跟拍相机，验证截图即用它）。
 
 ### 4.3 枪击竞技场（探索场景，不进矩阵）
 
@@ -833,6 +859,51 @@ Humanoid 的遗产，其 0.55 撑的是人形直立头位），驼背 + 42° 耷
 `scripts/enemies/kernel/species/ratfiend/`（归化覆盖，diff 仅脖长三处；主仓
 RatFiendSmoke 十二段 + 灯光巡拍 + 整游戏播种复验全过）。附带效果：头×3 判定区更贴
 躯干，爆头分离度略降——主仓实测手感时留意。
+
+## 5.18 R22 翻越手撑轮（2026-08-25，用户主仓实测报告——翻桌姿势怪、手一直举着）
+
+**症状**：主仓给鼠煞接上家具翻越导航后，用户实测翻桌姿势怪——追击中翻越时手一直
+举着。根因两个：① Mount 期 TickArms 分支让双手朝**远侧顶面目标**悬空前伸且两手追同
+一点（僵尸举手 + 手爪几何重叠，R19 抓取分手的同款病灶）；手从不接触桌面。② 身体上升
+是无条件拽升——手撑不撑桌面对翻越没有任何物理意义。
+
+**机制来源（RW 取证）**：Scavenger **确有真实的手撑翻越机制**——Run 模式下射线找的
+`knucklePos` 指关节撑点（`Scavenger.cs:2502` ExactTerrainRayTracePos），在**双 chunk
+都离地的翻越瞬间**对躯干施加真实 WeightedPush 力偶（`:2312`，方向随手-身相对位置反转、
+强度随速度 0.5→3.5）；Climb 模式另有 swingPos 硬绳单手悬挂。其图形手（ScavengerGraphics
+FindGrip）与力学抓点**完全分离、单向依赖**，图形手永不反推身体——与本内核「手是独立
+受力点、不反推身体，支撑效果走 HaulChunkUp」同构。本轮 = knucklePos 的 3D 化：撑点用
+真射线找、支撑强度接到身体驱动上。
+
+**被消融推翻的初判**：第一版只把拽升强度接手数（`MountHaulBase 0.5 + MountHaulPerHand
+0.5×手数`），结果 1.05m 高桌上双手/单手/零手 Mount 段 17/17/50→全部差不多、连**拽升
+全归零仍 19 tick 翻上去**——站立翻越的爬升大头根本不是拽升，而是满油门前向推进把球形
+chunk 沿箱棱**楔**上去（失重 + 球面 MTD 沿棱角上滑）。手数只接拽升管不住能力；
+**前向推进油门必须一起接**（注入与天花板同乘，只压注入会被余量钳制吃回——R11 同款教训）。
+
+**定稿机制**（全部在 MountAndCross 分支内，其余路线逐位不变）：
+- 双手 plant-and-trail 撑顶面：探针复用 CrawlProbe* 几何、起点在顶面标高 + 抬升处
+  竖直下探，命中低于顶面 `MountSurfaceTolerance`(0.2m) 拒收（不许把途中地板当撑点）；
+  未撑住时朝**本手一侧**的桌面落点前伸（横向分开，消举手 + 消重叠）。无 Grounded
+  入场门（与爬行撑地相反）：翻越中段身体悬空正是手最该撑的时刻（RW knucklePos 同理）。
+- 拽升强度 = 0.5 + 0.5×撑稳手数（1 手 = R22 前等强，2 手 1.5×）。
+- 未越顶（髋底 < 顶面 − 死区）时推进油门 = 0.15 + 0.425×撑稳手数（钳 1；双手 = 满速，
+  越顶恢复全油门走过顶面）。
+- 新观测 `PlantedHandCount`（CrawlGripCount 拆出的手臂分量，一 tick 滞后固定序）。
+
+**验证**：smoke `[RATFIEND-CORE-TRAVERSAL]` 新增高桌三连（1.05m，贴主仓 MaxRise=1.15
+门）：Mount 段双手 18 &lt; 单手 24 &lt; 双臂全断 50 tick 严格单调（楔升顽强、物理堵不死
+零手，慢 ~3× 即达意；宿主能力门本就拦零臂）+ 油门消融红灯（恒满油让零手塌回 19 tick =
+载体证明）+ 矮桌撑手数 2/1 断言；矩阵 traversal 路线加 `planted=2` 硬门并重钉
+（439134869AF45272），**其余 15 条基线原样通过** = 泄漏控制。0.82m 桌完成 79→81 tick，
+无感。四物种主 smoke 绿。逐帧目检：t18 伸手探桌 → t26 双手撑面顶身 → t34 越顶撑手后拖。
+
+**两仓状态**：用户目检认可后已于 2026-08-25 同步主仓——归化覆盖
+`RatFiendParams/RatFiendLocomotionController` 两文件（+129/−24；`RatTraversalIntent`
+未动；宿主 `RatFiendTraversalExecutor` 输入面零改动）。主仓复验：RatFiendSmoke 十二段 +
+RatFiendTraversalSmoke 七段（S2 实体桌翻越、S3b 80-tick 超时）+ DenseNav + FineGround
+全 PASS。随行的沙盒观感件（traversal-loop 循环路线、交互模式自动翻越替身、
+`--ratfiend-drive` 钩子）为 lab 专属，主仓寻路执行器本就承担喂意图职责，不迁。
 
 ## 6. 回迁主仓（2026-08-23，替换 Shambler）
 

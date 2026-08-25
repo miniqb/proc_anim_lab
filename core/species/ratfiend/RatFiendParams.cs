@@ -265,6 +265,35 @@ public sealed class RatFiendParams
 	/// <summary>爬台阶死区（米）：撑点高差低于此不触发拽升、也不豁免滑墙（防平地微噪声）。</summary>
 	public float CrawlClimbDeadzone = 0.04f;
 
+	// —— 翻越手撑（R22：MountAndCross 手撑顶面，拽升强度 ∝ 撑稳手数）——
+	// 机制来源 = RW Scavenger knucklePos（Run 模式射线找的指关节撑点，双 chunk 离地的
+	// 翻越瞬间对躯干施真实力偶，Scavenger.cs:2312/2502）的 3D 化：本内核「手撑住身体」的
+	// 既有形态是爬台阶 HaulChunkUp，故把撑手数接到它的强度上（爬行「推进 ∝ 抓地肢体数」
+	// 同一哲学）。探针几何（前伸/侧偏/抬升/深度）与爬行手撑共用 CrawlProbe* ——
+	// 两者描述的是同一副身体的伸手可及域，分开调必然漂移。
+	/// <summary>无撑稳手时的拽升强度比例（腿蹬/蹭的基础能力）。0.5 × CrawlClimbMaxRise
+	/// = 0.0175/tick &lt; 重力 0.0225——悬空段撑不住，只剩慢楔升。</summary>
+	public float MountHaulBase = 0.5f;
+
+	/// <summary>每只撑稳手追加的拽升强度：1 手 = 1.0（与 R22 前的无条件拽升等强），
+	/// 2 手 = 1.5（双手撑桌明显更快）。</summary>
+	public float MountHaulPerHand = 0.5f;
+
+	/// <summary>未越顶时前向推进油门的无手基线。R22 消融实证：站立翻越的爬升大头不是
+	/// 拽升而是满油门推进把球 chunk 沿箱棱「楔」上去（拽升全归零仍 19 tick 翻上 1.05m）
+	/// ——手数只接拽升管不住能力，推进油门（注入与天花板同乘）必须一起接。
+	/// 未撑住手只能贴着桌沿慢蹭，越顶后恢复全油门走过顶面。</summary>
+	public float MountDriveBase = 0.15f;
+
+	/// <summary>每只撑稳手追加的推进油门（钳到 1）：1 手 0.575、2 手 1.0（= R22 前满速）。
+	/// smoke 高桌三连钉住能力单调：1.05m 高桌 Mount 段双手 18 tick &lt; 单手 24 &lt; 双臂
+	/// 全断 50（楔升顽强、物理上堵不死零手，慢 ~3× 即达意；宿主能力门本就拦零臂）。</summary>
+	public float MountDrivePerHand = 0.425f;
+
+	/// <summary>翻越撑点的顶面容差（米）：命中点低于意图顶面标高超过此值 → 拒收——
+	/// 手只许撑在桌面上，探深里捎带打到的地板/踏步不算撑住。</summary>
+	public float MountSurfaceTolerance = 0.2f;
+
 	// —— 蠕动（四肢全断 + 有移动意图）——
 	/// <summary>周期性内力偶幅度（动量守恒内力，靠摩擦整流出近零位移的挣扎感）。</summary>
 	public float WrigglePulse = 0.002f;
