@@ -177,13 +177,14 @@ public sealed class TentacleChain
         Vector3 outward,
         float extension,
         float windupAmount,
-        Vector3 strikeImpulse)
+        Vector3 strikeImpulse,
+        float calmAmount = 0f)
     {
         goal = ClampGoalToReach(goal);
         extension = Mathf.Clamp(extension, 0f, 1f);
         float effectiveLength = _parameters.Length *
             Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
-        ApplyServoForces(goal, outward, effectiveLength, windupAmount);
+        ApplyServoForces(goal, outward, effectiveLength, windupAmount, calmAmount);
         for (int i = 0; i < Segments.Length; i++)
         {
             // 原作只给 tip/body proxy 注速，2D Tentacle 的约束会把张力传回链身。
@@ -372,8 +373,19 @@ public sealed class TentacleChain
         Vector3 goal,
         Vector3 outward,
         float effectiveLength,
-        float windupAmount)
+        float windupAmount,
+        float calmAmount)
     {
+        // 伪装静默：向外根力与隔节互推随 calmAmount 衰减（goal/guide 吸引不缩放，
+        // 它们正是把链拉回根部的力）。calm==0 时局部量与字段逐位相同。
+        float outwardRootForce = _parameters.OutwardRootForce;
+        float shapeSeparationForce = _parameters.ShapeSeparationForce;
+        if (calmAmount > 0f)
+        {
+            float quiet = 1f - calmAmount;
+            outwardRootForce *= quiet;
+            shapeSeparationForce *= quiet;
+        }
         Vector3 recoilPoint = (Tip.Pos + Anchor.Pos +
             outward * _parameters.WanderCenterDistance) * 0.5f;
         float desiredGuideSpan = Math.Min(effectiveLength, CurrentGuideLength());
@@ -415,7 +427,7 @@ public sealed class TentacleChain
             }
             if (!recovering)
             {
-                segment.Vel += outward * (_parameters.OutwardRootForce * (1f - t));
+                segment.Vel += outward * (outwardRootForce * (1f - t));
             }
         }
 
@@ -429,8 +441,8 @@ public sealed class TentacleChain
                 continue;
             }
             Vector3 dir = SafeDirection(Segments[i].Pos - Segments[i - 2].Pos, outward);
-            Segments[i].Vel += dir * _parameters.ShapeSeparationForce;
-            Segments[i - 2].Vel -= dir * _parameters.ShapeSeparationForce;
+            Segments[i].Vel += dir * shapeSeparationForce;
+            Segments[i - 2].Vel -= dir * shapeSeparationForce;
         }
     }
 

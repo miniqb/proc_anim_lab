@@ -6,15 +6,16 @@ using ProcAnim.Core.Species.TentaclePlant;
 namespace ProcAnimLab.TentaclePlantSandbox;
 
 /// <summary>
-/// TentaclePlant 的纯 Godot 表现层：锥形段链、根部伪装叶、末端手、猎物和导引线。
-/// 装饰相位只取稳定的段索引，绝不使用引擎随机数，也不回写核心状态。
+/// TentaclePlant 的白盒调试表现层：锥形段链、末端手、猎物和导引线（植物性修饰的
+/// 叶片已随"肉质触手怪"改造移除；正式观感由 TentaclePlantFormalRenderer 负责，
+/// 本件保留作 V 键切换的调试视图）。绝不使用引擎随机数，也不回写核心状态。
 /// </summary>
 public sealed class TentaclePlantRenderer
 {
     private readonly List<Node3D> _nodes = new();
     private readonly List<MeshInstance3D> _segmentNodes = new();
-    private readonly List<MeshInstance3D> _leafNodes = new();
     private readonly List<MeshInstance3D> _fingerNodes = new();
+    private bool _plantVisible = true;
 
     private TentaclePlantController? _controller;
     private MeshInstance3D? _rootNode;
@@ -26,7 +27,6 @@ public sealed class TentaclePlantRenderer
     private float _handVisualRadius;
 
     private StandardMaterial3D _stemMaterial = null!;
-    private StandardMaterial3D _leafMaterial = null!;
     private StandardMaterial3D _rootMaterial = null!;
     private StandardMaterial3D _handMaterial = null!;
     private StandardMaterial3D _windupMaterial = null!;
@@ -43,29 +43,24 @@ public sealed class TentaclePlantRenderer
         _handVisualRadius = controller.Params.HandVisualRadius;
 
         Color stem;
-        Color leaves;
         Color hand;
         if (controller.Params.Name.EndsWith("/hunter", StringComparison.Ordinal))
         {
             stem = new Color(0.20f, 0.34f, 0.12f);
-            leaves = new Color(0.47f, 0.12f, 0.08f);
             hand = new Color(0.74f, 0.21f, 0.12f);
         }
         else if (controller.Params.Name.EndsWith("/short", StringComparison.Ordinal))
         {
             stem = new Color(0.26f, 0.38f, 0.16f);
-            leaves = new Color(0.48f, 0.58f, 0.20f);
             hand = new Color(0.64f, 0.52f, 0.18f);
         }
         else
         {
             stem = new Color(0.18f, 0.34f, 0.12f);
-            leaves = new Color(0.37f, 0.58f, 0.18f);
             hand = new Color(0.58f, 0.44f, 0.13f);
         }
 
         _stemMaterial = OpaqueMaterial(stem, 0.86f);
-        _leafMaterial = OpaqueMaterial(leaves, 0.78f);
         _rootMaterial = OpaqueMaterial(stem.Darkened(0.38f), 0.94f);
         _handMaterial = OpaqueMaterial(hand, 0.62f);
         _windupMaterial = OpaqueMaterial(new Color(0.95f, 0.58f, 0.12f), 0.42f);
@@ -111,15 +106,6 @@ public sealed class TentaclePlantRenderer
             parent.AddChild(node);
             _nodes.Add(node);
             _segmentNodes.Add(node);
-
-            if (i % 2 == 0)
-            {
-                for (int side = -1; side <= 1; side += 2)
-                {
-                    MeshInstance3D leaf = AddSphere(parent, _leafMaterial, 12, 6);
-                    _leafNodes.Add(leaf);
-                }
-            }
         }
 
         for (int i = 0; i < 4; i++)
@@ -166,7 +152,6 @@ public sealed class TentaclePlantRenderer
         }
         _nodes.Clear();
         _segmentNodes.Clear();
-        _leafNodes.Clear();
         _fingerNodes.Clear();
         _controller = null;
         _rootNode = null;
@@ -177,12 +162,38 @@ public sealed class TentaclePlantRenderer
         _debugMesh = null;
     }
 
+    /// <summary>正式视图下隐藏植物白盒（mock 猎物球与其材质仍由本件负责——它是场景
+    /// 道具不是植物）。</summary>
+    public void SetPlantVisible(bool visible)
+    {
+        _plantVisible = visible;
+    }
+
     public void Draw(float interpolation, bool targetVisible, Vector3 targetPosition, float targetRadius)
     {
         if (_controller is null || _rootNode is null || _handNode is null ||
             _preyNode is null || _wanderNode is null || _backtrackNode is null ||
             _debugMesh is null)
         {
+            return;
+        }
+
+        if (!_plantVisible)
+        {
+            foreach (MeshInstance3D node in _segmentNodes)
+            {
+                node.Visible = false;
+            }
+            foreach (MeshInstance3D node in _fingerNodes)
+            {
+                node.Visible = false;
+            }
+            _rootNode.Visible = false;
+            _handNode.Visible = false;
+            _wanderNode.Visible = false;
+            _backtrackNode.Visible = false;
+            _debugMesh.ClearSurfaces();
+            DrawPrey(targetVisible, targetPosition, targetRadius);
             return;
         }
 
@@ -221,17 +232,7 @@ public sealed class TentaclePlantRenderer
                 _handVisualRadius * 0.60f,
                 _handVisualRadius * 0.90f));
         DrawFingers(controller, hand, activeHandMaterial);
-        DrawLeaves(controller, segments, interpolation);
-
-        _preyNode.Visible = targetVisible;
-        if (targetVisible)
-        {
-            _preyNode.MaterialOverride = controller.HeldTargetId is null
-                ? _preyMaterial
-                : _preyHeldMaterial;
-            SetEllipsoid(_preyNode, targetPosition, Basis.Identity,
-                Vector3.One * Mathf.Max(0.08f, targetRadius));
-        }
+        DrawPrey(targetVisible, targetPosition, targetRadius);
 
         _wanderNode.Visible = controller.Phase.ToString() is "Wandering" or "Tracking";
         if (_wanderNode.Visible)
@@ -250,38 +251,16 @@ public sealed class TentaclePlantRenderer
         DrawDebugLines(controller, root, targetVisible, targetPosition);
     }
 
-    private void DrawLeaves(
-        TentaclePlantController controller,
-        IReadOnlyList<TentacleSegmentState> segments,
-        float interpolation)
+    private void DrawPrey(bool targetVisible, Vector3 targetPosition, float targetRadius)
     {
-        int leafIndex = 0;
-        for (int i = 0; i < segments.Count && leafIndex + 1 < _leafNodes.Count; i += 2)
+        _preyNode!.Visible = targetVisible;
+        if (targetVisible)
         {
-            Vector3 center = segments[i].LerpPos(interpolation);
-            Vector3 prev = i == 0
-                ? controller.Root.LerpPos(interpolation)
-                : segments[i - 1].LerpPos(interpolation);
-            Vector3 axis = SafeDirection(center - prev, controller.Outward);
-            for (int sideIndex = 0; sideIndex < 2; sideIndex++)
-            {
-                int side = sideIndex == 0 ? -1 : 1;
-                // 固定黄金角相位让叶片不排成机械直线；只依赖段索引，不读随机或墙钟。
-                float phase = i * 2.3999632f + side * 0.55f;
-                Vector3 radial = SafeDirection(
-                    controller.Tangent * Mathf.Cos(phase) +
-                    controller.Bitangent * Mathf.Sin(phase),
-                    controller.Tangent);
-                Vector3 leafDirection = SafeDirection(radial * side + axis * 0.18f, radial);
-                MeshInstance3D leaf = _leafNodes[leafIndex++];
-                Basis basis = new(new Quaternion(Vector3.Up, leafDirection));
-                SetEllipsoid(leaf, center + radial * (segments[i].Radius + 0.045f),
-                    basis, new Vector3(0.075f, 0.26f, 0.025f));
-            }
-        }
-        while (leafIndex < _leafNodes.Count)
-        {
-            _leafNodes[leafIndex++].Visible = false;
+            _preyNode.MaterialOverride = _controller!.HeldTargetId is null
+                ? _preyMaterial
+                : _preyHeldMaterial;
+            SetEllipsoid(_preyNode, targetPosition, Basis.Identity,
+                Vector3.One * Mathf.Max(0.08f, targetRadius));
         }
     }
 

@@ -12,6 +12,8 @@ namespace ProcAnim.Core.TentaclePlantSmoke;
 internal static class Program
 {
     private const ulong ExpectedHash = 0x025601D1B6ADC65AUL;
+    // 伪装场景（DISGUISE 检查）的独立基线；与主 ExpectedHash 互不影响。
+    private const ulong DisguiseExpectedHash = 0xF07DAC8EAE20C13CUL;
     private static readonly Vector3 NoGravity = Vector3.Zero;
 
     private static int Main()
@@ -32,6 +34,7 @@ internal static class Program
         Check("FAR-GUIDE", CheckFarTargetGuideContinuity, failures);
         Check("SPAWN-CLEARANCE", CheckSpawnAndRemountClearance, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
+        Check("DISGUISE", CheckDisguiseAmbush, failures);
 
         DeterminismResult a = RunDeterminism();
         DeterminismResult b = RunDeterminism();
@@ -92,13 +95,16 @@ internal static class Program
         TentaclePlantParams original = TentaclePlantFactory.Original();
         TentaclePlantParams shortPlant = TentaclePlantFactory.Short();
         TentaclePlantParams hunter = TentaclePlantFactory.Hunter();
+        TentaclePlantParams lurker = TentaclePlantFactory.Lurker();
         TentaclePlantParams[] all = TentaclePlantFactory.AllPresets();
 
-        bool ids = all.Length == 3 &&
+        bool ids = all.Length == 4 &&
                    original.Name == "tentacle-plant/original" &&
                    shortPlant.Name == "tentacle-plant/short" &&
                    hunter.Name == "tentacle-plant/hunter" &&
-                   TentaclePlantFactory.ByName("TENTACLE-PLANT/HUNTER").Name == hunter.Name;
+                   lurker.Name == "tentacle-plant/lurker" &&
+                   TentaclePlantFactory.ByName("TENTACLE-PLANT/HUNTER").Name == hunter.Name &&
+                   TentaclePlantFactory.ByName("TENTACLE-PLANT/LURKER").Name == lurker.Name;
         bool originalEvidence = Near(original.Length, 7.5f) &&
                                 original.SegmentCount == 8 &&
                                 original.ChargeTicks == 90 &&
@@ -110,7 +116,12 @@ internal static class Program
                         shortPlant.ChargeTicks == 110 &&
                         Near(hunter.Length, 9f) &&
                         hunter.SegmentCount == 10 &&
-                        hunter.ChargeTicks == 70;
+                        hunter.ChargeTicks == 70 &&
+                        Near(lurker.Length, 3.2f) &&
+                        lurker.SegmentCount == 5 &&
+                        lurker.ChargeTicks == 100 &&
+                        lurker.DisguiseChargeMultiplier == 10 &&
+                        Near(lurker.DisguiseExtensionFraction, 0.10f);
 
         var mount = new TentaclePlantMount(
             new Vector3(1f, 2f, 3f),
@@ -180,16 +191,40 @@ internal static class Program
                 1f,
                 true,
                 true));
+        // 伪装参数校验负例：阈值必须为正（默认关闭时加速充能才不可达）、
+        // 缩回比必须落在 [0,1]。
+        bool throwsZeroDisguiseThreshold = Throws<ArgumentOutOfRangeException>(() =>
+        {
+            TentaclePlantParams invalid = TentaclePlantFactory.Lurker();
+            invalid.DisguiseChargeThreshold = 0f;
+            invalid.Validate();
+        });
+        bool throwsDisguiseFraction = Throws<ArgumentOutOfRangeException>(() =>
+        {
+            TentaclePlantParams invalid = TentaclePlantFactory.Lurker();
+            invalid.DisguiseExtensionFraction = 1.5f;
+            invalid.Validate();
+        });
+        bool throwsDisguiseMultiplier = Throws<ArgumentOutOfRangeException>(() =>
+        {
+            TentaclePlantParams invalid = TentaclePlantFactory.Lurker();
+            invalid.DisguiseChargeMultiplier = invalid.ChargeTicks + 1;
+            invalid.Validate();
+        });
 
         bool ok = ids && originalEvidence && variants && topology && frame && snapshot &&
                   throwsUnknown && throwsZeroNormal && throwsNarrowGuide &&
-                  throwsBuriedSpawn && throwsBuriedRetract && throwsNonFiniteTarget;
+                  throwsBuriedSpawn && throwsBuriedRetract && throwsNonFiniteTarget &&
+                  throwsZeroDisguiseThreshold && throwsDisguiseFraction &&
+                  throwsDisguiseMultiplier;
         return (
             ok,
             $"ids={ids} original={originalEvidence} variants={variants} topology={topology} " +
             $"frame={frame} snapshot={snapshot} failFast=" +
             $"{throwsUnknown}/{throwsZeroNormal}/{throwsNarrowGuide}/{throwsBuriedSpawn}/" +
-            $"{throwsBuriedRetract}/{throwsNonFiniteTarget}");
+            $"{throwsBuriedRetract}/{throwsNonFiniteTarget}/" +
+            $"{throwsZeroDisguiseThreshold}/{throwsDisguiseFraction}/" +
+            $"{throwsDisguiseMultiplier}");
     }
 
     private static (bool, string) CheckThreeDimensionalMounts()
@@ -1862,6 +1897,297 @@ internal static class Program
         int PeakQueries,
         float MaxPenetration,
         long Attacks);
+
+    /// <summary>
+    /// opt-in 伪装/伏击机制的行为回归：参数惰性（门在 DisguiseIntent 输入而非参数）、
+    /// 入伪装缩回与静置、伪装态加速充能突袭并命中、Holding 忽略 intent、
+    /// 释放后慢速回伪装、intent 撤销快速解除；整套场景双跑 bit-exact 并钉独立基线。
+    /// </summary>
+    private static (bool, string) CheckDisguiseAmbush()
+    {
+        // ① 参数惰性：intent=false 时把伪装参数拧到极端，300 tick 运动学必须与
+        //    出厂参数逐位一致（主守卫仍是 DET 的固定哈希，这里是引擎级补强）。
+        var openTerrain = new PlaneTerrain(Vector3.Zero, Vector3.Down);
+        TentaclePlantParams extreme = TentaclePlantFactory.Lurker();
+        extreme.DisguiseChargeMultiplier = 99;
+        extreme.DisguiseExtensionFraction = 0.01f;
+        extreme.DisguiseEngagePerTick = 1f;
+        TentaclePlantController stock = NewCeilingPlant(
+            TentaclePlantFactory.Lurker(), 0xD15C0UL);
+        TentaclePlantController tweaked = NewCeilingPlant(extreme, 0xD15C0UL);
+        bool parameterInert = true;
+        long inertTickA = 0;
+        long inertTickB = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            Tick(stock, openTerrain, ref inertTickA);
+            Tick(tweaked, openTerrain, ref inertTickB);
+            parameterInert &= SameKinematics(stock, tweaked);
+        }
+
+        DisguiseResult a = RunDisguiseScenario(0xA3B1UL);
+        DisguiseResult b = RunDisguiseScenario(0xA3B1UL);
+
+        TentaclePlantParams lurker = TentaclePlantFactory.Lurker();
+        int chargeGain = 2 * lurker.DisguiseChargeMultiplier;
+        int expectedStrikeTicks =
+            (lurker.ChargeTicks * 2 + chargeGain - 1) / chargeGain;
+        int engageTicks = (int)MathF.Ceiling(1f / lurker.DisguiseEngagePerTick);
+        int releaseTicks = (int)MathF.Ceiling(1f / lurker.DisguiseReleasePerTick);
+        float disguiseReach = lurker.Length * 2f * lurker.DisguiseExtensionFraction;
+
+        bool ok = parameterInert &&
+                  a.Hash == b.Hash &&
+                  a.Hash == DisguiseExpectedHash &&
+                  a.Finite &&
+                  a.PeakQueries <= 96 &&
+                  a.MaxPenetration <= 0.002f &&
+                  a.FullTick > 0 && Math.Abs(a.FullTick - engageTicks) <= 2 &&
+                  a.AmountMonotonicOnEngage &&
+                  a.WanderFrozen &&
+                  // 静度用位置包络而非速度阈值：自避让在蜷缩球内有持续微推。
+                  a.MaxQuietTipDistance <= disguiseReach + 0.15f &&
+                  a.StrikeDelay == expectedStrikeTicks &&
+                  a.PreStrikeChargeable &&
+                  a.CaptureDelay >= a.StrikeDelay &&
+                  a.CaptureDelay <= a.StrikeDelay +
+                      lurker.LungeTicks + lurker.GrabWindowTicks &&
+                  // cap 旁路证据：突袭必须冲出伪装包络。
+                  a.MaxStrikeTipDistance > disguiseReach + 0.30f &&
+                  a.AmountZeroDelay >= 0 && a.AmountZeroDelay <= releaseTicks + 1 &&
+                  a.HoldingAmountZero &&
+                  a.RefullDelay > 0 &&
+                  a.RefullDelay <= engageTicks + releaseTicks + 10 &&
+                  a.MaxRecoveredTipDistance <= disguiseReach + 0.25f &&
+                  a.IntentOffZeroDelay > 0 && a.IntentOffZeroDelay <= releaseTicks &&
+                  a.WanderResumed;
+        return (
+            ok,
+            $"inert={parameterInert} hash={a.Hash:X16}/{b.Hash:X16} " +
+            $"expected={DisguiseExpectedHash:X16} finite={a.Finite} " +
+            $"peakQueries={a.PeakQueries} maxPen={a.MaxPenetration:F6}m " +
+            $"full={a.FullTick}/{engageTicks} mono={a.AmountMonotonicOnEngage} " +
+            $"wanderFrozen={a.WanderFrozen} quietTip={a.MaxQuietTipDistance:F3}<=" +
+            $"{disguiseReach + 0.15f:F3} strike={a.StrikeDelay}/{expectedStrikeTicks} " +
+            $"chargeable={a.PreStrikeChargeable} capture={a.CaptureDelay} " +
+            $"strikeTip={a.MaxStrikeTipDistance:F3} zero={a.AmountZeroDelay} " +
+            $"holdZero={a.HoldingAmountZero} refull={a.RefullDelay} " +
+            $"recoveredTip={a.MaxRecoveredTipDistance:F3} " +
+            $"intentOff={a.IntentOffZeroDelay}/{releaseTicks} " +
+            $"wanderResumed={a.WanderResumed}");
+    }
+
+    private readonly record struct DisguiseResult(
+        ulong Hash,
+        bool Finite,
+        int PeakQueries,
+        float MaxPenetration,
+        int FullTick,
+        bool AmountMonotonicOnEngage,
+        bool WanderFrozen,
+        float MaxQuietTipDistance,
+        int StrikeDelay,
+        bool PreStrikeChargeable,
+        int CaptureDelay,
+        float MaxStrikeTipDistance,
+        int AmountZeroDelay,
+        bool HoldingAmountZero,
+        int RefullDelay,
+        float MaxRecoveredTipDistance,
+        int IntentOffZeroDelay,
+        bool WanderResumed);
+
+    private static DisguiseResult RunDisguiseScenario(ulong seed)
+    {
+        var terrain = new PlaneTerrain(Vector3.Zero, Vector3.Down);
+        TentaclePlantParams lurker = TentaclePlantFactory.Lurker();
+        TentaclePlantController plant = NewCeilingPlant(lurker, seed);
+        var hasher = new DeterminismHasher();
+        long tick = 0;
+        float maxPenetration = 0f;
+        int releaseTicks = (int)MathF.Ceiling(1f / lurker.DisguiseReleasePerTick);
+
+        void Step()
+        {
+            Tick(plant, terrain, ref tick);
+            FoldPlant(hasher, plant);
+            hasher.Fold(plant.DisguiseAmount);
+            foreach (TentacleSegmentState segment in plant.Segments)
+            {
+                maxPenetration = Math.Max(
+                    maxPenetration,
+                    terrain.PenetrationDepth(segment.Pos, segment.Radius));
+            }
+        }
+
+        float TipFromRoot() => plant.Chain.Tip.Pos.DistanceTo(plant.Root.Pos);
+
+        // A. 入伪装：intent=true、无目标；记录达满 tick 与单调性。
+        plant.DisguiseIntent = true;
+        int fullTick = -1;
+        bool monotonic = true;
+        float previousAmount = 0f;
+        for (int i = 1; i <= 120 && fullTick < 0; i++)
+        {
+            Step();
+            monotonic &= plant.DisguiseAmount >= previousAmount;
+            previousAmount = plant.DisguiseAmount;
+            if (plant.DisguiseAmount == 1f)
+            {
+                fullTick = i;
+            }
+        }
+
+        // B. 蜷缩静置：游走目标冻结（也不再消耗 RNG）、链停在伪装包络内
+        //   （前 40 tick 留给收拢瞬态）。
+        Vector3 frozenWanderGoal = plant.WanderGoal;
+        bool wanderFrozen = true;
+        float maxQuietTip = 0f;
+        for (int i = 0; i < 100; i++)
+        {
+            Step();
+            wanderFrozen &= plant.WanderGoal == frozenWanderGoal;
+            if (i >= 40)
+            {
+                maxQuietTip = Math.Max(maxQuietTip, TipFromRoot());
+            }
+        }
+
+        // C. 伏击 + 抓持：静止 grabbable 猎物入场；伪装态充能 ×Multiplier 走满即扑，
+        //    抓住后按契约做最小宿主回路（全量位置修正 + 速度增量），30 tick 后显式释放。
+        const ulong preyId = 0xD15C0F00DUL;
+        Vector3 preyPos = plant.Root.Pos + plant.Outward * 2.2f + plant.Tangent * 0.5f;
+        Vector3 preyVelocity = Vector3.Zero;
+        int strikeDelay = -1;
+        int captureDelay = -1;
+        int amountZeroDelay = -1;
+        bool preStrikeChargeable = true;
+        bool holdingAmountZero = true;
+        float maxStrikeTip = 0f;
+        int holdingTicks = 0;
+        for (int i = 1; i <= 200 && holdingTicks < 30; i++)
+        {
+            if (plant.HeldTargetId is not null)
+            {
+                preyPos += preyVelocity;
+            }
+            plant.Target = NewTarget(
+                preyId,
+                preyPos,
+                preyVelocity,
+                visible: true,
+                grabbable: true,
+                radius: 0.16f,
+                mass: 0.25f);
+            Step();
+            if (strikeDelay < 0)
+            {
+                if (plant.Phase == TentaclePlantPhase.Striking)
+                {
+                    strikeDelay = i;
+                }
+                else if (plant.HeldTargetId is null)
+                {
+                    preStrikeChargeable &=
+                        plant.TargetStatus == TentaclePlantTargetStatus.Chargeable;
+                }
+            }
+            if (strikeDelay >= 0)
+            {
+                maxStrikeTip = Math.Max(maxStrikeTip, TipFromRoot());
+                if (amountZeroDelay < 0 && plant.DisguiseAmount == 0f)
+                {
+                    amountZeroDelay = i - strikeDelay;
+                }
+            }
+            if (plant.HeldTargetId is not null)
+            {
+                if (captureDelay < 0)
+                {
+                    captureDelay = i;
+                }
+                holdingTicks++;
+                // 内核契约是"抓持期强制快衰趋零"而非"恒零"：捕获可落在突刺后
+                // 快衰完成之前（本场景恰好同 tick 压线——tick 内 UpdateDisguise
+                // 先于 TryCapture 才绿），给足 releaseTicks 衰减窗避免健康内核
+                // 因扑击调参提前一拍捕获而误红。
+                holdingAmountZero &= plant.DisguiseAmount == 0f ||
+                    holdingTicks <= releaseTicks;
+                preyVelocity += plant.TargetEffect.VelocityDelta;
+                preyPos += plant.TargetEffect.PositionCorrection;
+            }
+        }
+        holdingAmountZero &= captureDelay >= 0;
+        plant.ReleaseHeldTarget();
+        plant.Target = null;
+
+        // D. 释放后 intent 仍 true：amount 慢速回满、链被收缩的 cap 逐 tick 拉回包络。
+        int refullDelay = -1;
+        for (int i = 1; i <= 160 && refullDelay < 0; i++)
+        {
+            Step();
+            if (plant.DisguiseAmount == 1f)
+            {
+                refullDelay = i;
+            }
+        }
+        float maxRecoveredTip = 0f;
+        for (int i = 0; i < 100; i++)
+        {
+            Step();
+            if (i >= 60)
+            {
+                maxRecoveredTip = Math.Max(maxRecoveredTip, TipFromRoot());
+            }
+        }
+
+        // E. intent 撤销：release 速率快速出伪装，游走目标恢复演化。
+        plant.DisguiseIntent = false;
+        int intentOffZeroDelay = -1;
+        for (int i = 1; i <= 12 && intentOffZeroDelay < 0; i++)
+        {
+            Step();
+            if (plant.DisguiseAmount == 0f)
+            {
+                intentOffZeroDelay = i;
+            }
+        }
+        Vector3 wanderBefore = plant.WanderGoal;
+        bool wanderResumed = false;
+        for (int i = 0; i < 40; i++)
+        {
+            Step();
+            wanderResumed |= plant.WanderGoal != wanderBefore;
+        }
+
+        return new DisguiseResult(
+            hasher.Value,
+            IsFinite(plant),
+            plant.PeakQueryCount,
+            maxPenetration,
+            fullTick,
+            monotonic,
+            wanderFrozen,
+            maxQuietTip,
+            strikeDelay,
+            preStrikeChargeable,
+            captureDelay,
+            maxStrikeTip,
+            amountZeroDelay,
+            holdingAmountZero,
+            refullDelay,
+            maxRecoveredTip,
+            intentOffZeroDelay,
+            wanderResumed);
+    }
+
+    private static TentaclePlantController NewCeilingPlant(
+        TentaclePlantParams parameters,
+        ulong seed) =>
+        TentaclePlantFactory.CreateController(
+            new TentaclePlantMount(Vector3.Zero, Vector3.Down, Vector3.Right, 1UL),
+            parameters,
+            seed);
 
     private static DeterminismResult RunDeterminism(ulong seed = 0x5EED1234UL)
     {

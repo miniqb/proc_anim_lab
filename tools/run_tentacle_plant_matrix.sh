@@ -21,6 +21,7 @@ HASH_HUNTER_WALL_HIT=B1E4755878259DCF
 HASH_HUNTER_FLOOR_OBLIQUE_HIT=B56CEEF8E9104E48
 HASH_SHORT_FLOOR_IDLE=6E0302451CA7AA76
 HASH_HUNTER_FLOOR_IDLE=DCBDE94A15C958B3
+HASH_LURKER_CEILING_AMBUSH=78CA64B85AB6F858
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -121,6 +122,13 @@ run short-floor-idle  tentacle-plant/short  floor idle 900 400 \
 run hunter-floor-idle tentacle-plant/hunter floor idle 900 400 \
     --plant-expect-hash="$HASH_HUNTER_FLOOR_IDLE"
 
+# opt-in 伪装/伏击全弧线（lurker 吊天花板）：入伪装缩到挂点 → tick 200 猎物入场 →
+# 伪装态加速充能 10 tick 突袭 → 抓取/吞入 → 慢速回伪装；40/400 Hz 时基不变。
+run lurker-ceiling-ambush    tentacle-plant/lurker ceiling ambush 900 400 \
+    --plant-expect-hash="$HASH_LURKER_CEILING_AMBUSH"
+run lurker-ceiling-ambush-40 tentacle-plant/lurker ceiling ambush 900 40 \
+    --plant-expect-hash="$HASH_LURKER_CEILING_AMBUSH"
+
 if diff <(det_stream original-idle-a) \
         <(det_stream original-idle-b) > /dev/null; then
     echo "[double-run] PASS"
@@ -142,6 +150,14 @@ if diff <(det_stream original-hit) \
     echo "[hit-40-vs-400] PASS"
 else
     echo "[hit-40-vs-400] FAIL: 攻击/TargetEffect 固定 tick 轨迹受宿主执行频率影响"
+    fail=1
+fi
+
+if diff <(det_stream lurker-ceiling-ambush) \
+        <(det_stream lurker-ceiling-ambush-40) > /dev/null; then
+    echo "[ambush-40-vs-400] PASS"
+else
+    echo "[ambush-40-vs-400] FAIL: 伪装标量/伏击轨迹受宿主执行频率影响"
     fail=1
 fi
 

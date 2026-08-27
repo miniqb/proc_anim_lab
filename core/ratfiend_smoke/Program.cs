@@ -54,6 +54,7 @@ internal static class Program
         Check("GRAB-SPREAD", CheckGrabSpread, failures);
         Check("IMPACT-TWIST", CheckImpactTwist, failures);
         Check("TRAVERSAL", CheckTraversalIntent, failures);
+        Check("HIGH-STEP-TURN", CheckHighStepTurnEscape, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
         Check("QUERY", CheckQueryBudget, failures);
         Report(
@@ -66,7 +67,7 @@ internal static class Program
         Console.WriteLine(pass
             ? "[RATFIEND-CORE-SMOKE] PASS：固定哈希、装配、驼背姿态、走跑单调、摆臂反相、走姿慢摆、凝视目标、" +
               "断肢 API、断臂行走、断臂垂位、断腿爬行、爬行调头、爬行翻台阶、断肢里程单调、全断蠕动、" +
-              "攻击接缝、抓取分手、朝向冲击与生命周期均通过"
+              "攻击接缝、抓取分手、朝向冲击、高家具转向脱困与生命周期均通过"
             : $"[RATFIEND-CORE-SMOKE] FAIL：{string.Join("；", failures)}");
         return pass ? 0 : 1;
     }
@@ -1355,6 +1356,82 @@ internal static class Program
             $"ablatedZero={ablatedZero.MountTicks}（恒满油红灯） " +
             $"moveTargetGate={ablationBlocked}/{legacyRestored} " +
             $"lifecycle={shiftExact}/{teleportClears}/{launchClears}");
+    }
+
+    private readonly record struct HighStepTurnResult(
+        ulong Hash, float Advance, float EndAlign, float MaxTurnStep, bool Finite);
+
+    /// <summary>普通高家具门只应阻止平移，不应吞掉转向意图。旧朝向正对高桌、目标切到
+    /// 侧后方时，前探最初必被桌面拦住；鼠煞仍须原地限速转身，探针转离桌面后沿净空方向离开。
+    /// 同夹具的正前目标必须继续被门挡住，防止桌面摆放失效导致假绿。</summary>
+    private static (bool, string) CheckHighStepTurnEscape()
+    {
+        HighStepTurnResult Run(Vector3 requestedDirection, bool enableHighStepGate = true)
+        {
+            var terrain = FlatFloor();
+            RatFiendLocomotionController rat =
+                NewRat(new Vector3(0f, 0.5f, 0f), Vector3.Right);
+            rat.EnableOrdinaryHighStepGate = enableHighStepGate;
+            long tick = 0;
+
+            // 先在纯地板上站稳，再按实际髋位置把窄桌放到旧 Facing 的 0.3m 前探点下。
+            for (int i = 0; i < 160; i++)
+            {
+                rat.MoveTarget = null;
+                rat.MoveDir = Vector3.Zero;
+                rat.RunSpeed = 0f;
+                Tick(rat, terrain, ref tick);
+            }
+            Vector3 startChest = rat.Chest.Pos;
+            Vector3 startHips = rat.Hips.Pos;
+            terrain.AddBox(
+                new Vector3(startHips.X + 0.20f, 0f, startHips.Z - 0.12f),
+                new Vector3(startHips.X + 0.90f, 0.82f, startHips.Z + 0.12f), 2UL);
+
+            Vector3 direction = requestedDirection.Normalized();
+            Vector3 target = startChest + direction * 8f;
+            Vector3 previousFacing = rat.Facing;
+            float maxTurnStep = 0f;
+            var hasher = new DeterminismHasher();
+            for (int i = 0; i < 180; i++)
+            {
+                rat.MoveTarget = target;
+                rat.RunSpeed = 1f;
+                Tick(rat, terrain, ref tick);
+                maxTurnStep = MathF.Max(maxTurnStep, previousFacing.AngleTo(rat.Facing));
+                previousFacing = rat.Facing;
+                rat.FoldState(hasher);
+            }
+
+            Vector3 displacement = rat.Chest.Pos - startChest;
+            return new HighStepTurnResult(hasher.Value, displacement.Dot(direction),
+                rat.Facing.Dot(direction), maxTurnStep, IsFinite(rat));
+        }
+
+        HighStepTurnResult forwardBlocked = Run(Vector3.Right);
+        HighStepTurnResult forwardUngated = Run(Vector3.Right, enableHighStepGate: false);
+        Vector3 sideBack = new Vector3(-0.35f, 0f, 0.93675f).Normalized();
+        HighStepTurnResult escapeA = Run(sideBack);
+        HighStepTurnResult escapeB = Run(sideBack);
+        float turnLimit = RatFiendFactory.Gaunt().StandTurnRatePerTick;
+
+        bool ok = MathF.Abs(forwardBlocked.Advance) < 0.20f
+            && forwardUngated.Advance > 1.5f
+            && escapeA.Advance > 1.5f
+            && escapeA.EndAlign >= 0.95f
+            && escapeA.MaxTurnStep > 0.1f
+            && escapeA.MaxTurnStep <= turnLimit + 1e-3f
+            && escapeA.Hash == escapeB.Hash
+            && forwardBlocked.Finite && forwardUngated.Finite
+            && escapeA.Finite && escapeB.Finite;
+        return (ok,
+            $"forward={forwardBlocked.Advance:F3}m（|advance|<0.20，门仍挡平移） " +
+            $"ungated={forwardUngated.Advance:F3}m（>1.5，物理箱本身不致停） " +
+            $"escape={escapeA.Advance:F3}m（>1.5） align={escapeA.EndAlign:F3}（>=0.95） " +
+            $"turn={escapeA.MaxTurnStep:F4}rad（0.1..{turnLimit + 1e-3f:F3}） " +
+            $"det={escapeA.Hash:X16}/{escapeB.Hash:X16} finite=" +
+            $"{forwardBlocked.Finite}/{forwardUngated.Finite}/" +
+            $"{escapeA.Finite}/{escapeB.Finite}");
     }
 
     // ================================================================ 生命周期

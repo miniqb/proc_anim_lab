@@ -177,12 +177,27 @@ public sealed class TentaclePlantController
             _target = value;
         }
     }
+
+    /// <summary>
+    /// 第二个宿主可写输入（opt-in，默认 false）：请求进入/保持伪装。持久 bool 属性，
+    /// 宿主按自身策略改写；Holding 与突刺运动窗口内被忽略并强制快衰，
+    /// <see cref="Remount"/> 连同 Target 一起复位。
+    /// </summary>
+    public bool DisguiseIntent { get; set; }
+
     public TentaclePlantTargetEffect TargetEffect { get; private set; }
     public TentaclePlantPhase Phase { get; private set; } = TentaclePlantPhase.Wandering;
     public int PhaseTick { get; private set; }
     public float AttackCharge { get; private set; }
     public float CanGrab { get; private set; }
     public float Extension { get; private set; } = 1f;
+
+    /// <summary>
+    /// 伪装程度 [0,1]：朝 <see cref="DisguiseIntent"/> 缓动（engage 慢 / release 快）。
+    /// 渲染层用它驱动伪装视觉；不进既有哈希折叠序。
+    /// </summary>
+    public float DisguiseAmount => _disguiseAmount;
+
     public long AttackSerial { get; private set; }
     public ulong? HeldTargetId { get; private set; }
     public Vector3 WanderGoal { get; private set; }
@@ -202,6 +217,7 @@ public sealed class TentaclePlantController
     private Vector3 _trackedAimPoint;
     private Vector3 _strikeOrigin;
     private Vector3 _strikeGoal;
+    private float _disguiseAmount;
     private int _chargeUnits;
     private int _strikeTicksRemaining;
     private int _strikeTick;
@@ -280,6 +296,13 @@ public sealed class TentaclePlantController
         Body.GravityScale = 0f;
         Body.Tick(countedContext);
 
+        // 伪装标量先于本 tick 所有 extension/goal 消费者演化；突刺运动窗口与
+        // Holding 强制快衰并旁路 cap，蜷缩链才能被扑击冲量完整甩出。
+        bool strikeWindow = consumingStrikeMotion || _strikeTicksRemaining > 0;
+        UpdateDisguise(strikeWindow);
+        bool disguiseActive = _disguiseAmount > 0f &&
+            HeldTargetId is null && !strikeWindow;
+
         float physicsExtension = HeldTargetId is not null
             ? RetractionExtension(_retractTicksElapsed + 1)
             : Extension;
@@ -290,6 +313,16 @@ public sealed class TentaclePlantController
                 : Target is { } target
                 ? target.Position
                 : WanderGoal;
+        if (disguiseActive)
+        {
+            physicsExtension = Math.Min(
+                physicsExtension,
+                Mathf.Lerp(1f, _parameters.DisguiseExtensionFraction, _disguiseAmount));
+            // 连续混合而非硬切换：goal 突跳会抖动导引刷新与查询计数。
+            Vector3 disguiseHome = Root.Pos + Outward *
+                (_parameters.Length * _parameters.DisguiseExtensionFraction);
+            goal = goal.Lerp(disguiseHome, _disguiseAmount);
+        }
         Chain.TickPhysics(
             countedContext,
             goal,
@@ -306,12 +339,21 @@ public sealed class TentaclePlantController
         Vector3 shapeGoal = injectingStrikeMotion
             ? _strikeGoal
             : goal;
+        float windupAmount = WindupAmount();
+        float calmAmount = 0f;
+        if (disguiseActive && !injectingStrikeMotion)
+        {
+            // 蜷缩期后缩力只会把伪装球向外推、泄露轮廓；形态力随伪装程度静默。
+            windupAmount *= 1f - _disguiseAmount;
+            calmAmount = _disguiseAmount;
+        }
         Chain.InjectShapeForces(
             shapeGoal,
             Outward,
             physicsExtension,
-            WindupAmount(),
-            strikeImpulse);
+            windupAmount,
+            strikeImpulse,
+            calmAmount);
         Hand.Vel += strikeImpulse;
         _strikeMotionPending = injectingStrikeMotion;
         CoupleHandAndTip(
@@ -335,7 +377,9 @@ public sealed class TentaclePlantController
             _retractTicksElapsed = 0;
             _consumeTicks = 0;
             _consumeSent = false;
-            if (Target is null)
+            // 伪装期冻结游走目标（也不消耗 RNG）；默认路径 _disguiseAmount 恒 0，
+            // 调用时机与随机流逐 tick 不变。
+            if (Target is null && _disguiseAmount <= 0f)
             {
                 UpdateWanderGoal(_countingTerrain);
             }
@@ -381,6 +425,8 @@ public sealed class TentaclePlantController
         Chain.Remount(Outward);
 
         Target = null;
+        DisguiseIntent = false;
+        _disguiseAmount = 0f;
         HeldTargetId = null;
         AttackCharge = 0f;
         _chargeUnits = 0;
@@ -584,7 +630,12 @@ public sealed class TentaclePlantController
         int maximumChargeUnits = _parameters.ChargeTicks * 2;
         if (canCharge)
         {
-            _chargeUnits = Math.Min(maximumChargeUnits, _chargeUnits + 2);
+            // 伪装就位后充能加速（"突然咬"）；阈值经 Validate 保证为正，
+            // 默认路径 _disguiseAmount==0 永不过阈，增量恒为 2。
+            int chargeGain = _disguiseAmount >= _parameters.DisguiseChargeThreshold
+                ? 2 * _parameters.DisguiseChargeMultiplier
+                : 2;
+            _chargeUnits = Math.Min(maximumChargeUnits, _chargeUnits + chargeGain);
         }
         else
         {
@@ -619,6 +670,32 @@ public sealed class TentaclePlantController
         else
         {
             SetPhase(TentaclePlantPhase.Wandering);
+        }
+    }
+
+    private void UpdateDisguise(bool strikeWindow)
+    {
+        if (HeldTargetId is not null || strikeWindow)
+        {
+            if (_disguiseAmount > 0f)
+            {
+                _disguiseAmount = Math.Max(
+                    0f, _disguiseAmount - _parameters.DisguiseReleasePerTick);
+            }
+            return;
+        }
+        if (DisguiseIntent)
+        {
+            if (_disguiseAmount < 1f)
+            {
+                _disguiseAmount = Math.Min(
+                    1f, _disguiseAmount + _parameters.DisguiseEngagePerTick);
+            }
+        }
+        else if (_disguiseAmount > 0f)
+        {
+            _disguiseAmount = Math.Max(
+                0f, _disguiseAmount - _parameters.DisguiseReleasePerTick);
         }
     }
 

@@ -76,6 +76,14 @@ public sealed class TentaclePlantParams
 	public float CarryVelocityGain = 0.20f;
 	public float CarryRootPull = 0.05f;
 
+	// —— 伪装/伏击（opt-in：门在宿主输入 DisguiseIntent，默认 false；
+	//    关闭时下列参数不参与任何运行期计算，既有品种基线零漂移）——
+	public float DisguiseExtensionFraction = 0.15f;
+	public float DisguiseEngagePerTick = 0.0125f;
+	public float DisguiseReleasePerTick = 0.25f;
+	public float DisguiseChargeThreshold = 0.75f;
+	public int DisguiseChargeMultiplier = 6;
+
 	/// <summary>完整校验；无效出生配置快速失败，不静默夹值。</summary>
 	public TentaclePlantParams Validate()
 	{
@@ -190,6 +198,22 @@ public sealed class TentaclePlantParams
 		Positive(CarryHandMass, nameof(CarryHandMass));
 		NonNegative(CarryVelocityGain, nameof(CarryVelocityGain));
 		NonNegative(CarryRootPull, nameof(CarryRootPull));
+
+		// 阈值必须为正：DisguiseAmount==0（默认关闭）永不过阈，加速充能不可达。
+		Unit(DisguiseExtensionFraction, nameof(DisguiseExtensionFraction));
+		UnitPositive(DisguiseEngagePerTick, nameof(DisguiseEngagePerTick));
+		UnitPositive(DisguiseReleasePerTick, nameof(DisguiseReleasePerTick));
+		UnitPositive(DisguiseChargeThreshold, nameof(DisguiseChargeThreshold));
+		Positive(DisguiseChargeMultiplier, nameof(DisguiseChargeMultiplier));
+		if (DisguiseChargeMultiplier > ChargeTicks)
+		{
+			// Multiplier ≥ ChargeTicks 时一 tick 即充满，再大只是语义饱和；同时封死
+			// 2 × Multiplier 的整型回绕（充能增量为负会静默污染 AttackCharge）。
+			throw new ArgumentOutOfRangeException(
+				nameof(DisguiseChargeMultiplier),
+				DisguiseChargeMultiplier,
+				$"{nameof(DisguiseChargeMultiplier)} must not exceed {nameof(ChargeTicks)}.");
+		}
 		return this;
 	}
 
@@ -233,6 +257,15 @@ public sealed class TentaclePlantParams
 		{
 			throw new ArgumentOutOfRangeException(name, value,
 				$"{name} must be finite and in (0, 1].");
+		}
+	}
+
+	private static void Unit(float value, string name)
+	{
+		if (!float.IsFinite(value) || value < 0f || value > 1f)
+		{
+			throw new ArgumentOutOfRangeException(name, value,
+				$"{name} must be finite and in [0, 1].");
 		}
 	}
 }

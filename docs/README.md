@@ -24,7 +24,7 @@
 | [vulture_controller.md](vulture_controller.md) | **Vulture**：重力常开 + 拍翅同步 sin² 升力脉冲、K4 风筝刚架、翅膀模式涌现的起降、四预设与落地即修的对抗性评审轮。 |
 | [centipede_controller.md](centipede_controller.md) | **Centipede**：任意节出生配置与逐节覆写、质量加权装配、双端表面轨迹、有限实体前视、真实抓足与跨墙复位、确定性行波/自避、四个稳定预设。 |
 | [cicada_controller.md](cicada_controller.md) | **Cicada**：双 chunk 差分飞行、稳定 3D 姿态、显式停驻、起飞/Charge、四翼四触须。 |
-| [tentacle_plant_controller.md](tentacle_plant_controller.md) | **TentaclePlant（拟态草）**：锚定式身体、独立触手段链、确定性三维游荡、蓄势—突刺—回收、纯值目标/效果接缝、三种安装朝向。 |
+| [tentacle_plant_controller.md](tentacle_plant_controller.md) | **TentaclePlant（拟态草→肉质触手怪）**：锚定式身体、独立触手段链、确定性三维游荡、蓄势—突刺—回收、纯值目标/效果接缝、三种安装朝向；opt-in 伪装/伏击标量（吸顶灯伪装 + 加速充能突袭）、蛇式双颌大嘴正式渲染件与吊顶伏击竞技场。 |
 | [deer_controller.md](deer_controller.md) | **Deer**：高站姿、头顶大轻鹿角物理代理、粗重叠躯干、动态 reach 的独立多节腿、常开重力下的连续支撑/推进/迈步、有向 bend pole。 |
 | [daddy_long_legs_controller.md](daddy_long_legs_controller.md) | **DaddyLongLegs**：无头尾完整图球团、seed 冻结的可变形态、Fibonacci sphere 材料偏好、主动/被动贴附分层、渐进剥离与余长弧形 guide、tick-end 邻边审计与原子后缀恢复、失速-回冲修复轮。 |
 | [dropbug_controller.md](dropbug_controller.md) | **DropBug（掉落虫）**：三节短链、前后不对称重力、运行时收放静息长度的悬挂态、3D 悬挂点判据、弹道俯冲、蓄力扑击与轴向可及、腿为纯图形件的实证。 |

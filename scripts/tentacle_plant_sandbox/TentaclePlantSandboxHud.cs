@@ -55,9 +55,10 @@ public sealed class TentaclePlantSandboxHud
             Text =
                 "WASD  move prey across mount plane    E / Q  move out / in\n" +
                 "Space  release held prey and reset it\n" +
-                "1 / 2 / 3  original / short / hunter\n" +
+                "1 / 2 / 3 / 0  original / short / hunter / lurker\n" +
                 "F / G / H  floor / wall / ceiling\n" +
-                "4 / 5 / 6 / 7  idle / hit / miss / occluded\n" +
+                "4 / 5 / 6 / 7 / 8  idle / hit / miss / occluded / ambush\n" +
+                "V  formal / debug view    C  toggle disguise intent\n" +
                 "Hold RMB  free camera (WASD + E/Q, mouse look)",
         });
     }
@@ -93,7 +94,9 @@ public sealed class TentaclePlantSandboxHud
         int backtrackFrom,
         int tickQueries,
         int peakQueries,
-        long attackSerial)
+        long attackSerial,
+        bool disguiseIntent,
+        float disguiseAmount)
     {
         string targetGeometry = targetActive
             ? $"O/T/B {targetLocal.X,6:F2}/{targetLocal.Y,6:F2}/{targetLocal.Z,6:F2}m  " +
@@ -107,6 +110,7 @@ public sealed class TentaclePlantSandboxHud
             $"backtrack  {(backtrackFrom < 0 ? "none" : backtrackFrom.ToString())}\n" +
             $"held  {(heldTarget is null ? "none" : heldTarget.Value.ToString()),-8} " +
             $"attack serial  {attackSerial}\n" +
+            $"disguise  intent:{disguiseIntent} amount:{disguiseAmount,5:P0}\n" +
             $"mock prey  active:{targetActive} captured:{hostCaptured} consumed:{targetConsumed}\n" +
             $"target  {targetGeometry}  gate:{targetStatus}\n" +
             $"effect  capture:{captureStarted} held:{effectHeld} " +

@@ -281,7 +281,7 @@ M 嘴开合、B 击飞、V 正式/白盒、1~4 预设。长路线用**有界巡�
 ### 4.2 独立入口与回归
 
 ```bash
-dotnet run --project core/ratfiend_smoke        # 无引擎冒烟（22 门 + 7 消融红灯）
+dotnet run --project core/ratfiend_smoke        # 无引擎冒烟（23 门 + 7 消融红灯）
 ./tools/run_ratfiend_matrix.sh [输出目录]        # Godot 矩阵 27 项 + smoke
 ```
 
@@ -318,7 +318,8 @@ ATTACK（2 tick 双手到位/满嘴/放开归零/不可及永不误报）、GRAB
 双手逐位重合 sep=0.0（z-fighting 根因钉成基线事实）+ 抓住判定成立；spread=0.09 分开
 0.180m ∈[0.15,0.21] 且判定仍双双成立）、IMPACT-TWIST（R19：拧 16° 与 Rotated 期望点积
 >0.9999 + 无意图 10 tick 保持拧姿 + 意图恢复后 SlewFacing ≤3 tick 甩回 + 零轴退化安全 +
-连拧 200 次单位长度守恒）、LIFECYCLE（Shift 逐字段精确含
+连拧 200 次单位长度守恒）、HIGH-STEP-TURN（高桌正前目标仍被普通高步门挡住；目标切到
+侧后方时先原地限速转身、前探转离桌面后恢复平移；双跑哈希一致）、LIFECYCLE（Shift 逐字段精确含
 断肢态/Teleport 作废/Launch 恢复）、QUERY（rays max 21≤40、shapes max 7≤8）、
 PENETRATION（残余穿透 0 <2mm）。
 
@@ -904,6 +905,29 @@ chunk 沿箱棱**楔**上去（失重 + 球面 MTD 沿棱角上滑）。手数�
 RatFiendTraversalSmoke 七段（S2 实体桌翻越、S3b 80-tick 超时）+ DenseNav + FineGround
 全 PASS。随行的沙盒观感件（traversal-loop 循环路线、交互模式自动翻越替身、
 `--ratfiend-drive` 钩子）为 lab 专属，主仓寻路执行器本就承担喂意图职责，不迁。
+
+## 5.19 R23 高家具前转向脱困（2026-08-25，主仓断点实证——追击鼠煞贴桌完全不动）
+
+**症状与现场取证**：主仓能力导航已给出有效 Walk，`MoveTarget`、`RunSpeed`、落地与移动意图
+均正常，但鼠煞贴着桌子完全不动；玩家靠近也不会抓，是身体始终进不了攻击距离的次生结果。
+断点显示新路线方向与旧 `Facing` 点积为负，而普通高步前探持续命中旧朝向前方的桌面。
+
+**根因**：`UpdateGrounded` 有意用上一 tick 的 `Facing` 做 0.3m 前探；高桌命中后普通高步门
+把 `effMove` 清零，但 `SlewFacing` 也只在 `effMove != 0` 时运行。因此形成永久闭环：
+「旧朝向探到桌面 → 平移与转向同时归零 → 下一 tick 仍按旧朝向探到同一桌面」。路线重规划
+只能换目标，无法改变内核朝向，故卡死恢复也无效。
+
+**修复**：把宿主水平意图拆成 `desiredMove`（转向）与 `effMove`（平移）。普通高步门只清
+`effMove`；被门挡住时 `Facing` 仍沿 `desiredMove` 按既有 `StandTurnRatePerTick` /
+`CrawlTurnRatePerTick` 原地限速回转，前探转离高桌后自动恢复平移。未被高步门拦住的路径继续
+沿滑墙后的 `effMove` 转向；`EnableOrdinaryHighStepGate=false` 的 legacy/default 路线逐位不变。
+
+**验证**：新增无引擎真断言 `[RATFIEND-CORE-HIGH-STEP-TURN]`。同一解析窄桌夹具中，正前
+目标只漂 `-0.021m`（门仍阻止越桌），关闭高步门的消融对照则前进 `8.353m`，证明不是
+物理箱本身碰巧把身体挡停；侧后目标方向与初始朝向点积 `-0.35`，旧实现
+`180 tick` 仅前进 `0.007m`、转角 `0`，稳定红灯；修复后前进 `8.375m`、末态对齐
+`0.999`、单 tick 最大转角 `0.2200rad`（不超过出生参数），双跑哈希
+`A62F625F6316D557` 一致。固定主路线哈希仍为 `DD5BAB9C1E0492E1`，无关路径零漂移。
 
 ## 6. 回迁主仓（2026-08-23，替换 Shambler）
 

@@ -51,8 +51,44 @@ public static class TentaclePlantFactory
         StrikeGrabRadius = 0.25f,
     };
 
+    /// <summary>
+    /// 3.2m 净高房间的天花板伏击者：短链 + 伪装参数调满（伪装就位后 10 tick 出手）。
+    /// 常态手感对齐 short；WanderCenterDistance 压到 1.8 避免游走目标探进对面地板。
+    /// </summary>
+    public static TentaclePlantParams Lurker() => new()
+    {
+        Name = "tentacle-plant/lurker",
+        Length = 3.2f,
+        // 5 节而非 6：短链的逐节拉伸预算按 link 绝对长度走（1.25×0.64m），
+        // 扑击落幕时整链余速拖根节的残差才收得回 STRIKE-GEOMETRY 的 1.25 门限
+        //（峰值出现在 Striking→Recovering 的根节）；速度类参数同步缩配。
+        SegmentCount = 5,
+        SegmentDamping = 0.92f,
+        SegmentVelocityCap = 0.42f,
+        TipGoalAttraction = 0.009f,
+        InnerGoalAttraction = 0.0008f,
+        GuideAttraction = 0.0008f,
+        OutwardRootForce = 0.005f,
+        ShapeSeparationForce = 0.012f,
+        ConstraintIterations = 5,
+        // 3.2 × 0.32 / 5 ≈ 0.205 ≥ RootRadius − RootSurfaceOffset (0.15)，过 Validate。
+        RetractedLengthFraction = 0.32f,
+        WanderCenterDistance = 1.8f,
+        WanderRadius = 1.2f,
+        ChargeTicks = 100,
+        LungeTicks = 8,
+        GrabWindowTicks = 40,
+        RetractTicks = 70,
+        LungeImpulse = 0.26f,
+        DisguiseExtensionFraction = 0.10f,
+        DisguiseEngagePerTick = 0.0125f,
+        DisguiseReleasePerTick = 0.25f,
+        DisguiseChargeThreshold = 0.75f,
+        DisguiseChargeMultiplier = 10,
+    };
+
     public static TentaclePlantParams[] AllPresets() =>
-        new[] { Original(), Short(), Hunter() };
+        new[] { Original(), Short(), Hunter(), Lurker() };
 
     /// <summary>按名取预设；未知名称快速失败，避免回归实际跑错品种却假绿。</summary>
     public static TentaclePlantParams ByName(string name)

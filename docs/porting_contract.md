@@ -93,7 +93,7 @@ core/
 | `species/cicada/CicadaWingState.cs` / `species/cicada/CicadaTentacleState.cs` | 四翼与四条单点触须的固定 tick 表现状态；不向身体回传推进力 | CicadaGraphics |
 | `species/tentacle_plant/TentacleChain.cs` | 独立多节触手原语：段长/柔性解算、局部导引折线、静态地形避让与回退 | Tentacle / TentacleChunk / TentacleProps |
 | `species/tentacle_plant/TentaclePlantController.cs` | 锚定式拟态草控制器：确定性三维游荡、目标充能、Windup、突刺、抓取与回收 | TentaclePlant.Update |
-| `species/tentacle_plant/TentaclePlantParams.cs` / `species/tentacle_plant/TentaclePlantFactory.cs` | 拟态草出生参数、安装框架、目标/效果纯值类型，以及 original/short/hunter 三个稳定预设 | TentaclePlant 构造与种内扩展 |
+| `species/tentacle_plant/TentaclePlantParams.cs` / `species/tentacle_plant/TentaclePlantFactory.cs` | 拟态草出生参数、安装框架、目标/效果纯值类型，以及 original/short/hunter/lurker 四个稳定预设（含 opt-in 伪装/伏击参数组） | TentaclePlant 构造与种内扩展 |
 | `species/deer/DeerLeg.cs` | 独立多节腿段链：出生初始理想长、随 RestAmount 变化的当前 reach、固定次数距离约束、地形抓点、可及极限拖身、持久有向 bend pole 与摆动内段纵向/正交双通道形态响应 | DeerTentacle / Tentacle |
 | `species/deer/DeerLocomotionController.cs` | 鹿专属控制器：恒重力支撑、非均匀推进、换步互锁、犹豫、连续体高与 COM balance | Deer.Act / Deer.Update |
 | `species/deer/DeerParams.cs` / `species/deer/DeerFactory.cs` | 鹿独立参数表与头、重叠躯干、轻鹿角、四条多节腿装配；original/compact/strider 三个稳定预设 | Deer 构造 + DeerTentacle 构造 |
@@ -336,7 +336,7 @@ VultureFlightController bird = BodyFactory.CreateVultureController(origin, p);  
 ### 2.6 拟态草装配契约（TentaclePlantController）
 
 ```csharp
-TentaclePlantParams p = TentaclePlantFactory.Original(); // 或 Short / Hunter / ByName
+TentaclePlantParams p = TentaclePlantFactory.Original(); // 或 Short / Hunter / Lurker / ByName
 TentaclePlantMount mount = new(mountPoint, outwardNormal, tangentHint, colliderId);
 TentaclePlantController plant =
     TentaclePlantFactory.CreateController(mount, p, seed);
@@ -344,8 +344,8 @@ TentaclePlantController plant =
 
 - 拟态草是与 Lizard 并列的**固定式伏击后端**，不复用 `BreedParams`、`BodyFactory`、
   `Limb` 或移动输入。原作当前 DLL 的 `Tentacle` 自身也是独立类，不继承 `BodyPart` / `Limb`。
-- `TentaclePlantFactory` 提供 `Original/Short/Hunter/AllPresets/ByName/CreateController`；
-  稳定 ID 为 `tentacle-plant/original|short|hunter`，未知名称快速失败。创建时冻结参数快照。
+- `TentaclePlantFactory` 提供 `Original/Short/Hunter/Lurker/AllPresets/ByName/CreateController`；
+  稳定 ID 为 `tentacle-plant/original|short|hunter|lurker`，未知名称快速失败。创建时冻结参数快照。
 - `TentaclePlantMount(Point, OutwardNormal, TangentHint, ColliderId)` 定义宿主安装真相。
   核心正交化得到 `Outward/Tangent/Bitangent`；地板、墙、天花板走同一局部公式，
   不按世界 `Up` 分支。退化 hint 使用固定回退，不能引入随机 roll。
@@ -369,6 +369,14 @@ TentaclePlantController plant =
 - `Shift` 是世界 rebase，完整平移 mount、段链、目标记忆、wander goal、guide points 和
   插值历史；`Remount` 是地形不随体移动的重新安装，清攻击/抓取/导引并从新根重建；
   `ReleaseHeldTarget` 显式释放并通过下一次 `Tick` 的 `TargetEffect.Released` 通知宿主。
+- **opt-in 伪装/伏击**（本项目扩展，§6.6 opt-in 先例之一）：第二个宿主可写输入
+  `DisguiseIntent`（持久 bool，默认 false）+ 只读 `DisguiseAmount∈[0,1]`（engage 慢 /
+  release 快缓动）。amount>0 时 `physicsExtension` 被 cap 至
+  `Lerp(1, DisguiseExtensionFraction, amount)`、goal 连续收拢向挂点、wander 冻结
+  （RNG 不消耗）、向外根力/隔节互推/Windup 后缩按 `(1−amount)` 静默、过阈充能
+  ×`DisguiseChargeMultiplier`（"突然咬"）；Holding 与突刺运动窗口忽略 intent、强制快衰
+  且 cap 整体旁路（蜷缩链被扑击冲量完整甩出）；`Remount` 连同 `Target` 一起复位。
+  默认关闭时全路径 bit-exact——smoke `ExpectedHash` 与全部既有矩阵基线零编辑验收。
 
 ### 2.7 鹿装配契约（DeerLocomotionController）
 
@@ -916,8 +924,9 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 
 拟态草不接受 `MoveDir`、`RunSpeed` 或 `MoveTarget`。AI/宿主每 tick 选择至多一个猎物，
 把其稳定 ID、位置、速度、半径和有效/可见信息复制进 nullable
-`TentaclePlantController.Target`。该快照是本 tick 唯一动态目标输入；核心不枚举场景对象，
-也不经 `ITerrainQuery` 查询生物。
+`TentaclePlantController.Target`。核心不枚举场景对象，也不经 `ITerrainQuery` 查询生物。
+第二个宿主可写输入是持久 bool `DisguiseIntent`（opt-in 伪装请求，见 §2.6；
+"范围内无存活猎物才回伪装"之类的策略在宿主侧实现，内核只提供机制）。
 
 `Tick` 返回 `void`，并覆盖只读 `TargetEffect`：
 
@@ -1015,9 +1024,10 @@ AI / 游戏逻辑：`Uprightness`（躯干轴·up ∈[-1,1]，摔倒检测/爬�
 提供稳定三维朝向，避免侧墙/天花板安装时 roll 翻转。
 
 AI、gameplay 与诊断可读 `Phase`、`AttackCharge`、`CanGrab`、`Extension`、
-`AttackSerial`、`HeldTargetId`、`WanderGoal`、`GuidePoints`、`BacktrackFrom` 和地形查询计数。
-`TargetEffect` 是唯一 gameplay 目标效果出口（§4.3）。除 nullable `Target` 输入外，
-上述状态均只读；沙盒调试线不能反向驱动核心。
+`AttackSerial`、`HeldTargetId`、`DisguiseAmount`（渲染层伪装视觉——灯泡/下沉——的
+驱动标量）、`WanderGoal`、`GuidePoints`、`BacktrackFrom` 和地形查询计数。
+`TargetEffect` 是唯一 gameplay 目标效果出口（§4.3）。除 nullable `Target` 与
+`DisguiseIntent` 输入外，上述状态均只读；沙盒调试线不能反向驱动核心。
 
 ## 6. ITerrainQuery 契约（唯一接缝的全部语义）
 
@@ -1141,8 +1151,10 @@ dotnet run --project core/spider_smoke
 # ③ Cicada 无引擎冒烟：飞行/停驻/起飞/Charge/3D 姿态与生命周期。
 dotnet run --project core/cicada_smoke
 
-# ④ 拟态草无引擎冒烟：三预设、三向安装、游荡/绕障/回卷、攻击时序、
-#    TargetEffect、Shift/Remount/释放目标、同 seed 双跑/不同 seed 与 8/16 段查询增长。
+# ④ 拟态草无引擎冒烟：四预设（含 lurker）、三向安装、游荡/绕障/回卷、攻击时序、
+#    TargetEffect、Shift/Remount/释放目标、opt-in 伪装/伏击（DISGUISE 检查：参数惰性、
+#    入伪装/静置/加速充能突袭/抓持快衰/恢复，独立 DisguiseExpectedHash 基线）、
+#    同 seed 双跑/不同 seed 与 8/16 段查询增长。
 dotnet run --project core/tentacle_plant_smoke
 
 # ⑤ 鹿无引擎冒烟：三预设拓扑、恒重力支撑与不均匀力、四条多节腿完整步态、
@@ -1183,7 +1195,8 @@ dotnet run --project core/daddy_long_legs_smoke
 ./tools/run_cicada_matrix.sh
 
 # ⑩ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
-#    双跑/40vs400/1mm 微扰与三预设；哈希由脚本当前基线判定。
+#    lurker 吊顶 ambush（伪装→加速充能突袭→吞入→回伪装全弧线，40/400Hz 同 tick）、
+#    双跑/40vs400/1mm 微扰与四预设；哈希由脚本当前基线判定。
 ./tools/run_tentacle_plant_matrix.sh
 
 # ⑪ 鹿 Godot 矩阵：三预设、双跑/40vs400/微扰、斜坡、台阶、墙前停住、90° 转向、

@@ -6,6 +6,7 @@ using ProcAnim.Core.Diagnostics;
 using ProcAnim.Core.Host;
 using ProcAnim.Core.Species.TentaclePlant;
 using ProcAnim.Core.Terrain;
+using ProcAnimLab.Render;
 
 namespace ProcAnimLab.TentaclePlantSandbox;
 
@@ -21,12 +22,13 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private const float TargetRadius = 0.16f;
 
     private static readonly string[] MountNames = { "floor", "wall", "ceiling" };
-    private static readonly string[] RouteNames = { "idle", "hit", "miss", "occluded" };
+    private static readonly string[] RouteNames = { "idle", "hit", "miss", "occluded", "ambush" };
     private static readonly string[] PresetNames =
     {
         "tentacle-plant/original",
         "tentacle-plant/short",
         "tentacle-plant/hunter",
+        "tentacle-plant/lurker",
     };
 
     [Export] public float GravityMps2 = 36f;
@@ -35,6 +37,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
 
     private readonly RaycastTerrainQuery _terrain = new();
     private readonly TentaclePlantRenderer _renderer = new();
+    private TentaclePlantFormalRenderer? _formal;
+    private bool _formalView = true;
     private DeterminismHasher _hasher = new();
 
     private TentaclePlantController _plant = null!;
@@ -76,6 +80,9 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private float? _minimumStrikeSpeed;
     private float _perturb;
     private ulong? _expectHash;
+    private string? _screenshotPath; // --plant-screenshot=path[@tick]：截图后退出（视觉验证回路）
+    private long _screenshotTick = 90;
+    private (Vector3 Pos, Vector3 LookAt)? _cameraOverride; // --plant-cam=px,py,pz,lx,ly,lz
 
     // 硬断言指标。
     private bool _nonFinite;
@@ -123,6 +130,10 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private float _maxResidualPenetration;
     private int _maxPenetrationSegment = -1;
     private long _maxPenetrationTick = -1;
+    private float _maxDisguiseAmount;
+    private float _disguiseAtPreyEntry = -1f;
+    private float _preEntryMaxTipDistance;
+    private bool _sawDisguiseZeroAfterStrike;
     private Vector3 _lastHand;
 
     private bool Deterministic => _determinismTicks > 0;
@@ -158,7 +169,7 @@ public partial class TentaclePlantSandboxWorld : Node3D
         _preset = TentaclePlantFactory.ByName(_presetName);
         SpawnPlant(_preset, _mountName);
 
-        if (!Deterministic)
+        if (!Deterministic && _screenshotPath is null)
         {
             _hud = new TentaclePlantSandboxHud();
             _hud.Build(this, PresetNames, MountNames, RouteNames,
@@ -202,6 +213,16 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _renderer.Build(this, _plant);
             _rendererBuilt = true;
         }
+        _formal?.Clear();
+        _formal = new TentaclePlantFormalRenderer(_plant, preset.Name);
+        _formal.Build(this);
+        ApplyRenderView();
+    }
+
+    private void ApplyRenderView()
+    {
+        _renderer.SetPlantVisible(!_formalView);
+        _formal?.SetVisible(_formalView);
     }
 
     private void ConfigureMount(string mountName)
@@ -316,6 +337,10 @@ public partial class TentaclePlantSandboxWorld : Node3D
         _maxResidualPenetration = 0f;
         _maxPenetrationSegment = -1;
         _maxPenetrationTick = -1;
+        _maxDisguiseAmount = 0f;
+        _disguiseAtPreyEntry = -1f;
+        _preEntryMaxTipDistance = 0f;
+        _sawDisguiseZeroAfterStrike = false;
         _lastHand = _plant.Hand.Pos;
     }
 
@@ -407,6 +432,18 @@ public partial class TentaclePlantSandboxWorld : Node3D
                 _targetPos = TargetForRoute("occluded");
                 _targetVelocity = Vector3.Zero;
                 break;
+            case "ambush":
+                // 全程保持伪装意图：入伪装（~80 tick 缩到挂点）→ tick 200 猎物入场 →
+                // 伪装态加速充能 10 tick 突袭 → 抓取/回收/吞入 → 慢速回伪装。
+                // 整条弧线由内核覆盖序（Holding/突刺窗强制快衰）自己演完。
+                _plant.DisguiseIntent = true;
+                _targetActive = !_targetConsumed && _tick > 200;
+                if (_plant.HeldTargetId is null)
+                {
+                    _targetPos = TargetForRoute("ambush");
+                    _targetVelocity = Vector3.Zero;
+                }
+                break;
         }
     }
 
@@ -452,10 +489,11 @@ public partial class TentaclePlantSandboxWorld : Node3D
             0.25f,
             hostVisible: true,
             // miss 专门验证完整锁向扑击；设为不可抓，避免首扑同 tick
-            // 的几何偶合把正确的扑空脚本变成一次短暂 Holding。hit 也
+            // 的几何偶合把正确的扑空脚本变成一次短暂 Holding。hit/ambush 也
             // 到锁向扑击开始后才开放抓取；被动低速捕获由 core smoke 专测。
             hostGrabbable: _route != "miss" &&
-                           (_route != "hit" || _plant.AttackSerial > 0));
+                           (_route != "hit" && _route != "ambush" ||
+                            _plant.AttackSerial > 0));
     }
 
     private void ApplyTargetEffect()
@@ -563,6 +601,23 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _firstStrikePeakSpeed = Mathf.Max(_firstStrikePeakSpeed, handStep);
         }
         _lastHand = hand;
+        _maxDisguiseAmount = Mathf.Max(_maxDisguiseAmount, _plant.DisguiseAmount);
+        if (_route == "ambush")
+        {
+            float tipFromRoot = _plant.Chain.Tip.Pos.DistanceTo(_plant.Root.Pos);
+            if (_tick > 150 && _tick <= 200)
+            {
+                _preEntryMaxTipDistance = Mathf.Max(_preEntryMaxTipDistance, tipFromRoot);
+            }
+            if (_tick == 200)
+            {
+                _disguiseAtPreyEntry = _plant.DisguiseAmount;
+            }
+            if (_firstStrikeTick > 0 && _plant.DisguiseAmount == 0f)
+            {
+                _sawDisguiseZeroAfterStrike = true;
+            }
+        }
         _maxAttackCharge = Mathf.Max(_maxAttackCharge, _plant.AttackCharge);
         _maxRootError = Mathf.Max(_maxRootError, _plant.Root.Pos.DistanceTo(_rootAnchor));
         _maxGuidePoints = Math.Max(_maxGuidePoints, _plant.GuidePoints.Count);
@@ -670,6 +725,11 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _hasher.Fold(_targetPos);
             _hasher.Fold(_targetVelocity);
         }
+        // 伪装标量只在 ambush 路线折叠：既有 11 条基线的折叠字节流逐位不变。
+        if (_route == "ambush")
+        {
+            _hasher.Fold(_plant.DisguiseAmount);
+        }
 
         if (_tick % 100 == 0 || _tick >= _determinismTicks)
         {
@@ -701,6 +761,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
                  $"minExtension={_minHeldExtension:F4} " +
                  $"occludedExtent={_maxOccludedOutwardExtent:F3}m " +
                  $"consumed={_targetConsumed} " +
+                 $"disguise={_plant.DisguiseAmount:F3}/max:{_maxDisguiseAmount:F3}/" +
+                 $"entry:{_disguiseAtPreyEntry:F3}/coil:{_preEntryMaxTipDistance:F3}m " +
                  $"phase={_plant.Phase} held={_plant.HeldTargetId?.ToString() ?? "none"}");
 
         var failures = new List<string>();
@@ -728,10 +790,14 @@ public partial class TentaclePlantSandboxWorld : Node3D
         {
             failures.Add("Capture 与 Release 之间出现未声明 Held 的断帧");
         }
-        if (_route != "hit" && _maxEffectMagnitude > 0.0001f)
+        if (_route != "hit" && _route != "ambush" && _maxEffectMagnitude > 0.0001f)
         {
             failures.Add($"未抓持路线输出了目标位移/速度效果 " +
                          $"({_maxEffectMagnitude:F6})");
+        }
+        if (_route != "ambush" && _maxDisguiseAmount != 0f)
+        {
+            failures.Add($"非 ambush 路线伪装标量非零（{_maxDisguiseAmount:F4}）");
         }
         if (_expectHash is ulong expected && _hasher.Value != expected)
         {
@@ -868,6 +934,53 @@ public partial class TentaclePlantSandboxWorld : Node3D
                                  $"({_maxOccludedOutwardExtent:F4}m > 2.802m)");
                 }
                 break;
+            case "ambush":
+                if (_disguiseAtPreyEntry < 0.999f)
+                {
+                    failures.Add(
+                        $"猎物入场时未完成伪装（disguise={_disguiseAtPreyEntry:F4}）");
+                }
+                float coilLimit =
+                    _preset.Length * 2f * _preset.DisguiseExtensionFraction + 0.15f;
+                if (_preEntryMaxTipDistance > coilLimit)
+                {
+                    failures.Add($"伪装静置期链未收拢" +
+                                 $"（tip={_preEntryMaxTipDistance:F3}m > {coilLimit:F3}m）");
+                }
+                // 猎物 tick 201 起入场，伪装态充能 2×Multiplier/tick，
+                // 充满同 tick 即首帧 Striking。
+                long expectedStrikeTick = 200 +
+                    (_preset.ChargeTicks + _preset.DisguiseChargeMultiplier - 1) /
+                    _preset.DisguiseChargeMultiplier;
+                if (_firstStrikeTick != expectedStrikeTick)
+                {
+                    failures.Add($"伏击突袭时延不符" +
+                                 $"（strike={_firstStrikeTick} != {expectedStrikeTick}）");
+                }
+                if (!_sawDisguiseZeroAfterStrike)
+                {
+                    failures.Add("突袭窗口未强制解除伪装");
+                }
+                bool ambushOrdered = _captureEvents == 1 &&
+                                     _consumeEvents == 1 &&
+                                     _releaseEvents == 1 &&
+                                     _captureTick >= _firstStrikeTick &&
+                                     _captureTick <= _firstStrikeTick +
+                                         _preset.LungeTicks + _preset.GrabWindowTicks &&
+                                     _captureTick < _consumeTick &&
+                                     _consumeTick < _releaseTick;
+                if (!ambushOrdered || !_targetConsumed)
+                {
+                    failures.Add($"ambush 抓取/吞入弧线不完整（counts=" +
+                                 $"{_captureEvents}/{_consumeEvents}/{_releaseEvents}, " +
+                                 $"ticks={_captureTick}/{_consumeTick}/{_releaseTick}, " +
+                                 $"consumed={_targetConsumed}）");
+                }
+                if (_plant.DisguiseAmount < 0.99f)
+                {
+                    failures.Add($"吞入后未恢复伪装（disguise={_plant.DisguiseAmount:F4}）");
+                }
+                break;
         }
 
         bool pass = failures.Count == 0;
@@ -884,7 +997,12 @@ public partial class TentaclePlantSandboxWorld : Node3D
             return;
         }
 
-        if (Deterministic)
+        if (_cameraOverride is { } cam)
+        {
+            _camera.Position = cam.Pos;
+            _camera.LookAt(cam.LookAt, Vector3.Up);
+        }
+        else if (Deterministic || _screenshotPath is not null)
         {
             UpdateShowcaseCamera();
         }
@@ -898,6 +1016,7 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _targetActive,
             _targetPos,
             TargetRadius);
+        _formal?.Draw((float)Engine.GetPhysicsInterpolationFraction(), (float)delta);
         Vector3 targetOffset = _targetPos - _mountPoint;
         Vector3 targetLocal = new(
             targetOffset.Dot(_mountOutward),
@@ -927,7 +1046,27 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _plant.BacktrackFrom,
             _plant.TickQueryCount,
             _plant.PeakQueryCount,
-            _plant.AttackSerial);
+            _plant.AttackSerial,
+            _plant.DisguiseIntent,
+            _plant.DisguiseAmount);
+        MaybeCaptureScreenshot();
+    }
+
+    /// <summary>--plant-screenshot 视觉验证回路：到达指定 tick 后保存视口帧并退出。
+    /// 渲染专用旁路——不触碰物理与哈希；headless 下图像为空，别在矩阵里用。</summary>
+    private void MaybeCaptureScreenshot()
+    {
+        if (_screenshotPath is null || _tick < _screenshotTick)
+        {
+            return;
+        }
+        Image img = GetViewport().GetTexture().GetImage();
+        Error err = img.SavePng(_screenshotPath);
+        GD.Print($"[TENTACLE-PLANT-SANDBOX] screenshot " +
+                 $"{(err == Error.Ok ? "saved" : $"FAILED ({err})")}: " +
+                 $"{_screenshotPath} (tick {_tick})");
+        _screenshotPath = null;
+        GetTree().Quit(err == Error.Ok ? 0 : 3);
     }
 
     private void UpdateShowcaseCamera()
@@ -1018,6 +1157,9 @@ public partial class TentaclePlantSandboxWorld : Node3D
             case Key.Key3:
                 SelectPreset((int)(key.PhysicalKeycode - Key.Key1));
                 break;
+            case Key.Key0:
+                SelectPreset(3);
+                break;
             case Key.F:
                 SelectMount(0);
                 break;
@@ -1032,6 +1174,19 @@ public partial class TentaclePlantSandboxWorld : Node3D
             case Key.Key6:
             case Key.Key7:
                 SelectRoute((int)(key.PhysicalKeycode - Key.Key4));
+                break;
+            case Key.Key8:
+                SelectRoute(4);
+                break;
+            case Key.V:
+                _formalView = !_formalView;
+                ApplyRenderView();
+                GD.Print($"[TENTACLE-PLANT-SANDBOX] view -> {(_formalView ? "formal" : "debug")}");
+                break;
+            case Key.C:
+                // 手动伪装开关（ambush 路线脚本会每 tick 覆盖回 true）。
+                _plant.DisguiseIntent = !_plant.DisguiseIntent;
+                GD.Print($"[TENTACLE-PLANT-SANDBOX] disguise-intent -> {_plant.DisguiseIntent}");
                 break;
         }
     }
@@ -1067,6 +1222,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
         _route = RouteNames[index];
         ConfigureOccluder(_route == "occluded");
         _plant.ReleaseHeldTarget();
+        // 切走 ambush 时复位伪装意图；ambush 路线脚本会每 tick 重新置 true。
+        _plant.DisguiseIntent = false;
         ResetTarget();
         ResetMetrics();
         SyncHudPickers();
@@ -1115,8 +1272,9 @@ public partial class TentaclePlantSandboxWorld : Node3D
                         "original" => PresetNames[0],
                         "short" => PresetNames[1],
                         "hunter" => PresetNames[2],
+                        "lurker" => PresetNames[3],
                         _ when Array.IndexOf(PresetNames, value) >= 0 => value,
-                        _ => throw new FormatException("preset 只接受 original|short|hunter 或完整稳定 ID"),
+                        _ => throw new FormatException("preset 只接受 original|short|hunter|lurker 或完整稳定 ID"),
                     };
                 }
                 else if (argument.StartsWith("--plant-mount=", StringComparison.Ordinal))
@@ -1132,7 +1290,7 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     _route = argument["--plant-route=".Length..].ToLowerInvariant();
                     if (Array.IndexOf(RouteNames, _route) < 0)
                     {
-                        throw new FormatException("route 只接受 idle|hit|miss|occluded");
+                        throw new FormatException("route 只接受 idle|hit|miss|occluded|ambush");
                     }
                 }
                 else if (argument.StartsWith("--plant-seed=", StringComparison.Ordinal))
@@ -1171,6 +1329,44 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     string text = argument["--plant-expect-hash=".Length..];
                     _expectHash = ParseUInt64(text, hexadecimalByDefault: true);
                 }
+                else if (argument.StartsWith("--plant-cam=", StringComparison.Ordinal))
+                {
+                    string[] parts = argument["--plant-cam=".Length..]
+                        .Split(',', StringSplitOptions.TrimEntries);
+                    if (parts.Length != 6)
+                    {
+                        throw new FormatException("cam 需要 px,py,pz,lx,ly,lz 六个数值");
+                    }
+                    var position = new Vector3(
+                        float.Parse(parts[0], CultureInfo.InvariantCulture),
+                        float.Parse(parts[1], CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], CultureInfo.InvariantCulture));
+                    var lookAt = new Vector3(
+                        float.Parse(parts[3], CultureInfo.InvariantCulture),
+                        float.Parse(parts[4], CultureInfo.InvariantCulture),
+                        float.Parse(parts[5], CultureInfo.InvariantCulture));
+                    if (!IsFinite(position) || !IsFinite(lookAt))
+                    {
+                        throw new FormatException("cam 必须全部有限");
+                    }
+                    _cameraOverride = (position, lookAt);
+                }
+                else if (argument.StartsWith("--plant-screenshot=", StringComparison.Ordinal))
+                {
+                    // 视觉验证回路（仅交互窗口模式有意义；headless 下取不到帧）。
+                    string spec = argument["--plant-screenshot=".Length..];
+                    int at = spec.LastIndexOf('@');
+                    if (at > 0)
+                    {
+                        _screenshotPath = spec[..at];
+                        _screenshotTick = long.Parse(
+                            spec[(at + 1)..], CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        _screenshotPath = spec;
+                    }
+                }
                 else if (argument.StartsWith("--plant-", StringComparison.Ordinal))
                 {
                     throw new FormatException($"未知参数 {argument}");
@@ -1192,6 +1388,13 @@ public partial class TentaclePlantSandboxWorld : Node3D
             (_determinismTicks <= 0 || _route != "hit"))
         {
             GD.PushError("[TENTACLE-PLANT-CLI] --plant-min-strike-speed 仅用于确定性 hit 回归");
+            return false;
+        }
+        if (_screenshotPath is not null && Deterministic)
+        {
+            // 截图在到点帧直接 Quit，会吞掉 DumpDeterministicResult 的 [RESULT]
+            // 判定且退出码 0 伪装成 PASS——按既有 CLI 纪律直接拒绝该组合。
+            GD.PushError("[TENTACLE-PLANT-CLI] --plant-screenshot 不能与 --plant-determinism 组合");
             return false;
         }
         return true;

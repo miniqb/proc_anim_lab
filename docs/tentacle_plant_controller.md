@@ -33,8 +33,8 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
 - `TentacleChain`：物种自有的多节触手原语。持有根到手的有序段、速度、半径衰减、
   导引折线和地形回退状态；它不是 `Limb` 的子类。
 - `TentaclePlantParams`：纯出生配置。工厂创建实例时冻结快照，运行时不回读调用侧对象。
-- `TentaclePlantFactory`：提供 `Original()`、`Short()`、`Hunter()`、`AllPresets()`、
-  `ByName()` 与 `CreateController()`；未知 ID 快速失败，不静默回落。
+- `TentaclePlantFactory`：提供 `Original()`、`Short()`、`Hunter()`、`Lurker()`、
+  `AllPresets()`、`ByName()` 与 `CreateController()`；未知 ID 快速失败，不静默回落。
 - `TentaclePlantMount`：安装点和完整朝向契约：
   `Point`、`OutwardNormal`、`TangentHint`、`ColliderId`。核心正交化后输出稳定的
   `Outward / Tangent / Bitangent`；`TangentHint` 与法线退化时使用固定回退，不读世界
@@ -44,15 +44,16 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
   不进入核心。
 - `TentaclePlantTargetEffect`：宿主每 tick 读取并应用到真实目标的纯值效果。
 
-当前三个稳定预设：
+当前四个稳定预设：
 
 | 稳定 ID | 长度 / 段数 | 柔性与节奏 |
 |---|---:|---|
 | `tentacle-plant/original` | `7.5m` / 8 | 原作基准软硬度；90 tick 充能、10 tick 突刺、40 tick 余留抓取窗、80 tick 回收 |
 | `tentacle-plant/short` | `5m` / 6 | 更软、更紧凑；110 tick 充能、10 tick 突刺、40 tick 余留抓取窗、95 tick 回收 |
 | `tentacle-plant/hunter` | `9m` / 10 | 更硬、更主动；70 tick 充能、12 tick 突刺、40 tick 余留抓取窗、65 tick 回收 |
+| `tentacle-plant/lurker` | `3.2m` / 5 | 3.2m 净高房间的吊顶伏击者；100 tick 充能（伪装就位后 ×10 加速 → 10 tick 出手）、8 tick 突刺、40 tick 余留抓取窗、70 tick 回收；伪装参数调满（§4.1） |
 
-参数语义分为五组：
+参数语义分为六组：
 
 - **几何/出生**：`Length`、`SegmentCount`、`RootRadius`、`TipRadius`、
   `HandVisualRadius`、`StrikeGrabRadius`、`RootMass`、`HandMass`、
@@ -78,6 +79,11 @@ tick 阻尼、柔性段链和慢速游荡，不包含浮力、水流或游泳分
   `PredictionTicksPerMeter`、`LowRelativeGrabSpeed`、`ConsumeDistance`、
   `CarryHandMass`、`CarryVelocityGain`、`CarryRootPull`。它们分别控制充能、突刺/余窗、
   回收吞入和宿主目标修正；首版没有额外 `MissCooldown` 参数。
+- **伪装/伏击（opt-in）**：`DisguiseExtensionFraction`、`DisguiseEngagePerTick`、
+  `DisguiseReleasePerTick`、`DisguiseChargeThreshold`、`DisguiseChargeMultiplier`。
+  门在宿主输入 `DisguiseIntent`（默认 false）而不在参数：关闭时这些参数不参与任何
+  运行期计算，既有品种基线零漂移（§4.1；CLAUDE.md §6.6 opt-in 硬要求的又一先例）。
+  `DisguiseChargeThreshold` 经 `Validate` 强制为正——`DisguiseAmount == 0` 永不过阈。
 
 ## 3. 三维化取舍
 
@@ -212,14 +218,47 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 宿主只调用一次 `Tick(TickContext)`，不得拆开或重排这些阶段。逻辑固定 40 tick/s；
 `Vel` 仍是米/tick 位移，渲染只读插值状态。
 
+### 4.1 伪装/伏击标量（opt-in，本项目扩展）
+
+原作没有对应机制（`PoleMimic` 的伪装攀爬面是另一物种、明确不移植）。为"吊在天花板
+伪装成灯、猎物经过突然咬"的玩法，本项目加了一个**连续伪装标量**而不是新 Phase 枚举值
+——`(int)Phase` 进两份哈希折叠，追加枚举值即便放在末尾也意味着新状态语义要进折叠流；
+伪装本质是对六态的连续调制（蜷缩程度），与阶段正交，标量表达最干净。
+
+- **输入** `DisguiseIntent`（bool，默认 false，持久属性）：第二个宿主可写输入。
+- **输出** `DisguiseAmount ∈ [0,1]`：按 `DisguiseEngagePerTick`（慢，默认 80 tick 回满）
+  / `DisguiseReleasePerTick`（快，默认 4 tick 归零）朝 intent 缓动。
+- **力学效果**（全部由 `_disguiseAmount > 0` 分支门控，默认路径零新增浮点运算）：
+  1. `physicsExtension` 被 cap 到 `Lerp(1, DisguiseExtensionFraction, amount)`——
+     链经既有 PullOnly 绳约束与根部硬拴被匀速收拢到挂点附近；
+  2. goal 连续混合向 `Root + Outward × (Length × DisguiseExtensionFraction)`
+     （硬切换会抖动导引刷新与查询计数）；
+  3. wander 更新跳过（`WanderGoal` 冻结、RNG 不消耗）；
+  4. 形态力静默：Windup 后缩力乘 `(1 − amount)`（蜷缩时后缩只会把伪装球向外推），
+     `OutwardRootForce` / `ShapeSeparationForce` 经 `InjectShapeForces` 新尾参
+     `calmAmount` 同比衰减（goal/guide 吸引不衰减——它们正是拉回根部的力）；
+  5. 充能加速：`amount ≥ DisguiseChargeThreshold` 时每 tick 充能增量从 2 变
+     `2 × DisguiseChargeMultiplier`（纯整数、保留半 tick 计量与"充满同 tick 开扑"）。
+- **覆盖序**（优先级从高到低）：`Holding` → 忽略 intent、强制快衰；突刺运动窗口
+  （`consumingStrikeMotion || _strikeTicksRemaining > 0`）→ 强制快衰 **且 extension
+  cap / goal 收拢整体旁路**——蜷缩链才能被扑击冲量完整甩出（充满 tick 冲量注入时
+  位置尚未移动，cap 残留无害；下一 tick 起窗口判定生效）；否则朝 intent 缓动。
+- **恢复伪装是涌现的**：扑空/吞入后 intent 仍为 true，amount 从 0 以 engage 速率
+  回升，cap 连续收缩把伸出的链逐 tick 拉回——无需额外状态。
+- `Remount()` 连同 `Target` 一起把 intent/amount 复位。
+
+"攻击后范围内没有存活猎物才恢复伪装"之类的策略归宿主（沙盒 ambush 路线 / 竞技场
+相位机 / 主仓 AI），内核只提供机制。
+
 ## 5. 宿主 API 与生命周期
 
 宿主按以下数据流接线：
 
 1. 由地形安装点构造 `TentaclePlantMount(Point, OutwardNormal, TangentHint, ColliderId)`；
-2. 从 `TentaclePlantFactory.Original/Short/Hunter/ByName` 取得出生参数，再由
+2. 从 `TentaclePlantFactory.Original/Short/Hunter/Lurker/ByName` 取得出生参数，再由
    `CreateController` 创建实例并给固定 seed；
-3. 每 tick 在调用 `Tick` 前写 nullable `controller.Target`；
+3. 每 tick 在调用 `Tick` 前写 nullable `controller.Target`；需要伪装时按策略改写
+   持久 bool `controller.DisguiseIntent`（§4.1）；
 4. `Tick` 后读取 `controller.TargetEffect`，由 gameplay 权威对象应用效果；
 5. 渲染读取 `Body`、`Root`、`Hand`、`Segments` 及其插值位置。
 
@@ -237,14 +276,14 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 
 - 几何：`Body`、`Root`、`Hand`、`Segments` 和各自插值位置；
 - 行为：`Phase`、`AttackCharge`、`CanGrab`、`Extension`、`AttackSerial`、
-  `HeldTargetId`，以及最近一次 tick 的 `TargetStatus`（可充能、越界、安装面后、遮挡、
-  宿主隐藏、抓持或锁向突刺）；
+  `HeldTargetId`、`DisguiseAmount`（渲染层伪装视觉的驱动标量），以及最近一次 tick 的
+  `TargetStatus`（可充能、越界、安装面后、遮挡、宿主隐藏、抓持或锁向突刺）；
 - 路径：`WanderGoal`、0–2 个真实折点 `GuidePoints`（根与目标为隐含端点），以及
   `BacktrackFrom`（`-1` 表示无回退，否则为首个需回卷的触手段索引）；
 - 预算：当 tick `TickQueryCount` 与生命周期峰值 `PeakQueryCount`。
 
-这些输出除 `Target` 外均不得由宿主回写。拟态草也不接受 `MoveDir` / `RunSpeed`：
-为了统一表面而伪造移动输入只会把固定生物错误塞进移动生物契约。
+这些输出除 `Target` 与 `DisguiseIntent` 外均不得由宿主回写。拟态草也不接受
+`MoveDir` / `RunSpeed`：为了统一表面而伪造移动输入只会把固定生物错误塞进移动生物契约。
 
 ## 6. 沙盒与回归
 
@@ -254,12 +293,14 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 godot --path . scenes/tentacle_plant_sandbox.tscn
 ```
 
-沙盒支持以下确定性 CLI：
+沙盒键位：`1/2/3/0` 换预设、`F/G/H` 换安装面、`4~8` 换路线、`V` 正式/白盒双视图、
+`C` 手动切 `DisguiseIntent`（ambush 路线脚本会每 tick 覆盖回 true）、`Space` 释放并
+重置猎物、按住右键自由飞相机。确定性 CLI：
 
 ```text
---plant-preset=tentacle-plant/original|tentacle-plant/short|tentacle-plant/hunter
+--plant-preset=tentacle-plant/original|short|hunter|lurker（完整稳定 ID 或简名）
 --plant-mount=floor|wall|ceiling
---plant-route=idle|hit|miss|occluded
+--plant-route=idle|hit|miss|occluded|ambush
 --plant-target-local=<outward,tangent,bitangent>  # 可选，米；覆盖脚本猎物位置
 --plant-min-strike-speed=<meters/tick> # 可选；确定性 hit 的最低首扑峰值
 --plant-seed=<ulong>
@@ -267,11 +308,15 @@ godot --path . scenes/tentacle_plant_sandbox.tscn
 --plant-tps=<positive integer>       # 专项矩阵使用 40 / 400
 --plant-perturb=<meters>
 --plant-expect-hash=<hex>
+--plant-screenshot=<path[@tick]>     # 视觉验证旁路：到 tick 截图退出（headless 无帧）
+--plant-cam=<px,py,pz,lx,ly,lz>      # 视觉验证旁路：固定机位 + look-at
 ```
 
-`--plant-preset` 的规范写法是完整稳定 ID，交互 CLI 也接受
-`original / short / hunter` 简名；`--plant-expect-hash` 仅在同时给出正数
-`--plant-determinism` 时有效。
+`--plant-expect-hash` 仅在同时给出正数 `--plant-determinism` 时有效；两条视觉旁路
+不触碰物理与哈希、不进矩阵。`ambush` 路线脚本：全程 `DisguiseIntent=true`，tick 200
+放静止猎物，演完"入伪装缩到挂点 → 伪装态 10 tick 加速充能突袭 → 抓取/回收/吞入 →
+慢速回伪装"的完整弧线；仅该路线把 `DisguiseAmount` 追加进沙盒确定性折叠（route 门控，
+既有 11 条基线的折叠字节流逐位不变），并有"非 ambush 路线伪装标量恒零"的通用守卫。
 
 专项验证：
 
@@ -282,7 +327,7 @@ dotnet run --project core/tentacle_plant_smoke
 
 两条入口都以退出码和断言判定。无引擎 smoke 覆盖：
 
-- 三预设装配、参数快照与未知 ID 快速失败；
+- 四预设装配、参数快照、未知 ID 与伪装参数越界快速失败；
 - 三向安装、游荡域/净空、局部两折点与回卷恢复；开放地形首 tick 必须铺到
   `Length × SpawnExtension`，original/hunter 在三向 0.25m 薄板前的出生/Remount 各跑
   2000 tick，要求全程无远侧段、无中心线穿板且连续回卷不超过 60 tick；
@@ -294,18 +339,99 @@ dotnet run --project core/tentacle_plant_smoke
 - `15.1 / 15.2 / 25m` 同方向远目标的连续横向响应，防止查询预算边界再次冻结导引；
 - hunter 在三向安装下的目标球长度/前半空间交界，以及整个目标球越界时的拒绝门；
 - `Shift`、`Remount`、`ReleaseHeldTarget` 的逐字段生命周期；
+- 伪装/伏击（`DISGUISE` 检查，天花板安装 + lurker）：参数惰性（intent=false 下极端
+  伪装参数与出厂参数 300 tick 逐位同运动学——门在输入不在参数）、入伪装 80 tick 达满
+  且单调、蜷缩静置包络（位置包络而非速度阈值——自避让在蜷缩球内有持续微推）、
+  `WanderGoal` 冻结、突袭时延精确 10 tick、抓持期 amount 快衰归零（快衰窗口内允许
+  残量——捕获可落在突刺后衰减完成前）、突袭窗口 tip 冲出伪装
+  包络（cap 旁路证据）、释放后慢速回满、intent 撤销 ≤4 tick 归零 + 游走恢复；整套
+  场景双跑 bit-exact 并钉独立基线 `DisguiseExpectedHash`（与主 `ExpectedHash` 并列）；
 - 同 seed 双跑 bit-exact、不同 seed 轨迹差异、8/16 段查询增长、穿透和所有数值 finite。
 
-Godot 矩阵覆盖 floor / wall / ceiling、idle / hit / miss / occluded、三预设、同 seed
-双跑、idle 与 hit 的 40/400Hz 同 tick 结果、1mm 初态微扰**灵敏度**、真实 collider
-全半径穿透、hunter 长度球边缘与约 50 度大攻角扑击/抓取，以及 `TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
+Godot 矩阵覆盖 floor / wall / ceiling、idle / hit / miss / occluded / ambush、四预设、
+同 seed 双跑、idle / hit / ambush 的 40/400Hz 同 tick 结果、1mm 初态微扰**灵敏度**、
+真实 collider 全半径穿透、hunter 长度球边缘与约 50 度大攻角扑击/抓取，以及
+`TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
 Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收中另行运行，不包含在
 拟态草专项脚本内部。
 
 具体哈希与配置数量只以 smoke/matrix 当前输出和脚本内钉死常量为准；在基线真正生成并通过前，
 文档不预写数值。
 
-## 7. 回迁边界与已知问题
+## 7. 正式渲染件与伏击竞技场
+
+### 7.1 正式渲染件（`scripts/render/TentaclePlantFormalRenderer.cs`）
+
+拟态草的第一个正式渲染件，也是外观从"植物"改成"肉质触手怪"的落点（叶片等植物修饰
+已从白盒渲染器移除；白盒保留作 V 键调试视图，mock 猎物球仍由白盒负责）：
+
+- **肉质管体**：`SplineSampler` 4× 密化 + `TubeMeshBuilder.AddTube`，
+  `srgbVertexColors: true`（场景 tonemap 2 硬要求）；视觉剖面反锥度——肉根粗 → 颈细 →
+  向头膨出（原作视觉剖面与物理半径解耦有据，渲染研究 §1.4）；双频行波蠕动化妆，
+  Striking 抑制、伪装归零。配色按预设分档（苍白肉粉 / 灰褐 / 暗红 / 苍白灰粉），禁绿。
+- **蛇/蜥式双颌大嘴**（RatFiend 可动颌先例重定档）：上下两根长吻锥管绕 mouthRight 轴
+  对开**各承担一半张角**（长吻双颌对开时嘴缝中线天然保持在触手轴向上），
+  rest 6~9° 永不咬死、gape 160~172°（真 180° 颌背会贴上颈管）；铰点填缝双球
+  （后肉色 / 前暗红口底）+ 沿平分线的宽根暗红喉锥（闭嘴随 mawScale 缩没）；牙齿
+  seed 基因（上颌每侧 8~12 / 下颌 7~10、10% 缺牙、前两颗犬齿 ×1.3~1.7、下牙错半齿位），
+  **十字双刀片**——单面 `AddBlade` 侧视近乎消失，大张的嘴是主视觉；无眼无耳。
+- **嘴开度**：`AttackSerial` 增沿触发咬合顿挫（阶跃沿，不测平滑域——RatFiend R18b
+  教训）；`openTarget = (snap 窗 || Striking || Holding) ? 0 :
+  max(InverseLerp(WindupStart,1,charge), disguiseEase) + 微呼吸/负偏置微颤`；
+  非对称低通**开慢（λ=7，蓄力"慢慢张开"）合快（λ=28，咬合"啪"地咬死）**。
+- **嘴帧**：forward = 末端多段混合（0.6/0.4 差分）→ Striking 混 40% 突刺速度方向、
+  伪装混向 Outward（缩链退化帧兜底）→ 低通；up 逐帧平行传输延续，**不做世界竖直
+  对齐**——张开平面自由跟随触手自身 roll，只保证嘴对着猎物。
+- **伪装视觉**（纯化妆位移，`sink = smoothstep(DisguiseAmount)`，Striking / snap 窗
+  强制归零一帧交还物理位）：头组件埋进安装面 1.1 headR（允许穿模，全张双颌与牙尖
+  全部藏进板内）、管体整体下沉且 `sink > 0.9` 时停画；**灯泡**（唯一刚性件：暖白
+  SphereMesh + 微 emission）由 sink 项单独推出走面下——吊在天花板上几乎只露一个
+  发光灯泡，就是一盏吸顶灯。闭嘴时灯泡缩回喉内被闭合颌管完全包住。
+
+### 7.2 吊顶伏击竞技场（探索场景，不进矩阵）
+
+`scenes/tentacle_plant_arena.tscn` + `TentaclePlantArenaWorld/Hud`，rat_arena 纪律
+（命令行零参数、全 `[Export]` Inspector、默认值唯一真相源、生效值打在 ready 行）：
+
+```bash
+godot --path . scenes/tentacle_plant_arena.tscn
+```
+
+`BoxRoomArenaBuilder` 盒房间（默认 16×16m、净高 3.2m），lurker 挂房间正中天花板、
+出生即伪装；挂点下一盏暖 OmniLight 亮度随 `DisguiseAmount` 走（揭露时"灯熄了"）。
+宿主相位只有 `Ambush / Engage` 两个，冷却与回伪装计时都是时间戳（冷却≠相位——
+RatFiend R19 教训）：
+
+| 相位 | 条件 | 喂入 |
+|---|---|---|
+| Ambush | 玩家水平距挂点 > `AmbushTriggerRadius`(2.2m) | `Target=null`，intent=true |
+| Ambush | 距 ≤ 触发半径 | 喂可见目标——伪装态加速充能，突袭由内核涌现 |
+| Ambush→Engage | `AttackSerial` 增沿（伏击出手） | 压 `AttackCooldownSeconds`(2.5s) 冷却 |
+| Engage | 距 ≤ `EngageReleaseRadius`(4.5m，迟滞) | 喂目标，`HostVisible = 冷却已过`——冷却中不充能仍 Tracking：**闭嘴、朝向玩家、扭动身体** |
+| Engage→Ambush | 距 > 脱离半径持续 `RearmDelaySeconds`(3s) | intent=true、`Target=null`，慢速回伪装 |
+
+玩家（共享 `ArenaFirstPersonPlayer`，层 2 对内核不可见）恒 `HostGrabbable=false`
+（快咬弹开制，绕开 `PositionCorrection` 全量交付与自驱玩家打架的坑）；咬中判定
+宿主自做：Striking 期 `Hand` 距玩家胸心 ≤ `BiteRadius`(0.55m)，每 `AttackSerial`
+只结算一次 → BITTEN 计数 + 镜头 kick + `AddImpulse` 背向推离（直写 Velocity 会被
+"无输入即刻停"一步归零——RatArena R18b 实证）。防御断言：出现任何抓持效果即
+warn + `ReleaseHeldTarget()`。实测节拍：出生 ~1.6s 后伏击首咬，玩家滞留则每
+5s 一咬（2.5s 冷却 + 2.5s 充能，Windup 半程起嘴会当着玩家的面慢慢张开）。
+
+### 7.3 本轮修复记录（lurker 调参）
+
+**症状**：lurker 首版（6 段、`LungeImpulse 0.40`）在 smoke `STRIKE-GEOMETRY` 红灯，
+`maxLink 2.10×`。**初判（被推翻）**：以为是冲量过大，压冲量 + 提约束迭代即可——
+0.40→0.26、迭代 2→5 只把 2.10× 压到 1.30×，仍越 1.25 门限。**根因**：峰值出现在
+Striking→Recovering 的**根链节**（`Anchor→Segments[0]`）——扑击落幕时整链带余速挂在
+目标侧，被钉死的根扛住全部松弛，PullOnly 绳约束的逐 tick 收敛残差与链节绝对长度成
+反比；短链（link 0.53m）的绝对预算（1.25 × link）本来就比 short 小 36%，速度类参数
+不同比缩配根本收不回来。**修复**：`SegmentCount 6→5`（link 0.64m，预算 +20%、同迭代
+收敛更快）+ 速度类参数按链节比例缩配（VelCap 0.42、TipGoal 0.009、Impulse 0.26、
+阻尼 0.92、迭代 5）。教训与 CLAUDE.md §6.5（调参可行域）同源：**短链的"迅猛感"交给
+充能加速表达，不要靠加大冲量**。
+
+## 8. 回迁边界与已知问题
 
 - 回迁到 `random-room-runtime` 时，gameplay 根/安装点仍是权威；内核只模拟根外触手，
   不使用移动生物的 tether 配方，也不移动 `CharacterBody3D`。

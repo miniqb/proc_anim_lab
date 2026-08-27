@@ -257,8 +257,12 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
         }
 
         // 外部冲量在归零/覆写之后叠加（见 AddImpulse）；未用时恒零，行为逐帧不变。
+        // 衰减按时间常数换算（0.85/40Hz 步）：常数每步 ×0.85 会让高 HostPhysicsTps
+        // 场景（导出范围允许到 1000）的推离净位移随 tps 反比缩水一个数量级——
+        // 拟态草竞技场评审实测。40Hz 下 Pow(0.85, 1) ≡ 0.85，既有场景逐帧不变。
         velocity += _externalVelocity;
-        _externalVelocity *= ExternalVelocityDecay;
+        _externalVelocity *= Mathf.Pow(
+            ExternalVelocityDecay, (float)GetPhysicsProcessDeltaTime() * 40f);
         if (_externalVelocity.LengthSquared() < 1e-6f)
             _externalVelocity = Vector3.Zero;
 

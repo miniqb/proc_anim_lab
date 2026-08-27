@@ -1,0 +1,35 @@
+[gd_scene format=3 uid="uid://plantarena0001"]
+
+[ext_resource type="Script" path="res://scripts/tentacle_plant_sandbox/TentaclePlantArenaWorld.cs" id="1_world"]
+
+[sub_resource type="Environment" id="environment"]
+background_mode = 1
+background_color = Color(0.010, 0.012, 0.020, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.42, 0.46, 0.56, 1)
+ambient_light_energy = 0.30
+tonemap_mode = 2
+
+[node name="TentaclePlantArenaWorld" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.9145, 0.4048, 0, -0.4048, 0.9145, 8, 10, 30)
+current = true
+fov = 62.0
+far = 200.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.75121397, 0.5439634, -0.37387356, -0.122137785, 0.671199, 0.7311458, 0.6486601, -0.50358284, 0.5706526, 0, 0, 0)
+light_color = Color(0.55, 0.62, 0.78, 1)
+light_energy = 0.4
+shadow_enabled = true
+
+[node name="CoolFill" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 2.4, 3)
+light_color = Color(0.4, 0.5, 0.75, 1)
+light_energy = 1.6
+omni_range = 18.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("environment")

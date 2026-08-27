@@ -388,10 +388,13 @@ public sealed class RatFiendLocomotionController
 		bool climbing = climbGrip is { } gripH
 			&& gripH - (Chest.Pos.Dot(up) - Chest.TerrainRadius) > _p.CrawlClimbDeadzone;
 
-		Vector3 effMove = Conscious && HasMoveIntent
+		Vector3 desiredMove = Conscious && HasMoveIntent
 			? FlattenToGround(MoveDir, up)
 			: Vector3.Zero;
-		if (EnableOrdinaryHighStepGate && highStepBlocked && !mounting)
+		Vector3 effMove = desiredMove;
+		bool highStepStopsTranslation = EnableOrdinaryHighStepGate
+			&& highStepBlocked && !mounting;
+		if (highStepStopsTranslation)
 		{
 			effMove = Vector3.Zero;
 		}
@@ -399,13 +402,18 @@ public sealed class RatFiendLocomotionController
 		{
 			effMove = SlideAlongWalls(effMove, up);
 		}
-		if (effMove != Vector3.Zero)
+		// 高家具门只拦平移：前探仍读上一 tick 的 Facing，若连转向也清零会形成
+		// 「旧朝向探到桌面 → 不动也不转 → 永远继续探到同一桌面」闭环。被高步门拦住时
+		// 仍沿宿主意图原地限速转身；探针转离桌面后下一 tick 自动恢复普通平移。
+		// 其余路径继续沿滑墙后的 effMove 转向，默认/legacy 轨迹逐位不变。
+		Vector3 steerMove = highStepStopsTranslation ? desiredMove : effMove;
+		if (steerMove != Vector3.Zero)
 		{
 			// 调头统一画弧（R13 把 R8 的爬行限速回转扩展到直立）：直立瞬时置向会让头伺服
 			// 把头从躯干里拽到另一侧、渲染 dorsal（−Facing）低通打转——与爬行头髋穿插同一
 			// 病灶。直立限速取爬行 2×（双足原地转身比贴地水平链灵活）；夹角 ≤ 限速时
 			// SlewFacing 直接取目标，直线与小角度转向和旧行为逐位相同。
-			Facing = SlewFacing(Facing, effMove, up,
+			Facing = SlewFacing(Facing, steerMove, up,
 				CanStand ? _p.StandTurnRatePerTick : _p.CrawlTurnRatePerTick);
 		}
 
