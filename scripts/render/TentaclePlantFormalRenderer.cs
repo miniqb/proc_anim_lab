@@ -10,20 +10,27 @@ namespace ProcAnimLab.Render;
 /// （根粗 → 颈细 → 末端向头膨出，视觉剖面与物理半径解耦——渲染研究 §1.4，原作
 /// 拟态草本就反转物理锥度），末端一张蛇/蜥式**双颌对开长吻大嘴**（上下颌各承担
 /// 一半张角，能张近 172°），嘴内喉部暗红、中央一颗灯泡状白球器官；无眼无耳。
-/// 嘴态：常态闭合微颤 → Windup 随充能慢慢张开 → 突刺/咬合瞬间快合 + 前突顿挫
-/// （AttackSerial 阶跃沿触发，不测平滑域——RatFiend R18b 教训）→ 伪装态张到最大。
+/// 嘴态：常态闭合微颤 → Windup 随充能慢慢张开 → 出手后全张扑脸（飞行保持窗）→
+/// 到脸/抓到瞬间快合 + 前突顿挫（AttackSerial 阶跃沿触发飞行窗，不测平滑域——
+/// RatFiend R18b 教训；咬合延到窗末，嘴到猎物前绝不先闭）→ 伪装态张到最大。
 /// 伪装（DisguiseAmount）额外做纯化妆下沉：头组件缩进安装面内（允许穿模），
 /// 几乎只露灯泡——吊在天花板上读成一盏吸顶灯。
 /// 朝向：forward = 末端多段混合方向的低通（Striking 混突刺速度、伪装混 Outward
 /// 兜底缩链退化帧），up 逐帧平行传输自由跟随触手 roll，**不做世界竖直对齐**——
 /// 张嘴平面顺着触手自身的自然扭转走（用户明确要求）。
 /// 化妆状态（全渲染侧私有，不进物理与哈希）：_bodyUp/_mouthFwd/_mouthUp 低通帧、
-/// _mouthOpen 非对称低通（开慢合快——咬合要"啪"地咬死）、_snapTimer 咬合顿挫、
+/// _mouthOpen 非对称低通（开慢合快——咬合要"啪"地咬死）、_snapDelay 飞行保持、
+/// _snapTimer 咬合顿挫、
 /// _disguiseEase 伪装缓动、_time 蠕动相位。形状基因 seed（FNV-1a(预设名)）出生冻结。
 /// </summary>
 internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
 {
     private const float SnapSeconds = 0.35f;
+    // 出手沿 → 咬合之间的飞行保持窗：全张扑向猎物，到时才"啪"地咬死。
+    // 手端突刺速度 ~0.6m/tick、交战出手距离 ≤~5m → 飞行 ≤~8 tick ≈ 0.2s；
+    // 取 0.18s 让远程恰好到脸、近程宁可略晚——嘴到脸之前绝不能先闭上。
+    // 内核真抓到猎物（HeldTargetId）时提前触发，接触帧即咬合。
+    private const float SnapDelaySeconds = 0.18f;
 
     private readonly TentaclePlantController _c;
     private readonly int _seed;
@@ -50,6 +57,7 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
     private float _mouthOpen;
     private float _disguiseEase;
     private float _snapTimer;
+    private float _snapDelay;
     private long _prevAttackSerial;
     private float _time;
 
@@ -150,6 +158,8 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         SeedGenes();
         _frameInitialized = false;
         _prevAttackSerial = _c.AttackSerial;
+        _snapDelay = 0f;
+        _snapTimer = 0f;
     }
 
     /// <summary>形状基因一次抽签（seed 冻结）：头径/颌长/张角档/牙排。运行时抖动只用
@@ -227,13 +237,28 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         UpdateMouthOpen(dt);
         UpdateMouthFrame(alpha, dt);
 
-        // 伪装下沉是纯化妆位移；突刺/咬合帧强制交还物理位（sinkGate），
+        // 伪装下沉是纯化妆位移；突刺/咬合帧强制交还物理位，
         // 否则嘴会"从天花板瞬移到扑击点"。
-        bool strikingNow = _c.Phase == TentaclePlantPhase.Striking || _snapTimer > 0f;
-        float sink = strikingNow ? 0f : Mathf.SmoothStep(0f, 1f, _disguiseEase);
+        bool strikingNow = _c.Phase == TentaclePlantPhase.Striking
+            || _snapDelay > 0f || _snapTimer > 0f;
 
         float headR = _c.Params.HandVisualRadius * _headSize;
         Vector3 handDraw = _c.Hand.LerpPos(alpha);
+        // 下沉还必须等物理链真正收拢（按手端到挂点的距离连续门控）：出生/重置后的
+        // 首次入伪装，DisguiseAmount 两秒到满而链还垂在半空——下沉偏移把管体中段
+        // 上提、头 lerp 进天花板，滞后的链段仍在低处，管尾会被拉成一根从大张的嘴
+        // 中央穿出的肉锥（用户实测穿帮）。门限 = 蜷缩静置包络（2L×Fraction+0.15，
+        // 与 smoke quietTip 断言同源），包络外 gateRamp 处归零；吞食后的回伪装
+        // 手端本就在包络内，门恒为 1、逐帧不变。
+        float coilEnvelope = 2f * _c.Params.Length *
+            _c.Params.DisguiseExtensionFraction + 0.15f;
+        float gateRamp = Mathf.Max(0.5f, _c.Params.Length * 0.25f);
+        float sinkGate = Mathf.Clamp(
+            1f - ((handDraw - _c.Mount.Point).Length() - coilEnvelope) / gateRamp,
+            0f, 1f);
+        float sink = strikingNow
+            ? 0f
+            : Mathf.SmoothStep(0f, 1f, _disguiseEase) * sinkGate;
         // 埋深 1.35 headR：全伪装时全张的双颌与牙尖（含 fangMult 加长的犬齿）全部
         // 藏进安装面内（允许穿模；1.1 时 hunter/lurker 的门牙尖会冒头——评审精算），
         // 灯泡再由 DrawMouth 的 sink 项单独推出走面下——几乎只露一个灯泡。
@@ -252,20 +277,36 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         _tube.EndFrame();
     }
 
-    /// <summary>嘴开度合成：咬合/抓持 → 0（快合）；否则 max(蓄力斜坡, 伪装, 闲置微呼吸)。
+    /// <summary>嘴开度合成：出手沿 → 飞行保持窗全张扑脸 → 到时/抓到才咬合（快合）；
+    /// 抓持 → 0；否则 max(蓄力斜坡, 伪装, 闲置微呼吸)。
     /// 非对称低通：开慢（蓄力是"慢慢张开"）合快（咬合要一口咬死）。</summary>
     private void UpdateMouthOpen(float dt)
     {
-        // 咬合触发：AttackSerial 单调序号的增沿（阶跃量，错帧不丢事件）。
+        // 出手沿：AttackSerial 单调序号的增沿（阶跃量，错帧不丢事件）。
+        // 不立即咬合——先记飞行保持窗，嘴张着飞完全程，到脸才咬。
         if (_c.AttackSerial != _prevAttackSerial)
         {
             _prevAttackSerial = _c.AttackSerial;
-            _snapTimer = SnapSeconds;
+            _snapDelay = SnapDelaySeconds;
+        }
+        if (_snapDelay > 0f)
+        {
+            _snapDelay -= dt;
+            // 到时或内核真抓到猎物（可抓路线的接触帧）→ 触发咬合。
+            if (_snapDelay <= 0f || _c.HeldTargetId is not null)
+            {
+                _snapDelay = 0f;
+                _snapTimer = SnapSeconds;
+            }
         }
         _snapTimer = Mathf.Max(0f, _snapTimer - dt);
 
         float target;
-        if (_snapTimer > 0f ||
+        if (_snapDelay > 0f)
+        {
+            target = 1f; // 飞行保持：全张扑向猎物
+        }
+        else if (_snapTimer > 0f ||
             _c.Phase is TentaclePlantPhase.Striking or TentaclePlantPhase.Holding)
         {
             target = 0f; // 咬紧猎物
@@ -426,23 +467,37 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
             _pal.Head.Darkened(0.08f));
         _tube.AddKnob(jawPivot + fwd * (headR * 0.18f), headR * 0.62f, _pal.Maw);
 
+        // 伪装外推量：只在 sink 后半程（头接近埋进安装面）才渐进启动——早启会把
+        // 灯泡沿嘴轴推进"半张/近闭"的双颌里，从颌管壁与唇缝穿模透出一圈白
+        // （用户竞技场实测穿帮：牙齿剪影衬在自发光灯泡前的锯齿白带）。
+        // 前半程灯泡留在喉心（0.18 + 0.50×开度——攻击蓄力已验证的安全位置）；
+        // sink=1 终态推满 1.20，与旧值一致。
+        float bulbPush = 1.20f * Mathf.SmoothStep(0.5f, 1f, sink);
+
         // 喉部：宽根锥沿平分线（= fwd）伸向嘴口，闭嘴时随 mawScale 缩进颌内不可见
         // （RatFiend R18"细长暗锥远看像鼻子"教训：宽根 + 由深到浅）。
-        float mawScale = Mathf.Clamp(_mouthOpen * 1.6f, 0.15f, 1f);
+        // 喉锥必须跟随灯泡的伪装外推：灯泡被推走而锥留在原位时，嘴底与灯泡
+        // 之间会露出一截"连着灯泡的锥"（竞技场暖灯照下呈肉色——用户实测穿帮）；
+        // 同推保持锥-灯相对几何与 sink=0 一致，锥始终被灯泡吞没；半径再随 sink
+        // 轻微收缩——锥根 0.55 与灯泡横向半径同宽，深伪装时会在椭球端部露一圈边。
+        float mawScale = Mathf.Clamp(_mouthOpen * 1.6f, 0.15f, 1f)
+            * (1f - 0.35f * sink);
+        Vector3 sinkPush = fwd * (headR * bulbPush);
         _stations.Clear();
-        _stations.Add(new TubeStation(jawPivot + fwd * (headR * 0.30f),
+        _stations.Add(new TubeStation(jawPivot + sinkPush + fwd * (headR * 0.30f),
             headR * 0.55f * mawScale, _pal.Maw.Darkened(0.35f)));
-        _stations.Add(new TubeStation(jawPivot + fwd * (headR * 0.80f),
+        _stations.Add(new TubeStation(jawPivot + sinkPush + fwd * (headR * 0.80f),
             headR * 0.40f * mawScale, _pal.Maw));
-        _stations.Add(new TubeStation(jawPivot + fwd * (headR * 1.15f),
+        _stations.Add(new TubeStation(jawPivot + sinkPush + fwd * (headR * 1.15f),
             headR * 0.07f * mawScale, _pal.Maw.Darkened(0.2f)));
         _tube.AddTube(_stations, up, 8);
 
         // 灯泡：开度越大越向外探；闭嘴时缩回喉内被两根闭合颌管完全包住；
-        // 伪装下沉时头埋进安装面、灯泡单独再向外推——只有它探出走面当"吸顶灯"。
+        // 伪装下沉后段头埋进安装面、灯泡单独再向外推（bulbPush，前半程为零）
+        // ——只有它探出走面当"吸顶灯"。
         float bulbR = headR * 0.55f;
         Vector3 bulbPos = jawPivot + fwd *
-            (headR * (0.18f + 0.50f * _mouthOpen + 1.20f * sink));
+            (headR * (0.18f + 0.50f * _mouthOpen + bulbPush));
         _bulb!.GlobalTransform = new Transform3D(
             new Basis(right * bulbR, fwd * (bulbR * 1.25f), up * bulbR),
             bulbPos);

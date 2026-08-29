@@ -31,9 +31,8 @@ public partial class TentaclePlantArenaWorld : Node3D
     private const double TickDt = 0.025;
     private const float TicksPerSecond = 40f;
     private const ulong PlayerStableId = 0x504C414E544C414DUL;
-    // 玩家胶囊镜像成球心 + 半径喂内核（Daddy 竞技场同源常量；真相源
-    // ArenaFirstPersonPlayer：胶囊 r0.35/h1.7、中心抬 0.85）。
-    private const float PlayerChunkCenterY = 0.85f;
+    // 玩家喂内核的目标球：球心取眼位（= 相机高度，ArenaFirstPersonPlayer.EyePosition，
+    // 脚底 +1.55m）——吊顶伏击者要冲着脸咬，不是腰腹；半径沿用胶囊半径。
     private const float PlayerChunkRadius = 0.35f;
 
     [ExportGroup("Arena")]
@@ -94,9 +93,9 @@ public partial class TentaclePlantArenaWorld : Node3D
     private long _lastBiteSerial;
     private int _biteCount;
     private long _bittenPromptUntilTick = -1;
-    private Vector3 _playerCenter;
-    private Vector3 _prevPlayerCenter;
-    private bool _playerCenterInitialized;
+    private Vector3 _playerAim;
+    private Vector3 _prevPlayerAim;
+    private bool _playerAimInitialized;
     private string _toastText = "";
     private float _toastTtl;
 
@@ -275,15 +274,15 @@ public partial class TentaclePlantArenaWorld : Node3D
 
     private void FeedPlant()
     {
-        _playerCenter = _player.GlobalPosition + new Vector3(0f, PlayerChunkCenterY, 0f);
-        if (!_playerCenterInitialized)
+        _playerAim = _player.EyePosition;
+        if (!_playerAimInitialized)
         {
-            _prevPlayerCenter = _playerCenter;
-            _playerCenterInitialized = true;
+            _prevPlayerAim = _playerAim;
+            _playerAimInitialized = true;
         }
-        Vector3 velocityPerTick = _playerCenter - _prevPlayerCenter;
-        _prevPlayerCenter = _playerCenter;
-        float horizontalDistance = HorizontalDistanceToMount(_playerCenter);
+        Vector3 velocityPerTick = _playerAim - _prevPlayerAim;
+        _prevPlayerAim = _playerAim;
+        float horizontalDistance = HorizontalDistanceToMount(_playerAim);
 
         switch (_phase)
         {
@@ -339,7 +338,7 @@ public partial class TentaclePlantArenaWorld : Node3D
         // PositionCorrection 永远不会与玩家自驱打架；咬中判定见 AdvancePhase。
         _plant.Target = new TentaclePlantTargetSnapshot(
             PlayerStableId,
-            _playerCenter,
+            _playerAim,
             velocityPerTick,
             PlayerChunkRadius,
             1f,
@@ -365,10 +364,10 @@ public partial class TentaclePlantArenaWorld : Node3D
             }
         }
 
-        // 咬中判定：Striking 期 Hand 距玩家胸心 ≤ BiteRadius，每次突刺只结算一次。
+        // 咬中判定：Striking 期 Hand 距玩家眼位（= 瞄准点）≤ BiteRadius，每次突刺只结算一次。
         if (_plant.Phase == TentaclePlantPhase.Striking &&
             _lastBiteSerial != _plant.AttackSerial &&
-            _plant.Hand.Pos.DistanceTo(_playerCenter) <= BiteRadius)
+            _plant.Hand.Pos.DistanceTo(_playerAim) <= BiteRadius)
         {
             _lastBiteSerial = _plant.AttackSerial;
             LandBite();
@@ -393,7 +392,7 @@ public partial class TentaclePlantArenaWorld : Node3D
         _kick = 1f;
         if (BiteShoveSpeed > 0f)
         {
-            Vector3 away = _playerCenter - _plant.Hand.Pos;
+            Vector3 away = _playerAim - _plant.Hand.Pos;
             away.Y = 0f;
             if (away.LengthSquared() > 1e-8f)
             {
@@ -430,7 +429,7 @@ public partial class TentaclePlantArenaWorld : Node3D
         _kickTime = 0f;
         _player.SetCameraShake(Vector3.Zero, Vector3.Zero);
         _kickApplied = false;
-        _playerCenterInitialized = false;
+        _playerAimInitialized = false;
         SpawnPlant();
         _player.InputLocked = false;
         _player.Place(_arena.PlayerSpawn, _mountPoint);
@@ -504,7 +503,7 @@ public partial class TentaclePlantArenaWorld : Node3D
             $"PLANT AMBUSH ARENA — host={_phase} plant={_plant.Phase} " +
             $"disguise={_plant.DisguiseAmount:F2} charge={_plant.AttackCharge:F2} " +
             $"cooldown={cooldown:F1}s rearm={rearm:F1}s " +
-            $"dist={HorizontalDistanceToMount(_playerCenter):F1}m bites={_biteCount}\n" +
+            $"dist={HorizontalDistanceToMount(_playerAim):F1}m bites={_biteCount}\n" +
             "[R] restart  [F1] hud  [Esc] mouse");
 
         if (_tick < _bittenPromptUntilTick)

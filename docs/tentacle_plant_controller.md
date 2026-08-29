@@ -375,18 +375,34 @@ Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收�
   （后肉色 / 前暗红口底）+ 沿平分线的宽根暗红喉锥（闭嘴随 mawScale 缩没）；牙齿
   seed 基因（上颌每侧 8~12 / 下颌 7~10、10% 缺牙、前两颗犬齿 ×1.3~1.7、下牙错半齿位），
   **十字双刀片**——单面 `AddBlade` 侧视近乎消失，大张的嘴是主视觉；无眼无耳。
-- **嘴开度**：`AttackSerial` 增沿触发咬合顿挫（阶跃沿，不测平滑域——RatFiend R18b
-  教训）；`openTarget = (snap 窗 || Striking || Holding) ? 0 :
+- **嘴开度**：`AttackSerial` 增沿先开 0.18s **飞行保持窗**（全张扑向猎物——手端
+  ~0.6m/tick、交战出手 ≤~5m 即飞行 ≤~8 tick，宁可略晚合、嘴到脸前绝不先闭；
+  内核真抓到 `HeldTargetId` 时提前触发，接触帧即咬），窗末才进咬合顿挫 snap 窗
+  （阶跃沿驱动，不测平滑域——RatFiend R18b 教训）；
+  `openTarget = 飞行窗 ? 1 : (snap 窗 || Striking || Holding) ? 0 :
   max(InverseLerp(WindupStart,1,charge), disguiseEase) + 微呼吸/负偏置微颤`；
   非对称低通**开慢（λ=7，蓄力"慢慢张开"）合快（λ=28，咬合"啪"地咬死）**。
 - **嘴帧**：forward = 末端多段混合（0.6/0.4 差分）→ Striking 混 40% 突刺速度方向、
   伪装混向 Outward（缩链退化帧兜底）→ 低通；up 逐帧平行传输延续，**不做世界竖直
   对齐**——张开平面自由跟随触手自身 roll，只保证嘴对着猎物。
-- **伪装视觉**（纯化妆位移，`sink = smoothstep(DisguiseAmount)`，Striking / snap 窗
-  强制归零一帧交还物理位）：头组件埋进安装面 1.1 headR（允许穿模，全张双颌与牙尖
+- **伪装视觉**（纯化妆位移，`sink = smoothstep(DisguiseAmount) × 收拢门`，Striking /
+  飞行窗 / snap 窗强制归零一帧交还物理位。**收拢门**：按手端到挂点的物理距离连续
+  门控——进入蜷缩静置包络（2L×Fraction+0.15，与 smoke quietTip 断言同源）为 1，
+  包络外 `max(0.5, 0.25L)` 处归零。出生/重置后的首次入伪装 DisguiseAmount 两秒到满
+  而链还垂在半空，不门控时下沉偏移会把管体中段上提、头 lerp 进天花板，滞后的链段
+  仍在低处，管尾被拉成一根从大张的嘴中央穿出的肉锥——用户实测穿帮、且只在首次
+  缩回复现（吞食后链已近收拢，早期排查因此漏掉）。门控后首次缩回=纯物理卷链 →
+  贴顶才熔入 + 灯泡亮相）：头组件埋进安装面 1.1 headR（允许穿模，全张双颌与牙尖
   全部藏进板内）、管体整体下沉且 `sink > 0.9` 时停画；**灯泡**（唯一刚性件：暖白
-  SphereMesh + 微 emission）由 sink 项单独推出走面下——吊在天花板上几乎只露一个
-  发光灯泡，就是一盏吸顶灯。闭嘴时灯泡缩回喉内被闭合颌管完全包住。
+  SphereMesh + 微 emission）由伪装外推项 `bulbPush = 1.20·SmoothStep(0.5,1,sink)`
+  单独推出走面下——吊在天花板上几乎只露一个发光灯泡，就是一盏吸顶灯。闭嘴时灯泡
+  缩回喉内被闭合颌管完全包住。两处穿帮的修复（均用户竞技场实测）：**外推只在
+  sink 后半程启动**——早启会把灯泡推进过渡期"半张/近闭"的双颌里，从颌管壁与唇缝
+  透出一圈牙齿剪影衬底的锯齿白带，前半程灯泡留在喉心（0.18+0.50×开度，攻击蓄力
+  已验证的安全位置）、sink=1 终态推量与旧值一致；**喉锥跟随灯泡同步外推同一
+  bulbPush** 且半径随 sink 轻微收缩（×(1−0.35·sink)）——锥留在原位时嘴底与退走的
+  灯泡之间会露出一截"连着灯泡的锥"（暖灯照下呈肉色），同推 + 收缩让锥在任意
+  sink 下都被灯泡吞没。sink=0 的攻击路径两项均为恒等变换。
 
 ### 7.2 吊顶伏击竞技场（探索场景，不进矩阵）
 
@@ -411,9 +427,10 @@ RatFiend R19 教训）：
 | Engage→Ambush | 距 > 脱离半径持续 `RearmDelaySeconds`(3s) | intent=true、`Target=null`，慢速回伪装 |
 
 玩家（共享 `ArenaFirstPersonPlayer`，层 2 对内核不可见）恒 `HostGrabbable=false`
-（快咬弹开制，绕开 `PositionCorrection` 全量交付与自驱玩家打架的坑）；咬中判定
-宿主自做：Striking 期 `Hand` 距玩家胸心 ≤ `BiteRadius`(0.55m)，每 `AttackSerial`
-只结算一次 → BITTEN 计数 + 镜头 kick + `AddImpulse` 背向推离（直写 Velocity 会被
+（快咬弹开制，绕开 `PositionCorrection` 全量交付与自驱玩家打架的坑）；喂内核的
+目标球心取**眼位**（`EyePosition`，= 相机高度，脚底 +1.55m）——吊顶伏击者冲着脸咬，
+不是胶囊中心的腰腹；咬中判定宿主自做：Striking 期 `Hand` 距玩家眼位（= 瞄准点）
+≤ `BiteRadius`(0.55m)，每 `AttackSerial` 只结算一次 → BITTEN 计数 + 镜头 kick + `AddImpulse` 背向推离（直写 Velocity 会被
 "无输入即刻停"一步归零——RatArena R18b 实证）。防御断言：出现任何抓持效果即
 warn + `ReleaseHeldTarget()`。实测节拍：出生 ~1.6s 后伏击首咬，玩家滞留则每
 5s 一咬（2.5s 冷却 + 2.5s 充能，Windup 半程起嘴会当着玩家的面慢慢张开）。
