@@ -22,7 +22,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private const float TargetRadius = 0.16f;
 
     private static readonly string[] MountNames = { "floor", "wall", "ceiling" };
-    private static readonly string[] RouteNames = { "idle", "hit", "miss", "occluded", "ambush" };
+    private static readonly string[] RouteNames =
+        { "idle", "hit", "miss", "occluded", "ambush", "probe", "stretch" };
     private static readonly string[] PresetNames =
     {
         "tentacle-plant/original",
@@ -82,6 +83,7 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private ulong? _expectHash;
     private string? _screenshotPath; // --plant-screenshot=path[@tick]：截图后退出（视觉验证回路）
     private long _screenshotTick = 90;
+    private float _stretchFactor = 1f; // --plant-stretch=<f>：stretch 路线的攻击拉伸系数
     private (Vector3 Pos, Vector3 LookAt)? _cameraOverride; // --plant-cam=px,py,pz,lx,ly,lz
 
     // 硬断言指标。
@@ -134,6 +136,16 @@ public partial class TentaclePlantSandboxWorld : Node3D
     private float _disguiseAtPreyEntry = -1f;
     private float _preEntryMaxTipDistance;
     private bool _sawDisguiseZeroAfterStrike;
+    private float _maxProbeAmount;
+    private float _probeHandoffDisguise = -1f;
+    private long _probeFullTick = -1;
+    private float _preLockMaxCharge;
+    private float _handAtLockDistance = -1f;
+    private bool _sawProbeZeroAfterStrike;
+    private float _maxStretchAmount;
+    private bool _sawStretchFull;
+    private bool _sawStretchZeroAfterFull;
+    private float _maxHandRootDistance;
     private Vector3 _lastHand;
 
     private bool Deterministic => _determinismTicks > 0;
@@ -185,6 +197,13 @@ public partial class TentaclePlantSandboxWorld : Node3D
 
     private void SpawnPlant(TentaclePlantParams preset, string mountName)
     {
+        if (_stretchFactor > 1f)
+        {
+            // 拉伸系数写在按名新取的实例上，不污染 _presets 里的共享预设对象。
+            preset = TentaclePlantFactory.ByName(preset.Name);
+            preset.StrikeStretchFactor = _stretchFactor;
+            preset.Validate();
+        }
         _preset = preset;
         ConfigureMount(mountName);
         var mount = new TentaclePlantMount(
@@ -341,6 +360,16 @@ public partial class TentaclePlantSandboxWorld : Node3D
         _disguiseAtPreyEntry = -1f;
         _preEntryMaxTipDistance = 0f;
         _sawDisguiseZeroAfterStrike = false;
+        _maxProbeAmount = 0f;
+        _probeHandoffDisguise = -1f;
+        _probeFullTick = -1;
+        _preLockMaxCharge = 0f;
+        _handAtLockDistance = -1f;
+        _sawProbeZeroAfterStrike = false;
+        _maxStretchAmount = 0f;
+        _sawStretchFull = false;
+        _sawStretchZeroAfterFull = false;
+        _maxHandRootDistance = 0f;
         _lastHand = _plant.Hand.Pos;
     }
 
@@ -444,6 +473,31 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     _targetVelocity = Vector3.Zero;
                 }
                 break;
+            case "probe":
+                // 伪装 150 tick → 探头张紧 + 隐藏探测点（转向不攻击）→ tick 400 起
+                // 同点转真目标：预张紧充能 10 tick 出手 → 抓取/回收/吞入 →
+                // intent 持续、吞入后回张紧。hostVisible 由 FeedTargetSnapshot 按
+                // tick 门控。
+                _plant.DisguiseIntent = _tick <= 150;
+                _plant.ProbeIntent = _tick > 150;
+                _targetActive = !_targetConsumed && _tick > 150;
+                if (_plant.HeldTargetId is null)
+                {
+                    _targetPos = TargetForRoute("probe");
+                    _targetVelocity = Vector3.Zero;
+                }
+                break;
+            case "stretch":
+                // 远目标（≈1.2L，原包络外）：放大后的攻击资格包络让 tick 1 即
+                // Chargeable，90 tick 常规充能后首扑靠 lengthScale 冲出名义链长
+                // 完成抓取（--plant-stretch 必须 >1，否则永远 OutOfRange）。
+                _targetActive = !_targetConsumed;
+                if (_plant.HeldTargetId is null)
+                {
+                    _targetPos = TargetForRoute("stretch");
+                    _targetVelocity = Vector3.Zero;
+                }
+                break;
         }
     }
 
@@ -487,12 +541,15 @@ public partial class TentaclePlantSandboxWorld : Node3D
             _targetVelocity,
             TargetRadius,
             0.25f,
-            hostVisible: true,
+            // probe 路线前段喂的是"隐藏探测点"（只转向、不进攻击面），
+            // tick 400 起才转可见真目标；其余路线恒可见。
+            hostVisible: _route != "probe" || _tick > 400,
             // miss 专门验证完整锁向扑击；设为不可抓，避免首扑同 tick
-            // 的几何偶合把正确的扑空脚本变成一次短暂 Holding。hit/ambush 也
-            // 到锁向扑击开始后才开放抓取；被动低速捕获由 core smoke 专测。
+            // 的几何偶合把正确的扑空脚本变成一次短暂 Holding。hit/ambush/
+            // probe/stretch 也到锁向扑击开始后才开放抓取；被动低速捕获由
+            // core smoke 专测。
             hostGrabbable: _route != "miss" &&
-                           (_route != "hit" && _route != "ambush" ||
+                           (_route is not ("hit" or "ambush" or "probe" or "stretch") ||
                             _plant.AttackSerial > 0));
     }
 
@@ -602,6 +659,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
         }
         _lastHand = hand;
         _maxDisguiseAmount = Mathf.Max(_maxDisguiseAmount, _plant.DisguiseAmount);
+        _maxProbeAmount = Mathf.Max(_maxProbeAmount, _plant.ProbeAmount);
+        _maxStretchAmount = Mathf.Max(_maxStretchAmount, _plant.StretchAmount);
         if (_route == "ambush")
         {
             float tipFromRoot = _plant.Chain.Tip.Pos.DistanceTo(_plant.Root.Pos);
@@ -616,6 +675,39 @@ public partial class TentaclePlantSandboxWorld : Node3D
             if (_firstStrikeTick > 0 && _plant.DisguiseAmount == 0f)
             {
                 _sawDisguiseZeroAfterStrike = true;
+            }
+        }
+        if (_route == "probe")
+        {
+            if (_tick == 150)
+            {
+                _probeHandoffDisguise = _plant.DisguiseAmount;
+            }
+            if (_probeFullTick < 0 && _plant.ProbeAmount == 1f)
+            {
+                _probeFullTick = _tick;
+            }
+            if (_tick <= 400)
+            {
+                _preLockMaxCharge = Mathf.Max(_preLockMaxCharge, _plant.AttackCharge);
+            }
+            if (_tick == 400)
+            {
+                _handAtLockDistance = hand.DistanceTo(_targetPos);
+            }
+            if (_firstStrikeTick > 0 && _plant.ProbeAmount == 0f)
+            {
+                _sawProbeZeroAfterStrike = true;
+            }
+        }
+        if (_route == "stretch")
+        {
+            _maxHandRootDistance = Mathf.Max(
+                _maxHandRootDistance, hand.DistanceTo(_plant.Root.Pos));
+            _sawStretchFull |= _plant.StretchAmount == 1f;
+            if (_sawStretchFull && _plant.StretchAmount == 0f)
+            {
+                _sawStretchZeroAfterFull = true;
             }
         }
         _maxAttackCharge = Mathf.Max(_maxAttackCharge, _plant.AttackCharge);
@@ -730,6 +822,16 @@ public partial class TentaclePlantSandboxWorld : Node3D
         {
             _hasher.Fold(_plant.DisguiseAmount);
         }
+        // 新标量同样按路线门控折叠（顺序固定：Disguise → Probe / Stretch）。
+        if (_route == "probe")
+        {
+            _hasher.Fold(_plant.DisguiseAmount);
+            _hasher.Fold(_plant.ProbeAmount);
+        }
+        if (_route == "stretch")
+        {
+            _hasher.Fold(_plant.StretchAmount);
+        }
 
         if (_tick % 100 == 0 || _tick >= _determinismTicks)
         {
@@ -790,14 +892,23 @@ public partial class TentaclePlantSandboxWorld : Node3D
         {
             failures.Add("Capture 与 Release 之间出现未声明 Held 的断帧");
         }
-        if (_route != "hit" && _route != "ambush" && _maxEffectMagnitude > 0.0001f)
+        if (_route is not ("hit" or "ambush" or "probe" or "stretch") &&
+            _maxEffectMagnitude > 0.0001f)
         {
             failures.Add($"未抓持路线输出了目标位移/速度效果 " +
                          $"({_maxEffectMagnitude:F6})");
         }
-        if (_route != "ambush" && _maxDisguiseAmount != 0f)
+        if (_route is not ("ambush" or "probe") && _maxDisguiseAmount != 0f)
         {
-            failures.Add($"非 ambush 路线伪装标量非零（{_maxDisguiseAmount:F4}）");
+            failures.Add($"非伪装路线伪装标量非零（{_maxDisguiseAmount:F4}）");
+        }
+        if (_route != "probe" && _maxProbeAmount != 0f)
+        {
+            failures.Add($"非 probe 路线探头标量非零（{_maxProbeAmount:F4}）");
+        }
+        if (_route != "stretch" && _maxStretchAmount != 0f)
+        {
+            failures.Add($"非 stretch 路线拉伸标量非零（{_maxStretchAmount:F4}）");
         }
         if (_expectHash is ulong expected && _hasher.Value != expected)
         {
@@ -979,6 +1090,109 @@ public partial class TentaclePlantSandboxWorld : Node3D
                 if (_plant.DisguiseAmount < 0.99f)
                 {
                     failures.Add($"吞入后未恢复伪装（disguise={_plant.DisguiseAmount:F4}）");
+                }
+                break;
+            case "probe":
+                if (_probeHandoffDisguise < 0.999f)
+                {
+                    failures.Add(
+                        $"交接探头时未完成伪装（disguise={_probeHandoffDisguise:F4}）");
+                }
+                long probeFullBound = 151 +
+                    (long)Mathf.Ceil(1f / _preset.ProbeEngagePerTick) + 2;
+                if (_probeFullTick < 151 || _probeFullTick > probeFullBound)
+                {
+                    failures.Add($"探头张紧时延不符" +
+                                 $"（full={_probeFullTick} ∉ [151,{probeFullBound}]）");
+                }
+                if (_handAtLockDistance is < 0f or > 1.0f)
+                {
+                    failures.Add($"锁定前头端未悬停到探测点旁" +
+                                 $"（dist={_handAtLockDistance:F3}m > 1.0m）");
+                }
+                // 隐藏探测点只转向不攻击：锁定（tick 401 转可见）前零充能零扑击。
+                if (_preLockMaxCharge > 0.0001f ||
+                    (_firstStrikeTick > 0 && _firstStrikeTick <= 400))
+                {
+                    failures.Add($"锁定前泄漏了攻击面" +
+                                 $"（charge={_preLockMaxCharge:F4}, strike={_firstStrikeTick}）");
+                }
+                // 猎物 tick 401 起可见，预张紧充能 2×Multiplier/tick，充满同 tick 扑击。
+                long expectedProbeStrikeTick = 400 +
+                    (_preset.ChargeTicks + _preset.ProbeChargeMultiplier - 1) /
+                    _preset.ProbeChargeMultiplier;
+                if (_firstStrikeTick != expectedProbeStrikeTick)
+                {
+                    failures.Add($"预张紧突袭时延不符" +
+                                 $"（strike={_firstStrikeTick} != {expectedProbeStrikeTick}）");
+                }
+                if (!_sawProbeZeroAfterStrike)
+                {
+                    failures.Add("突刺窗口未强制解除探头张紧");
+                }
+                bool probeOrdered = _captureEvents == 1 &&
+                                    _consumeEvents == 1 &&
+                                    _releaseEvents == 1 &&
+                                    _captureTick >= _firstStrikeTick &&
+                                    _captureTick <= _firstStrikeTick +
+                                        _preset.LungeTicks + _preset.GrabWindowTicks &&
+                                    _captureTick < _consumeTick &&
+                                    _consumeTick < _releaseTick;
+                if (!probeOrdered || !_targetConsumed)
+                {
+                    failures.Add($"probe 抓取/吞入弧线不完整（counts=" +
+                                 $"{_captureEvents}/{_consumeEvents}/{_releaseEvents}, " +
+                                 $"ticks={_captureTick}/{_consumeTick}/{_releaseTick}, " +
+                                 $"consumed={_targetConsumed}）");
+                }
+                if (_plant.ProbeAmount < 0.99f)
+                {
+                    failures.Add($"吞入后未恢复探头张紧（probe={_plant.ProbeAmount:F4}）");
+                }
+                break;
+            case "stretch":
+                if (_stretchFactor <= 1f)
+                {
+                    failures.Add("stretch 路线未提供 --plant-stretch > 1");
+                }
+                // 目标在原包络外（1.2L）：首扑时序仍是常规满额充能。
+                if (_firstStrikeTick != _preset.ChargeTicks)
+                {
+                    failures.Add($"stretch 首扑时序不符" +
+                                 $"（strike={_firstStrikeTick} != {_preset.ChargeTicks}）");
+                }
+                if (!_sawStretchFull || !_sawStretchZeroAfterFull)
+                {
+                    failures.Add($"拉伸标量弧线不完整" +
+                                 $"（full={_sawStretchFull}, zero={_sawStretchZeroAfterFull}）");
+                }
+                // lengthScale 生效的直接观测：手端冲出名义链长。
+                if (_maxHandRootDistance < _preset.Length + 0.30f)
+                {
+                    failures.Add($"拉伸未冲出名义包络" +
+                                 $"（hand={_maxHandRootDistance:F3}m <= " +
+                                 $"{_preset.Length + 0.30f:F3}m）");
+                }
+                bool stretchOrdered = _captureEvents == 1 &&
+                                      _consumeEvents == 1 &&
+                                      _releaseEvents == 1 &&
+                                      _captureTick >= _firstStrikeTick &&
+                                      _captureTick <= _firstStrikeTick +
+                                          _preset.LungeTicks + _preset.GrabWindowTicks &&
+                                      _captureTick < _consumeTick &&
+                                      _consumeTick < _releaseTick;
+                bool stretchPull = _maxHeldTargetRootDistance <=
+                                       _preset.Length * _preset.StrikeStretchFactor *
+                                       1.25f + TargetRadius &&
+                                   _minHeldExtension <= 0.0001f;
+                if (!stretchOrdered || !stretchPull || !_targetConsumed ||
+                    _finalAttackSerial != 1)
+                {
+                    failures.Add($"stretch 抓取/吞入弧线不完整（ordered={stretchOrdered}, " +
+                                 $"pull={stretchPull}, consumed={_targetConsumed}, " +
+                                 $"serial={_finalAttackSerial}, " +
+                                 $"ticks={_captureTick}/{_consumeTick}/{_releaseTick}, " +
+                                 $"heldMax={_maxHeldTargetRootDistance:F3}m）");
                 }
                 break;
         }
@@ -1178,6 +1392,12 @@ public partial class TentaclePlantSandboxWorld : Node3D
             case Key.Key8:
                 SelectRoute(4);
                 break;
+            case Key.N:
+                SelectRoute(5);
+                break;
+            case Key.M:
+                SelectRoute(6);
+                break;
             case Key.V:
                 _formalView = !_formalView;
                 ApplyRenderView();
@@ -1222,8 +1442,9 @@ public partial class TentaclePlantSandboxWorld : Node3D
         _route = RouteNames[index];
         ConfigureOccluder(_route == "occluded");
         _plant.ReleaseHeldTarget();
-        // 切走 ambush 时复位伪装意图；ambush 路线脚本会每 tick 重新置 true。
+        // 切走 ambush/probe 时复位两个意图；各自路线脚本会每 tick 重新覆盖。
         _plant.DisguiseIntent = false;
+        _plant.ProbeIntent = false;
         ResetTarget();
         ResetMetrics();
         SyncHudPickers();
@@ -1290,7 +1511,8 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     _route = argument["--plant-route=".Length..].ToLowerInvariant();
                     if (Array.IndexOf(RouteNames, _route) < 0)
                     {
-                        throw new FormatException("route 只接受 idle|hit|miss|occluded|ambush");
+                        throw new FormatException(
+                            "route 只接受 idle|hit|miss|occluded|ambush|probe|stretch");
                     }
                 }
                 else if (argument.StartsWith("--plant-seed=", StringComparison.Ordinal))
@@ -1351,6 +1573,17 @@ public partial class TentaclePlantSandboxWorld : Node3D
                     }
                     _cameraOverride = (position, lookAt);
                 }
+                else if (argument.StartsWith("--plant-stretch=", StringComparison.Ordinal))
+                {
+                    _stretchFactor = float.Parse(
+                        argument["--plant-stretch=".Length..],
+                        CultureInfo.InvariantCulture);
+                    if (!float.IsFinite(_stretchFactor) ||
+                        _stretchFactor < 1f || _stretchFactor > 2f)
+                    {
+                        throw new FormatException("stretch 系数必须落在 [1,2]");
+                    }
+                }
                 else if (argument.StartsWith("--plant-screenshot=", StringComparison.Ordinal))
                 {
                     // 视觉验证回路（仅交互窗口模式有意义；headless 下取不到帧）。
@@ -1390,6 +1623,16 @@ public partial class TentaclePlantSandboxWorld : Node3D
             GD.PushError("[TENTACLE-PLANT-CLI] --plant-min-strike-speed 仅用于确定性 hit 回归");
             return false;
         }
+        if (_stretchFactor > 1f && _route != "stretch")
+        {
+            GD.PushError("[TENTACLE-PLANT-CLI] --plant-stretch 仅用于 stretch 路线");
+            return false;
+        }
+        if (_route == "stretch" && Deterministic && _stretchFactor <= 1f)
+        {
+            GD.PushError("[TENTACLE-PLANT-CLI] 确定性 stretch 路线必须提供 --plant-stretch > 1");
+            return false;
+        }
         if (_screenshotPath is not null && Deterministic)
         {
             // 截图在到点帧直接 Quit，会吞掉 DumpDeterministicResult 的 [RESULT]
@@ -1411,6 +1654,16 @@ public partial class TentaclePlantSandboxWorld : Node3D
             // 首个安全 tick 会尝试向开放空间铺展；遮挡板从 2.8m 开始，目标放在其后，
             // 避免“手出生在墙后、tick 1 被动触碰”的假失败。
             "occluded" => LocalPoint(4.20f, 0.10f, 0.08f),
+            // 探测点/锁定点：0.75L 外 + 0.25L 切向，稳落在 lurker 的名义攻击包络内。
+            "probe" => LocalPoint(
+                _preset.Length * 0.75f,
+                _preset.Length * 0.25f,
+                0f),
+            // 远目标 ≈1.2L：原包络（L+r）外、1.5 倍拉伸包络（1.5L+r）内。
+            "stretch" => LocalPoint(
+                _preset.Length * 0.96f,
+                _preset.Length * 0.72f,
+                0.15f),
             // 把演示猎物放在各预设约 65% 的工作半径、同一离轴角度处。
             // 切向量也按长度缩放，避免 short 因绝对 0.9/0.45m 偏移承担更大的攻击角。
             _ => LocalPoint(

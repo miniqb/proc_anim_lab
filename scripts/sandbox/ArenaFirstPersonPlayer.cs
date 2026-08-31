@@ -46,6 +46,7 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
 
     private Camera3D _camera = null!;
     private MeshInstance3D _bodyMesh = null!;
+    private OmniLight3D _fillLight = null!;
     private float _pitch;
     private Vector3 _shakeOffset;
     private Vector3 _shakeEuler;
@@ -125,6 +126,17 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
         ApplyCameraRotation();
     }
 
+    /// <summary>
+    /// 观感级配置：调整随身补光强度/范围（灯光机制场景要保住明暗对比时压暗它）。
+    /// 纯化妆配置面（同 <see cref="SetCameraShake"/> 性质），不碰运动规格；
+    /// 不调用则保持默认 3.4/18——既有场景行为逐字节不变。
+    /// </summary>
+    public void ConfigureFillLight(float energy, float range)
+    {
+        _fillLight.LightEnergy = energy;
+        _fillLight.OmniRange = range;
+    }
+
     public override void _Ready()
     {
         CollisionLayer = PlayerCollisionLayer;
@@ -149,13 +161,14 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
 
         // 场景的环境光是给俯视调的，站到地面上后近处基本全黑；给个短程补光把身前
         // 一两格照出来——纯观察辅助，不是主仓那套手电 rig。
-        _camera.AddChild(new OmniLight3D
+        _fillLight = new OmniLight3D
         {
             Name = "PlayerFill",
             LightColor = new Color(1f, 0.93f, 0.84f),
             LightEnergy = 3.4f,
             OmniRange = 18f,
-        });
+        };
+        _camera.AddChild(_fillLight);
 
         // 退出第一人称后从俯视相机看得见人站在哪；第一人称下藏起来（免得糊在近裁剪面上）。
         _bodyMesh = new MeshInstance3D

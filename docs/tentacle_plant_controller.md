@@ -202,6 +202,8 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 每个核心 tick 的顺序固定为：
 
 1. `Body.Tick`；
+   （随后伪装/探头/拉伸标量按序演化：`UpdateDisguise` → `UpdateProbe` →
+   拉伸状态机——全部先于本 tick 的 extension/goal/lengthScale 消费者，§4.1–4.3）
 2. `TentacleChain` 路径与物理解算；
 3. 感知目标并推进攻击标量；
 4. 注入下一 tick 使用的形态力；
@@ -250,6 +252,58 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 "攻击后范围内没有存活猎物才恢复伪装"之类的策略归宿主（沙盒 ambush 路线 / 竞技场
 相位机 / 主仓 AI），内核只提供机制。
 
+### 4.2 探头张紧标量（opt-in，本项目扩展）
+
+原作没有对应机制。为"察觉到猎物但锁不住位置时，放弃伪装、张着嘴探出头搜索"的玩法
+（生物学设定：喉部灯泡=发光+检测反射变化的一体器官，双颌是它的准直器），加第二个
+连续标量——同 §4.1 的论证，不加 Phase 枚举值。
+
+- **输入** `ProbeIntent`（bool，默认 false，持久属性）：第三个宿主可写输入。
+  **探测悬停本身不需要新输入**：宿主喂 `HostVisible=false` 的合成 Target 快照，
+  goal 即转向该点（goal 选择不看 HostVisible）、不充能、零视线射线、wander RNG
+  冻结、`Phase=Tracking`——缓慢蠕动由宿主动画探测点实现，内核不加速度参数。
+  `ProbeIntent` 只补齐这套组合缺的两块：渲染张嘴依据 + 预张紧充能。
+- **输出** `ProbeAmount ∈ [0,1]`：按 `ProbeEngagePerTick`（默认 20 tick 回满）/
+  `ProbeReleasePerTick`（默认 8 tick 归零）朝 intent 缓动。
+- **力学效果**（默认路径零新增浮点运算）：
+  1. 充能预张紧：`amount ≥ ProbeChargeThreshold` 时充能增量取
+     `Max(既有值, 2 × ProbeChargeMultiplier)`（与伪装加速同位、纯整数；两者同过阈
+     取更张紧者）——锁定后宿主喂真目标，lurker 配 10 即 `ceil(100/10)=10` tick 出手；
+  2. wander 冻结条件扩为 `_disguiseAmount <= 0 && _probeAmount <= 0`（探头态与
+     伪装同款不消耗 RNG）。
+- **覆盖序**：`Holding` / 突刺运动窗口 → 忽略 intent、强制快衰（照抄伪装）；
+  **`DisguiseIntent` 优先**——双 intent 同真时探头快衰、伪装上升（宿主相位切换在
+  同 tick 邻域改写两个 bool 是合法的，交接期两标量共存、平滑交棒，不抛异常）。
+- `Remount()` 连同 Target 一起复位 intent/amount。搜索策略（扇区、路点、聆听、
+  预算）全部归宿主。
+
+### 4.3 攻击弹性拉伸（opt-in，本项目扩展）
+
+原作没有对应机制；生物学参照是变色龙舌头的弹性反冲弹射。让突刺窗口的有效链长
+放大 `StrikeStretchFactor` 倍（默认 **1.0 = 恒等元**），攻距与"探测头动半径 +
+锁定锥长"解耦——探测用短臂（暴露少），攻击用长臂（保证兑现），极限距离咬空。
+
+- **参数** `StrikeStretchFactor ∈ [1,2]`（上界理由见 Params 注释：goal 钳制不超
+  拴绳语义 `Length*2`、查询预算、攻距语义）+ `StrikeStretchRecoverPerTick`
+  （出窗定速回卷，默认 20 tick；Validate 有跨字段约束
+  `Length*2*(factor−1)*recover ≤ SegmentVelocityCap` 防瞬移回抽）。
+- **输出** `StretchAmount ∈ [0,1]`：突刺运动窗口内为 1、出窗定速斜坡归零；
+  当前有效倍率 = `Lerp(1, factor, StretchAmount)`。
+- **力学效果**（整个状态机包在 `factor > 1` 单分支里）：`lengthScale` 经尾部默认
+  参数（`=1f`，先例 `calmAmount`）传进 `TickPhysics` / `InjectShapeForces` /
+  `ConstrainTipAfterCoupling` 的 `effectiveLength`、`maximumTipReach` 与
+  `ClampGoalToReach`，及 `CoupleHandAndTip` 根部拴绳；**攻击资格包络**
+  （`EvaluateAttackTarget` 的 reach 与 `DistanceSquaredToAttackEnvelope`）用构造期
+  预计算的静态 `_strikeReach = Length × factor`（斜坡值会让 `TargetStatus` 在回卷
+  期翻线）。extension 的 4 处 `Clamp(0,1)` 原样保留——extension 语义仍是回收档位，
+  拉伸走独立乘子。
+- **进入瞬时、退出斜坡**：加长对 PullOnly 链是纯放松（零力注入）可瞬时；缩短经
+  `ConstrainTipToRoot` 硬投影回抽必须斜坡——咬空后的 ~20 tick 回卷正是设计要求的
+  "可读回收僵直"（玩家逃跑窗口）。开扑首 tick `lengthScale` 仍为 1 是有意一拍延迟
+  （冲量下一 tick 才被消费，DropBug"上一 tick 因子作用于本 tick 物理"教义）。
+- **不给任何预设开启**：拉伸由宿主（竞技场 Export 覆写预设）/ CLI（沙盒
+  `--plant-stretch`）按场景 opt-in。
+
 ## 5. 宿主 API 与生命周期
 
 宿主按以下数据流接线：
@@ -257,8 +311,9 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 1. 由地形安装点构造 `TentaclePlantMount(Point, OutwardNormal, TangentHint, ColliderId)`；
 2. 从 `TentaclePlantFactory.Original/Short/Hunter/Lurker/ByName` 取得出生参数，再由
    `CreateController` 创建实例并给固定 seed；
-3. 每 tick 在调用 `Tick` 前写 nullable `controller.Target`；需要伪装时按策略改写
-   持久 bool `controller.DisguiseIntent`（§4.1）；
+3. 每 tick 在调用 `Tick` 前写 nullable `controller.Target`；需要伪装/探头张紧时
+   按策略改写持久 bool `controller.DisguiseIntent`（§4.1）/ `controller.ProbeIntent`
+   （§4.2）；
 4. `Tick` 后读取 `controller.TargetEffect`，由 gameplay 权威对象应用效果；
 5. 渲染读取 `Body`、`Root`、`Hand`、`Segments` 及其插值位置。
 
@@ -276,14 +331,16 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 
 - 几何：`Body`、`Root`、`Hand`、`Segments` 和各自插值位置；
 - 行为：`Phase`、`AttackCharge`、`CanGrab`、`Extension`、`AttackSerial`、
-  `HeldTargetId`、`DisguiseAmount`（渲染层伪装视觉的驱动标量），以及最近一次 tick 的
-  `TargetStatus`（可充能、越界、安装面后、遮挡、宿主隐藏、抓持或锁向突刺）；
+  `HeldTargetId`、`DisguiseAmount`（渲染层伪装视觉的驱动标量）、`ProbeAmount`
+  （渲染层张嘴/探照灯的驱动标量）、`StretchAmount`（当前拉伸程度），以及最近一次
+  tick 的 `TargetStatus`（可充能、越界、安装面后、遮挡、宿主隐藏、抓持或锁向突刺）；
 - 路径：`WanderGoal`、0–2 个真实折点 `GuidePoints`（根与目标为隐含端点），以及
   `BacktrackFrom`（`-1` 表示无回退，否则为首个需回卷的触手段索引）；
 - 预算：当 tick `TickQueryCount` 与生命周期峰值 `PeakQueryCount`。
 
-这些输出除 `Target` 与 `DisguiseIntent` 外均不得由宿主回写。拟态草也不接受
-`MoveDir` / `RunSpeed`：为了统一表面而伪造移动输入只会把固定生物错误塞进移动生物契约。
+这些输出除 `Target`、`DisguiseIntent` 与 `ProbeIntent` 外均不得由宿主回写。拟态草
+也不接受 `MoveDir` / `RunSpeed`：为了统一表面而伪造移动输入只会把固定生物错误塞进
+移动生物契约。
 
 ## 6. 沙盒与回归
 
@@ -293,16 +350,17 @@ MTD 推到远侧后形成不可恢复的隔墙拓扑。
 godot --path . scenes/tentacle_plant_sandbox.tscn
 ```
 
-沙盒键位：`1/2/3/0` 换预设、`F/G/H` 换安装面、`4~8` 换路线、`V` 正式/白盒双视图、
+沙盒键位：`1/2/3/0` 换预设、`F/G/H` 换安装面、`4~8/N/M` 换路线、`V` 正式/白盒双视图、
 `C` 手动切 `DisguiseIntent`（ambush 路线脚本会每 tick 覆盖回 true）、`Space` 释放并
 重置猎物、按住右键自由飞相机。确定性 CLI：
 
 ```text
 --plant-preset=tentacle-plant/original|short|hunter|lurker（完整稳定 ID 或简名）
 --plant-mount=floor|wall|ceiling
---plant-route=idle|hit|miss|occluded|ambush
+--plant-route=idle|hit|miss|occluded|ambush|probe|stretch
 --plant-target-local=<outward,tangent,bitangent>  # 可选，米；覆盖脚本猎物位置
 --plant-min-strike-speed=<meters/tick> # 可选；确定性 hit 的最低首扑峰值
+--plant-stretch=<factor>             # 仅 stretch 路线；[1,2]，确定性 stretch 必填 >1
 --plant-seed=<ulong>
 --plant-determinism=<ticks>
 --plant-tps=<positive integer>       # 专项矩阵使用 40 / 400
@@ -313,10 +371,23 @@ godot --path . scenes/tentacle_plant_sandbox.tscn
 ```
 
 `--plant-expect-hash` 仅在同时给出正数 `--plant-determinism` 时有效；两条视觉旁路
-不触碰物理与哈希、不进矩阵。`ambush` 路线脚本：全程 `DisguiseIntent=true`，tick 200
-放静止猎物，演完"入伪装缩到挂点 → 伪装态 10 tick 加速充能突袭 → 抓取/回收/吞入 →
-慢速回伪装"的完整弧线；仅该路线把 `DisguiseAmount` 追加进沙盒确定性折叠（route 门控，
-既有 11 条基线的折叠字节流逐位不变），并有"非 ambush 路线伪装标量恒零"的通用守卫。
+不触碰物理与哈希、不进矩阵。三条 opt-in 路线脚本：
+
+- `ambush`：全程 `DisguiseIntent=true`，tick 200 放静止猎物，演完"入伪装缩到挂点 →
+  伪装态 10 tick 加速充能突袭 → 抓取/回收/吞入 → 慢速回伪装"的完整弧线；
+- `probe`（lurker ceiling，700 tick）：伪装 150 tick → `ProbeIntent=true` + 喂
+  `hostVisible=false` 的合成探测点（头张嘴转向悬停，断言零充能零扑击、tick 400 时
+  头距探测点 <1m）→ tick 401 同点转可见真目标 → 预张紧充能，`firstStrike ==
+  400 + ceil(ChargeTicks/ProbeChargeMultiplier) = 410` → 抓取/吞入 → intent 持续、
+  终态 `ProbeAmount ≥ 0.99`；
+- `stretch`（original floor，400 tick，`--plant-stretch=1.5`）：目标钉在距根 ≈1.2L
+  （原包络外、1.5L 包络内），断言 tick 1 起即 `Chargeable`（包络放大证据）、
+  `firstStrike == ChargeTicks`、扑窗手端冲出 `L+0.30`（lengthScale 生效直接观测）、
+  原包络外完成抓取/吞入、拉伸标量满→零弧线完整。
+
+折叠门控：`ambush` 折 `DisguiseAmount`；`probe` 折 `DisguiseAmount + ProbeAmount`；
+`stretch` 折 `StretchAmount`——既有 11 条基线的折叠字节流逐位不变，并有"非对应
+路线标量恒零"的三条通用守卫。
 
 专项验证：
 
@@ -346,14 +417,29 @@ dotnet run --project core/tentacle_plant_smoke
   残量——捕获可落在突刺后衰减完成前）、突袭窗口 tip 冲出伪装
   包络（cap 旁路证据）、释放后慢速回满、intent 撤销 ≤4 tick 归零 + 游走恢复；整套
   场景双跑 bit-exact 并钉独立基线 `DisguiseExpectedHash`（与主 `ExpectedHash` 并列）；
+- 探头张紧（`PROBE` 检查，天花板安装 + lurker）：参数惰性（intent=false + 极端探头
+  参数 + 逐 tick 喂可见目标刻意加热充能路径，300 tick 逐位同出厂）、伪装→探头交接
+  快衰 ≤5 tick、合成隐藏探测点全程 `Tracking/HostHidden`、零充能零扑击零效果、头端
+  伺服趋近探测点（终距 <1m）、双 intent 冲突时探头 ≤9 tick 归零且伪装上升（优先级
+  直接证据）、锁定后 `strikeDelay == ceil(200/20) = 10`（预张紧核心断言）、突刺窗
+  强衰、释放后回满 + **probe 单独冻结游走**（wander 新分支直接证据）、intent 撤销
+  ≤8 tick 归零 + 游走恢复；消融孪生（probe 永不张紧）`strikeDelay == 100`；双跑
+  bit-exact 并钉独立基线 `ProbeExpectedHash`；
+- 攻击拉伸（`STRETCH` 检查，floor + original ×1.5）：参数惰性（factor=1 + 极端回卷
+  速率跑完整 hit 场景刻意加热扑击窗，300 tick 逐位同出厂）、1.2L 目标从 tick 1 即
+  `Chargeable`（包络放大证据）、`firstStrike == ChargeTicks`、扑窗 tip 冲出
+  `L+0.30`（越过 PullOnly 名义上限 = lengthScale 生效直接观测）、窗后定速回卷无瞬移
+  回抽、静置收回 `L+0.15`（回收僵直闭环）、原包络外完成抓取/吞入/释放、消融孪生
+  （factor=1）恒 `OutOfRange` 零扑击；双跑 bit-exact 并钉独立基线
+  `StretchExpectedHash`；
 - 同 seed 双跑 bit-exact、不同 seed 轨迹差异、8/16 段查询增长、穿透和所有数值 finite。
 
-Godot 矩阵覆盖 floor / wall / ceiling、idle / hit / miss / occluded / ambush、四预设、
-同 seed 双跑、idle / hit / ambush 的 40/400Hz 同 tick 结果、1mm 初态微扰**灵敏度**、
-真实 collider 全半径穿透、hunter 长度球边缘与约 50 度大攻角扑击/抓取，以及
-`TargetEffect` 事件顺序。既有 Lizard / Centipede / Spider / Cicada /
-Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收中另行运行，不包含在
-拟态草专项脚本内部。
+Godot 矩阵覆盖 floor / wall / ceiling、idle / hit / miss / occluded / ambush / probe /
+stretch、四预设、同 seed 双跑、idle / hit / ambush / probe / stretch 的 40/400Hz 同
+tick 结果、1mm 初态微扰**灵敏度**、真实 collider 全半径穿透、hunter 长度球边缘与约
+50 度大攻角扑击/抓取，以及 `TargetEffect` 事件顺序。既有 Lizard / Centipede /
+Spider / Cicada / Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收中
+另行运行，不包含在拟态草专项脚本内部。
 
 具体哈希与配置数量只以 smoke/matrix 当前输出和脚本内钉死常量为准；在基线真正生成并通过前，
 文档不预写数值。
@@ -403,6 +489,17 @@ Vulture / Humanoid 的不变性由各自 smoke 与 matrix 在本轮集成验收�
   bulbPush** 且半径随 sink 轻微收缩（×(1−0.35·sink)）——锥留在原位时嘴底与退走的
   灯泡之间会露出一截"连着灯泡的锥"（暖灯照下呈肉色），同推 + 收缩让锥在任意
   sink 下都被灯泡吞没。sink=0 的攻击路径两项均为恒等变换。
+- **探照灯**（SpotLight3D，锁定锥的可视化=设定本身）：挂 `_root` 而非 `_bulb`
+  （灯泡 basis 含非均匀缩放，子节点会继承畸变），`DrawMouth` 末尾按
+  `Basis(right, up, −fwd)` 摆位（`right = fwd×up ⇒ right×up = −fwd`，右手正交且
+  −Z ≡ 嘴 forward——Godot SpotLight 沿本地 −Z 照射），灯芯出灯泡球面防埋颌管；
+  开阴影（墙挡光 = 感知视线遮挡的视觉诚实）、灯泡关 CastShadow（自发光球不遮
+  自己的灯）。能量曲线只读内核标量：`hunt = max(ProbeAmount 低通, 1−伪装)`，
+  伪装 = 0.9 弱光池（吸顶灯脚下那圈）、狩猎 = 2.6 搜索光束、蓄力/突刺窗再叠
+  1.6 闪耀；伪装态 fwd 已对齐 Outward → 灯自动朝下变吸顶灯，零额外分支。公开
+  化妆配置面 `ConfigureSearchlight(halfAngleDeg, range)` 让宿主把锥角对齐感知
+  锁定锥（竞技场调用；沙盒用默认值）。嘴开度合成加入 `ProbeAmount` 低通——
+  探头张紧全程大张（颌是探照灯的准直器）。
 
 ### 7.2 吊顶伏击竞技场（探索场景，不进矩阵）
 
@@ -414,26 +511,79 @@ godot --path . scenes/tentacle_plant_arena.tscn
 ```
 
 `BoxRoomArenaBuilder` 盒房间（默认 16×16m、净高 3.2m），lurker 挂房间正中天花板、
-出生即伪装；挂点下一盏暖 OmniLight 亮度随 `DisguiseAmount` 走（揭露时"灯熄了"）。
-宿主相位只有 `Ambush / Engage` 两个，冷却与回伪装计时都是时间戳（冷却≠相位——
-RatFiend R19 教训）：
+出生即伪装；挂点下一盏暖 OmniLight 亮度随 `DisguiseAmount` 走（揭露时"灯熄了"），
+与渲染件探照灯互补（那盏演"灯亮着"、这盏演"锁定锥"）。玩家随身补光经
+`ConfigureFillLight(1.2, 10)` 压暗——光锥明暗对比是感知机制的可视化，不能被冲淡。
+
+**感知系统整体替换了旧的距离触发**（`AmbushTriggerRadius/EngageReleaseRadius/
+RearmDelaySeconds` 已删除）：`TentaclePlantPerception`（纯 C#，同文件
+`TentaclePlantProbePlanner`，均在 `scripts/tentacle_plant_sandbox/
+TentaclePlantPerception.cs`）只对玩家眼位的逐 tick **移动量**累计——静止=隐身是
+硬设计；锥内判定基于宿主权威的**光束朝向**（tick 域、按 `BeamTurnDegreesPerSecond`
+限速回转）：探头时指向规划器当前**凝视点**（本路点对应的假想猎物位置——停头刻意停
+在它前方 0.6×锥长处，"照哪"不能从探测点推导）、锁定新鲜期指向最后感知点、伏击回落
+链末段推导（末三段方向混合按伪装度对齐挂点法线，与渲染同公式但**无低通**——感知
+行为不许依赖渲染帧率）。探头悬停的链身有余量、末段在重力下上翘，链推导的 forward
+不代表照向——这根光束方向同时喂给感知锥轴、调试锥与渲染件
+`SetBeamAim(dir, weight)`（嘴与探照灯按权重混合、ease 淡入淡出，Ambush 权重 0
+完全回落链推导，可视化=判定）；"急转"= 目标方向突变 + 回转斜坡自然涌现。
+视线遮挡用墙层（掩码 1）
+射线，每 tick ≤1 条且只在"区内且有移动"时发射。累计速率 ∝ 移动量 × 敏化
+（Aplysia 式：刺激线性抬升、静止指数恢复）；衰减只在静止时发生、出区稍快不清零；
+察觉累计过阈**触发即消耗**（天然阻尼边界横跳）。探头搜索：起手直奔最佳估计
+（粗方位 + 幅度粗测距，方位 ±18°/距离 ±30% 噪声按"移动回合"冻结）、停头 =
+估计距离 − 0.6×锥长（锥尖够猎物、嘴不过冲）、路点 + 常态性聆听停顿（0.6–1.5s
+随机）、无信息时包络按假想猎物速度扩张、**触发性聆听**（静止 0.5s 后的首个移动）
+急转 + 2–3.5s 长凝视 + 包络坍缩且该下移动近零累计（灯照到=免费警告）、低概率
+回头杀、预算随时间耗且伸得越长耗得越快。
+
+宿主相位 `Ambush / Probe / Engage` 三个，锁定/冷却/探头就绪都是时间戳或感知量
+（冷却≠相位——RatFiend R19 教训）：
 
 | 相位 | 条件 | 喂入 |
 |---|---|---|
-| Ambush | 玩家水平距挂点 > `AmbushTriggerRadius`(2.2m) | `Target=null`，intent=true |
-| Ambush | 距 ≤ 触发半径 | 喂可见目标——伪装态加速充能，突袭由内核涌现 |
-| Ambush→Engage | `AttackSerial` 增沿（伏击出手） | 压 `AttackCooldownSeconds`(2.5s) 冷却 |
-| Engage | 距 ≤ `EngageReleaseRadius`(4.5m，迟滞) | 喂目标，`HostVisible = 冷却已过`——冷却中不充能仍 Tracking：**闭嘴、朝向玩家、扭动身体** |
-| Engage→Ambush | 距 > 脱离半径持续 `RearmDelaySeconds`(3s) | intent=true、`Target=null`，慢速回伪装 |
+| Ambush | 无锁定 | `Target=null`，disguise=true/probe=false |
+| Ambush | `LockFresh`（锁定新鲜期 2.5s） | 喂真目标（最后感知点、速度 0）——伪装态 ×10 充能 ~10 tick 突袭 |
+| Ambush→Probe | 察觉累计过阈且过探头冷却 | `planner.Begin(最佳估计)`，disguise=false/probe=true |
+| Probe | 无锁定 | 喂 `hostVisible=false` 合成探测点（planner 动画、头张嘴跟随）；聆听事件 → `OnListen` 急转；预算尽 → 回 Ambush |
+| Probe | `LockFresh` | 喂真目标（visible=冷却已过）——预张紧 ×10 充能 ~10 tick 出手；规划器冻结 |
+| 任意→Engage | `AttackSerial` 增沿 | 压 `AttackCooldownSeconds`(2.5s) 冷却 |
+| Engage | `LockFresh` | 喂真目标（visible=冷却已过） |
+| Engage→Probe | 锁定过期 | 它只知道"置信度涨不上去"——`planner.Begin(最佳估计)` 转搜索 |
 
 玩家（共享 `ArenaFirstPersonPlayer`，层 2 对内核不可见）恒 `HostGrabbable=false`
-（快咬弹开制，绕开 `PositionCorrection` 全量交付与自驱玩家打架的坑）；喂内核的
-目标球心取**眼位**（`EyePosition`，= 相机高度，脚底 +1.55m）——吊顶伏击者冲着脸咬，
-不是胶囊中心的腰腹；咬中判定宿主自做：Striking 期 `Hand` 距玩家眼位（= 瞄准点）
-≤ `BiteRadius`(0.55m)，每 `AttackSerial` 只结算一次 → BITTEN 计数 + 镜头 kick + `AddImpulse` 背向推离（直写 Velocity 会被
-"无输入即刻停"一步归零——RatArena R18b 实证）。防御断言：出现任何抓持效果即
-warn + `ReleaseHeldTarget()`。实测节拍：出生 ~1.6s 后伏击首咬，玩家滞留则每
-5s 一咬（2.5s 冷却 + 2.5s 充能，Windup 半程起嘴会当着玩家的面慢慢张开）。
+（快咬弹开制，绕开 `PositionCorrection` 全量交付与自驱玩家打架的坑）；**突刺瞄
+"最后感知点"**（喂真目标位置 = `perception.AimPoint`、速度 0 → 内核预测退化为
+定点瞄准）——急停侧移可让它咬空；攻距由 Export `StrikeStretchFactor`(1.5) 覆写预设
+（≈4.8m 斜距，略小于 H+L=5.5m → 边缘咬空带，ValidateExports 有"无咬空带"提示
+note）。咬中判定宿主自做：Striking 期 `Hand` 距玩家眼位 ≤ `BiteRadius`(0.55m)，
+每 `AttackSerial` 只结算一次 → BITTEN 计数 + 镜头 kick + `AddImpulse` 背向推离
+（直写 Velocity 会被"无输入即刻停"一步归零——RatArena R18b 实证）。**反射性咬合**
+（脊髓反射，不经感知）：探头/交战期非 Striking/Holding 且过冷却时 `Hand` 距眼位
+≤ BiteRadius 直接 LandBite + 回伪装——张开的颌内不是安全屋。防御断言：出现任何
+抓持效果即 warn + `ReleaseHeldTarget()`。感知/探头全部数值挂
+`[ExportGroup("Perception")/("Probe")]`（默认值见 ready 行与 ValidateExports），
+HUD 第二行实时显示 aware/lock/sens/fresh/budget/pa/stretch。
+
+**调试覆盖层**（`TentaclePlantDebugDraw`，`[Export] DebugOverlay` 初值 + 运行时 `F3`
+切换）两组信息：
+
+- **感知两锥**（覆盖层开着就恒画——感知不分相位）：以头端为顶点、以感知自己用的
+  **tick 域光束方向**（非渲染低通值）为轴，锁定锥（青）与察觉锥（紫、更淡）各画
+  母线 + 边界圆环。两锥的判定都是**球扇形**（距离 ≤ 半径 且 cos ≥ cos半角），所以
+  圆环画在球冠上（深 = R·cos半角、半径 = R·sin半角）而非平底盖：16° 的锁定锥两者
+  几乎重合，75° 的察觉锥差得很远（平底会严重虚报覆盖范围）。默认参数下锁定锥的环
+  = 地面那圈光池（半径 0.88m），察觉锥的环 ≈ 眼高附近半径 6.28m 的大圈。母线与
+  圆环都是**精确边界**（球半径 / 球冠交线），近似的只有没画的锥面。
+- **当前探测点**（绿菱形）+ 探测点↔头端连线（半透明绿条带，长度 = 头端伺服滞后）
+  + 头端小橙菱形，只在"宿主本 tick 确实把探测点喂给了内核"时画（Ambush、以及 Probe
+  期内转喂真目标时自动消失，不留鬼影）。
+
+HUD 加一行数值版 `dbg cone lock=…°x…m aware=…°x…m probe=(x,y,z) lag=…m`。绘制手法
+沿用 `RayDebugDraw`（朝相机的条带/菱形、Unshaded + NoDepthTest，被触手或墙挡住也
+看得见）；头端与探测点按渲染 alpha 插值（与正式渲染件同一 alpha，40Hz 逻辑不抖
+画面）。锥轴朝下（伏击态）会撞上 `axis × Up` 退化，回退到 `axis × Right` 建基。
+纯观测：只读宿主已有量，不进物理与哈希。
 
 ### 7.3 本轮修复记录（lurker 调参）
 
@@ -457,6 +607,9 @@ Striking→Recovering 的**根链节**（`Anchor→Segments[0]`）——扑击�
   `TentaclePlantTargetEffect` 处理。
 - 当前地形绕障是固定预算的局部导引，不是 3D 导航或全局最短路；复杂凹洞、活动门和会移动的
   遮挡物不在首版保证内。
+- 探测悬停点由宿主以 `HostVisible=false` 合成快照给出（§4.2），内核不搜索场景、
+  不感知"察觉区/锁定锥"这类概念——光感知与搜索策略整体归宿主
+  （`TentaclePlantPerception` 随竞技场回迁）。
 - 首版不模拟段链自缠、不同拟态草互相缠绕或触手与动态刚体的逐段碰撞；目标交互集中在手端。
 - 不实现水流、浮力、游泳或原作 Amphibious 分支；也不包含 PoleMimic 的伪装攀爬面、
   GarbageWorm 的抓矛行为和正式美术。

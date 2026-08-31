@@ -185,6 +185,15 @@ public sealed class TentaclePlantController
     /// </summary>
     public bool DisguiseIntent { get; set; }
 
+    /// <summary>
+    /// 第三个宿主可写输入（opt-in，默认 false）：请求探头张紧姿态（张嘴悬停 +
+    /// 预张紧充能）。持久 bool 属性，宿主按自身搜索策略改写；本项目扩展、无原作
+    /// 对应。Holding 与突刺运动窗口内被忽略并强制快衰；与 DisguiseIntent 同真时
+    /// 伪装优先（探头快衰）——宿主相位切换在同 tick 邻域改写两个 bool 是合法的，
+    /// 交接期两标量共存、平滑交棒。<see cref="Remount"/> 连同 Target 一起复位。
+    /// </summary>
+    public bool ProbeIntent { get; set; }
+
     public TentaclePlantTargetEffect TargetEffect { get; private set; }
     public TentaclePlantPhase Phase { get; private set; } = TentaclePlantPhase.Wandering;
     public int PhaseTick { get; private set; }
@@ -197,6 +206,21 @@ public sealed class TentaclePlantController
     /// 渲染层用它驱动伪装视觉；不进既有哈希折叠序。
     /// </summary>
     public float DisguiseAmount => _disguiseAmount;
+
+    /// <summary>
+    /// 探头张紧程度 [0,1]：朝 <see cref="ProbeIntent"/> 缓动。渲染层用它驱动
+    /// 张嘴/探照灯；过 <see cref="TentaclePlantParams.ProbeChargeThreshold"/> 后
+    /// 充能增益切换为 2×ProbeChargeMultiplier（预张紧）。不进既有哈希折叠序。
+    /// </summary>
+    public float ProbeAmount => _probeAmount;
+
+    /// <summary>
+    /// 攻击拉伸程度 [0,1]：突刺运动窗口内为 1、出窗按
+    /// <see cref="TentaclePlantParams.StrikeStretchRecoverPerTick"/> 定速回卷。
+    /// 当前有效链长倍率 = Lerp(1, StrikeStretchFactor, StretchAmount)。
+    /// 折驱动标量、不折派生长度（DropBug HangFactor 先例）；不进既有哈希折叠序。
+    /// </summary>
+    public float StretchAmount => _stretchAmount;
 
     public long AttackSerial { get; private set; }
     public ulong? HeldTargetId { get; private set; }
@@ -218,6 +242,9 @@ public sealed class TentaclePlantController
     private Vector3 _strikeOrigin;
     private Vector3 _strikeGoal;
     private float _disguiseAmount;
+    private float _probeAmount;
+    private float _stretchAmount;
+    private readonly float _strikeReach;
     private int _chargeUnits;
     private int _strikeTicksRemaining;
     private int _strikeTick;
@@ -240,6 +267,9 @@ public sealed class TentaclePlantController
     {
         _parameters = parameters.Snapshot();
         Params = parameters.Snapshot();
+        // 攻击资格包络用构造期预计算的静态值而非逐 tick 斜坡值：资格判定发生在
+        // 扑击之前，斜坡会让 TargetStatus 在回卷期翻线。factor=1 时逐位等于 Length。
+        _strikeReach = _parameters.Length * _parameters.StrikeStretchFactor;
         _initialSeed = MixSeed(stableSeed);
         _randomState = _initialSeed;
         Body = body;
@@ -300,6 +330,25 @@ public sealed class TentaclePlantController
         // Holding 强制快衰并旁路 cap，蜷缩链才能被扑击冲量完整甩出。
         bool strikeWindow = consumingStrikeMotion || _strikeTicksRemaining > 0;
         UpdateDisguise(strikeWindow);
+        UpdateProbe(strikeWindow);
+        // 攻击弹性拉伸（opt-in）：进入瞬时（加长对 PullOnly 链是纯放松、零力注入），
+        // 退出走定速斜坡（缩短经 ConstrainTipToRoot 硬投影回抽，斜坡速率上界由
+        // Validate 跨字段约束钉死）。开扑首 tick lengthScale 仍为 1 属有意一拍延迟：
+        // 冲量在 InjectShapeForces 注入、下一 tick 才被 TickPhysics 消费。
+        float lengthScale = 1f;
+        if (_parameters.StrikeStretchFactor > 1f)
+        {
+            if (strikeWindow)
+            {
+                _stretchAmount = 1f;
+            }
+            else if (_stretchAmount > 0f)
+            {
+                _stretchAmount = Math.Max(
+                    0f, _stretchAmount - _parameters.StrikeStretchRecoverPerTick);
+            }
+            lengthScale = Mathf.Lerp(1f, _parameters.StrikeStretchFactor, _stretchAmount);
+        }
         bool disguiseActive = _disguiseAmount > 0f &&
             HeldTargetId is null && !strikeWindow;
 
@@ -328,7 +377,8 @@ public sealed class TentaclePlantController
             goal,
             Outward,
             Tangent,
-            physicsExtension);
+            physicsExtension,
+            lengthScale);
 
         bool visibleAttackTarget = EvaluateAttackTarget(_countingTerrain);
         ActAttack(visibleAttackTarget);
@@ -353,13 +403,15 @@ public sealed class TentaclePlantController
             physicsExtension,
             windupAmount,
             strikeImpulse,
-            calmAmount);
+            calmAmount,
+            lengthScale);
         Hand.Vel += strikeImpulse;
         _strikeMotionPending = injectingStrikeMotion;
         CoupleHandAndTip(
             _countingTerrain,
             physicsExtension,
-            consumingStrikeMotion || injectingStrikeMotion);
+            consumingStrikeMotion || injectingStrikeMotion,
+            lengthScale);
         AnchorRoot();
 
         if (!releasedThisTick && HeldTargetId is null && Target is { } candidate)
@@ -377,9 +429,9 @@ public sealed class TentaclePlantController
             _retractTicksElapsed = 0;
             _consumeTicks = 0;
             _consumeSent = false;
-            // 伪装期冻结游走目标（也不消耗 RNG）；默认路径 _disguiseAmount 恒 0，
+            // 伪装/探头期冻结游走目标（也不消耗 RNG）；默认路径两标量恒 0，
             // 调用时机与随机流逐 tick 不变。
-            if (Target is null && _disguiseAmount <= 0f)
+            if (Target is null && _disguiseAmount <= 0f && _probeAmount <= 0f)
             {
                 UpdateWanderGoal(_countingTerrain);
             }
@@ -427,6 +479,9 @@ public sealed class TentaclePlantController
         Target = null;
         DisguiseIntent = false;
         _disguiseAmount = 0f;
+        ProbeIntent = false;
+        _probeAmount = 0f;
+        _stretchAmount = 0f;
         HeldTargetId = null;
         AttackCharge = 0f;
         _chargeUnits = 0;
@@ -500,7 +555,7 @@ public sealed class TentaclePlantController
         // 判定，避免猎物表面仍可达、但中心刚越过边界时永久只 Tracking 不充能。
         float targetRadius = Math.Max(0f, target.Radius);
         Vector3 fromRoot = target.Position - Root.Pos;
-        float reach = _parameters.Length + targetRadius;
+        float reach = _strikeReach + targetRadius;
         if (fromRoot.LengthSquared() > reach * reach)
         {
             TargetStatus = TentaclePlantTargetStatus.OutOfRange;
@@ -548,29 +603,29 @@ public sealed class TentaclePlantController
         float rootDistance = fromRoot.Length();
         if (mountForward >= 0f)
         {
-            float radialExcess = Math.Max(0f, rootDistance - _parameters.Length);
+            float radialExcess = Math.Max(0f, rootDistance - _strikeReach);
             return radialExcess * radialExcess;
         }
 
         // 先试长度球上的径向最近点；它若仍在洞外半空间，就是整个球冠的最近点。
-        if (rootDistance > _parameters.Length && rootDistance > 1e-6f)
+        if (rootDistance > _strikeReach && rootDistance > 1e-6f)
         {
             Vector3 sphereProjection = Root.Pos +
-                fromRoot * (_parameters.Length / rootDistance);
+                fromRoot * (_strikeReach / rootDistance);
             if ((sphereProjection - Mount.Point).Dot(Outward) >= 0f)
             {
-                float radialExcess = rootDistance - _parameters.Length;
+                float radialExcess = rootDistance - _strikeReach;
                 return radialExcess * radialExcess;
             }
         }
 
         // 否则半空间约束生效，最近点在安装平面与长度球相交的圆盘上。
         float rootForward = (Root.Pos - Mount.Point).Dot(Outward);
-        float planeRadiusSquared = _parameters.Length * _parameters.Length -
+        float planeRadiusSquared = _strikeReach * _strikeReach -
                                    rootForward * rootForward;
         if (planeRadiusSquared <= 0f)
         {
-            float radialExcess = Math.Max(0f, rootDistance - _parameters.Length);
+            float radialExcess = Math.Max(0f, rootDistance - _strikeReach);
             return radialExcess * radialExcess;
         }
         Vector3 pointOnPlane = point - Outward * mountForward;
@@ -630,11 +685,16 @@ public sealed class TentaclePlantController
         int maximumChargeUnits = _parameters.ChargeTicks * 2;
         if (canCharge)
         {
-            // 伪装就位后充能加速（"突然咬"）；阈值经 Validate 保证为正，
-            // 默认路径 _disguiseAmount==0 永不过阈，增量恒为 2。
+            // 伪装就位/探头张紧后充能加速（"突然咬"/"预张紧"）；阈值经 Validate
+            // 保证为正，默认路径两标量恒 0 永不过阈，增量恒为 2。两者同过阈时
+            // 取 Max（现实中互斥，语义为"取更张紧的姿态"）。纯整数，无浮点分支。
             int chargeGain = _disguiseAmount >= _parameters.DisguiseChargeThreshold
                 ? 2 * _parameters.DisguiseChargeMultiplier
                 : 2;
+            if (_probeAmount >= _parameters.ProbeChargeThreshold)
+            {
+                chargeGain = Math.Max(chargeGain, 2 * _parameters.ProbeChargeMultiplier);
+            }
             _chargeUnits = Math.Min(maximumChargeUnits, _chargeUnits + chargeGain);
         }
         else
@@ -696,6 +756,33 @@ public sealed class TentaclePlantController
         {
             _disguiseAmount = Math.Max(
                 0f, _disguiseAmount - _parameters.DisguiseReleasePerTick);
+        }
+    }
+
+    private void UpdateProbe(bool strikeWindow)
+    {
+        if (HeldTargetId is not null || strikeWindow)
+        {
+            if (_probeAmount > 0f)
+            {
+                _probeAmount = Math.Max(
+                    0f, _probeAmount - _parameters.ProbeReleasePerTick);
+            }
+            return;
+        }
+        // DisguiseIntent 优先：同真时探头快衰、伪装上升（交接期两标量共存）。
+        if (ProbeIntent && !DisguiseIntent)
+        {
+            if (_probeAmount < 1f)
+            {
+                _probeAmount = Math.Min(
+                    1f, _probeAmount + _parameters.ProbeEngagePerTick);
+            }
+        }
+        else if (_probeAmount > 0f)
+        {
+            _probeAmount = Math.Max(
+                0f, _probeAmount - _parameters.ProbeReleasePerTick);
         }
     }
 
@@ -905,7 +992,8 @@ public sealed class TentaclePlantController
     private void CoupleHandAndTip(
         ITerrainQuery terrain,
         float extension,
-        bool strikeMotionActive)
+        bool strikeMotionActive,
+        float lengthScale)
     {
         Vector3 safeTipPosition = Chain.Tip.Pos;
         if (Chain.BacktrackFrom >= 0)
@@ -925,7 +1013,8 @@ public sealed class TentaclePlantController
         }
 
         Vector3 position = Hand.Pos;
-        float maximumReach = _parameters.Length * 2f * Mathf.Clamp(extension, 0f, 1f);
+        float maximumReach =
+            _parameters.Length * 2f * Mathf.Clamp(extension, 0f, 1f) * lengthScale;
         Vector3 fromRoot = position - Root.Pos;
         float rootDistance = fromRoot.Length();
         if (rootDistance > maximumReach && rootDistance > 1e-6f)
@@ -988,7 +1077,8 @@ public sealed class TentaclePlantController
             extension,
             safeTipPosition,
             coupledVelocityCap,
-            strikeMotionActive ? 1.25f : 1f);
+            strikeMotionActive ? 1.25f : 1f,
+            lengthScale);
         Hand.Pos = Chain.Tip.Pos;
     }
 

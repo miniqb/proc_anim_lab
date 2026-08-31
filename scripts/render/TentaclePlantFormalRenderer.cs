@@ -39,6 +39,12 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
 
     private Node3D? _root;
     private MeshInstance3D? _bulb;
+    private SpotLight3D? _spot;
+    private float _spotAngleDeg = 16f;
+    private float _spotRange = 4.2f;
+    private Vector3 _beamAimDir = Vector3.Down;
+    private float _beamAimWeight;
+    private float _beamEase;
 
     // —— seed 冻结的形状基因 ——
     private float _headSize;
@@ -56,6 +62,7 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
     private bool _frameInitialized;
     private float _mouthOpen;
     private float _disguiseEase;
+    private float _probeEase;
     private float _snapTimer;
     private float _snapDelay;
     private long _prevAttackSerial;
@@ -152,14 +159,65 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
             EmissionEnergyMultiplier = 1.1f,
             Roughness = 0.35f,
         };
-        _bulb = new MeshInstance3D { Mesh = sphere, MaterialOverride = bulbMat };
+        _bulb = new MeshInstance3D
+        {
+            Mesh = sphere,
+            MaterialOverride = bulbMat,
+            // 自发光球不该遮自己的探照灯。
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
         _root.AddChild(_bulb);
+
+        // 探照灯 = 锁定锥的可视化（设定：灯泡发光并检测反射变化）。挂 _root 而非
+        // _bulb——灯泡 basis 含非均匀缩放，子节点会继承畸变。伪装态 fwd 已被
+        // UpdateMouthFrame 对齐 Outward → 灯自动朝下变吸顶灯，零额外分支。
+        // 开阴影：墙挡光 = 感知视线遮挡的视觉诚实。
+        _spot = new SpotLight3D
+        {
+            LightColor = _pal.Bulb,
+            LightEnergy = 0.9f,
+            SpotAngle = _spotAngleDeg,
+            SpotRange = _spotRange,
+            SpotAngleAttenuation = 1.4f,
+            SpotAttenuation = 1.5f,
+            ShadowEnabled = true,
+        };
+        _root.AddChild(_spot);
 
         SeedGenes();
         _frameInitialized = false;
         _prevAttackSerial = _c.AttackSerial;
         _snapDelay = 0f;
         _snapTimer = 0f;
+    }
+
+    /// <summary>
+    /// 宿主化妆配置面：让探照灯锥角/射程与宿主感知锁定锥对齐（可视化=设定本身）。
+    /// 不调用则用默认值（沙盒即如此）。SpotAngle 语义 = 轴到边的半角。
+    /// </summary>
+    /// <summary>
+    /// 宿主喂的光束朝向（化妆覆写）：探头/交战期链身有余量、末段在重力下上翘，
+    /// 链末段推导的嘴 forward 不再代表"照哪"——按宿主权威方向（= 感知锁定锥轴）
+    /// 混合嘴与探照灯朝向。weight=0 完全回落链推导，不调用的场景零影响。
+    /// </summary>
+    public void SetBeamAim(Vector3 direction, float weight)
+    {
+        if (direction.LengthSquared() > 1e-10f)
+        {
+            _beamAimDir = direction.Normalized();
+        }
+        _beamAimWeight = Mathf.Clamp(weight, 0f, 1f);
+    }
+
+    public void ConfigureSearchlight(float coneHalfAngleDegrees, float rangeMeters)
+    {
+        _spotAngleDeg = coneHalfAngleDegrees;
+        _spotRange = rangeMeters;
+        if (_spot is not null)
+        {
+            _spot.SpotAngle = _spotAngleDeg;
+            _spot.SpotRange = _spotRange;
+        }
     }
 
     /// <summary>形状基因一次抽签（seed 冻结）：头径/颌长/张角档/牙排。运行时抖动只用
@@ -211,6 +269,7 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         _root?.QueueFree();
         _root = null;
         _bulb = null;
+        _spot = null;
         _frameInitialized = false;
     }
 
@@ -230,9 +289,10 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         }
         _time += dt;
 
-        // 伪装缓动：内核标量本身慢升快降，渲染低通只吃 40Hz 台阶。
+        // 伪装/探头缓动：内核标量本身慢升快降，渲染低通只吃 40Hz 台阶。
         float kDisguise = 1f - Mathf.Exp(-12f * dt);
         _disguiseEase += (_c.DisguiseAmount - _disguiseEase) * kDisguise;
+        _probeEase += (_c.ProbeAmount - _probeEase) * kDisguise;
 
         UpdateMouthOpen(dt);
         UpdateMouthFrame(alpha, dt);
@@ -315,7 +375,10 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         {
             float charge = Mathf.Clamp(_c.AttackCharge, 0f, 1f);
             float windup = Mathf.InverseLerp(_c.Params.WindupStart, 1f, charge);
-            target = Mathf.Max(Mathf.Clamp(windup, 0f, 1f), _disguiseEase);
+            // 探头张紧也张嘴：颌是探照灯的准直器，搜索时全程大张。
+            target = Mathf.Max(
+                Mathf.Clamp(windup, 0f, 1f),
+                Mathf.Max(_disguiseEase, _probeEase));
             // 闲置微呼吸颌 + 负偏置双正弦微颤（只朝闭合脉动，分频防拍频；
             // 幅度随开度升档——闭着的嘴不打颤）。微颤随伪装归零：伪装态开度
             // 下探会让颌/牙周期性冒出安装面（评审确认的穿帮）。
@@ -332,9 +395,10 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         _mouthOpen += (target - _mouthOpen) * (target > _mouthOpen ? kOpen : kClose);
     }
 
-    /// <summary>嘴帧：forward = 末端多段混合（单差分抖）→ Striking 混 40% 突刺速度方向、
-    /// 伪装混向 Outward（缩链后末端差分退化）→ 低通；up 逐帧平行传输延续（roll 自由
-    /// 跟随触手，不做世界对齐），近共线逐级回退。帧每 Draw 只算一次。</summary>
+    /// <summary>嘴帧：forward = 末端多段混合（单差分抖）→ 宿主光束覆写（照哪由宿主
+    /// 权威方向决定，权重淡入淡出）→ Striking 混 40% 突刺速度方向、伪装混向 Outward
+    /// （缩链后末端差分退化）→ 低通；up 逐帧平行传输延续（roll 自由跟随触手，
+    /// 不做世界对齐），近共线逐级回退。帧每 Draw 只算一次。</summary>
     private void UpdateMouthFrame(float alpha, float dt)
     {
         IReadOnlyList<TentacleSegmentState> segments = _c.Segments;
@@ -344,6 +408,13 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
             ? segments[n - 2].LerpPos(alpha) - segments[n - 3].LerpPos(alpha)
             : a;
         Vector3 fwdRaw = SafeDirection(a * 0.6f + b * 0.4f, _c.Outward);
+        // 宿主光束覆写：探头/交战期悬停的链身有余量、末段上翘，链推导的 fwd
+        // 不代表"照哪"；权重经 ease 淡入淡出，突刺速度混合与伪装 lerp 仍在其上。
+        _beamEase += (_beamAimWeight - _beamEase) * (1f - Mathf.Exp(-6f * dt));
+        if (_beamEase > 1e-3f)
+        {
+            fwdRaw = SafeDirection(fwdRaw.Lerp(_beamAimDir, _beamEase), fwdRaw);
+        }
         if (_c.Phase == TentaclePlantPhase.Striking &&
             _c.Hand.Vel.LengthSquared() > 1e-6f)
         {
@@ -501,6 +572,26 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         _bulb!.GlobalTransform = new Transform3D(
             new Basis(right * bulbR, fwd * (bulbR * 1.25f), up * bulbR),
             bulbPos);
+
+        // 探照灯摆位与能量：right = fwd×up ⇒ right×up = −fwd，右手正交且
+        // −Z ≡ 嘴 forward（SpotLight3D 沿本地 −Z 照射）；灯芯推出球面防埋颌管。
+        // 能量曲线只读内核标量：伪装 = 弱光池（吸顶灯脚下那圈），揭露/探头 =
+        // 搜索光束；蓄力/突刺窗叠一段闪耀。与竞技场挂点 Omni（disguise↑Omni↑）
+        // 互补——那盏演"灯亮着"，这盏演"锁定锥"。
+        if (_spot is not null)
+        {
+            _spot.GlobalTransform = new Transform3D(
+                new Basis(right, up, -fwd),
+                bulbPos + fwd * (bulbR * 0.6f));
+            float hunt = MathF.Max(_probeEase, 1f - _disguiseEase);
+            float charge = Mathf.Clamp(_c.AttackCharge, 0f, 1f);
+            float windup = Mathf.Clamp(
+                Mathf.InverseLerp(_c.Params.WindupStart, 1f, charge), 0f, 1f);
+            bool flare = _c.Phase == TentaclePlantPhase.Striking ||
+                _snapDelay > 0f || _snapTimer > 0f;
+            _spot.LightEnergy = Mathf.Lerp(0.9f, 2.6f, hunt) +
+                1.6f * MathF.Max(windup, flare ? 1f : 0f);
+        }
     }
 
     /// <summary>单颌：4 点扫锥管（根埋进颈部，沿自身外侧微弓成相扣吻面）+ 沿唇缘两列

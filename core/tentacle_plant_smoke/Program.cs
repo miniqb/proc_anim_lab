@@ -14,6 +14,10 @@ internal static class Program
     private const ulong ExpectedHash = 0x025601D1B6ADC65AUL;
     // 伪装场景（DISGUISE 检查）的独立基线；与主 ExpectedHash 互不影响。
     private const ulong DisguiseExpectedHash = 0xF07DAC8EAE20C13CUL;
+    // 探头场景（PROBE 检查）与拉伸场景（STRETCH 检查）的独立基线；
+    // 同样不影响主 ExpectedHash——新标量只在各自场景内追加折叠。
+    private const ulong ProbeExpectedHash = 0x47CDAC4F8D36DE83UL;
+    private const ulong StretchExpectedHash = 0x4B7B0F18A2E2B0CFUL;
     private static readonly Vector3 NoGravity = Vector3.Zero;
 
     private static int Main()
@@ -35,6 +39,8 @@ internal static class Program
         Check("SPAWN-CLEARANCE", CheckSpawnAndRemountClearance, failures);
         Check("LIFECYCLE", CheckLifecycle, failures);
         Check("DISGUISE", CheckDisguiseAmbush, failures);
+        Check("PROBE", CheckProbeHover, failures);
+        Check("STRETCH", CheckStrikeStretch, failures);
 
         DeterminismResult a = RunDeterminism();
         DeterminismResult b = RunDeterminism();
@@ -121,7 +127,14 @@ internal static class Program
                         lurker.SegmentCount == 5 &&
                         lurker.ChargeTicks == 100 &&
                         lurker.DisguiseChargeMultiplier == 10 &&
-                        Near(lurker.DisguiseExtensionFraction, 0.10f);
+                        Near(lurker.DisguiseExtensionFraction, 0.10f) &&
+                        // 探头张紧只有 lurker 调满；拉伸不在任何预设开启（恒等元）。
+                        lurker.ProbeChargeMultiplier == 10 &&
+                        original.ProbeChargeMultiplier == 6 &&
+                        Near(original.StrikeStretchFactor, 1f) &&
+                        Near(shortPlant.StrikeStretchFactor, 1f) &&
+                        Near(hunter.StrikeStretchFactor, 1f) &&
+                        Near(lurker.StrikeStretchFactor, 1f);
 
         var mount = new TentaclePlantMount(
             new Vector3(1f, 2f, 3f),
@@ -211,12 +224,52 @@ internal static class Program
             invalid.DisguiseChargeMultiplier = invalid.ChargeTicks + 1;
             invalid.Validate();
         });
+        // 探头/拉伸参数校验负例：阈值必须为正（默认关闭时预张紧不可达）、
+        // 拉伸限 [1,2]、回卷速率必须为正且不得超段速上限（防瞬移回抽）。
+        bool probeStretchGuards =
+            Throws<ArgumentOutOfRangeException>(() =>
+            {
+                TentaclePlantParams invalid = TentaclePlantFactory.Lurker();
+                invalid.ProbeChargeThreshold = 0f;
+                invalid.Validate();
+            }) &&
+            Throws<ArgumentOutOfRangeException>(() =>
+            {
+                TentaclePlantParams invalid = TentaclePlantFactory.Lurker();
+                invalid.ProbeChargeMultiplier = invalid.ChargeTicks + 1;
+                invalid.Validate();
+            }) &&
+            Throws<ArgumentOutOfRangeException>(() =>
+            {
+                TentaclePlantParams invalid = TentaclePlantFactory.Original();
+                invalid.StrikeStretchFactor = 0.9f;
+                invalid.Validate();
+            }) &&
+            Throws<ArgumentOutOfRangeException>(() =>
+            {
+                TentaclePlantParams invalid = TentaclePlantFactory.Original();
+                invalid.StrikeStretchFactor = 2.5f;
+                invalid.Validate();
+            }) &&
+            Throws<ArgumentOutOfRangeException>(() =>
+            {
+                TentaclePlantParams invalid = TentaclePlantFactory.Original();
+                invalid.StrikeStretchRecoverPerTick = 0f;
+                invalid.Validate();
+            }) &&
+            Throws<ArgumentOutOfRangeException>(() =>
+            {
+                TentaclePlantParams invalid = TentaclePlantFactory.Lurker();
+                invalid.StrikeStretchFactor = 2f;
+                invalid.StrikeStretchRecoverPerTick = 0.10f;
+                invalid.Validate();
+            });
 
         bool ok = ids && originalEvidence && variants && topology && frame && snapshot &&
                   throwsUnknown && throwsZeroNormal && throwsNarrowGuide &&
                   throwsBuriedSpawn && throwsBuriedRetract && throwsNonFiniteTarget &&
                   throwsZeroDisguiseThreshold && throwsDisguiseFraction &&
-                  throwsDisguiseMultiplier;
+                  throwsDisguiseMultiplier && probeStretchGuards;
         return (
             ok,
             $"ids={ids} original={originalEvidence} variants={variants} topology={topology} " +
@@ -224,7 +277,7 @@ internal static class Program
             $"{throwsUnknown}/{throwsZeroNormal}/{throwsNarrowGuide}/{throwsBuriedSpawn}/" +
             $"{throwsBuriedRetract}/{throwsNonFiniteTarget}/" +
             $"{throwsZeroDisguiseThreshold}/{throwsDisguiseFraction}/" +
-            $"{throwsDisguiseMultiplier}");
+            $"{throwsDisguiseMultiplier} probeStretchGuards={probeStretchGuards}");
     }
 
     private static (bool, string) CheckThreeDimensionalMounts()
@@ -2179,6 +2232,663 @@ internal static class Program
             maxRecoveredTip,
             intentOffZeroDelay,
             wanderResumed);
+    }
+
+    private static (bool, string) CheckProbeHover()
+    {
+        // ① 参数惰性：intent=false 时把探头参数拧到极端并逐 tick 喂可见目标
+        //    （刻意加热充能路径——新增的阈值比较就在那条分支里），300 tick 运动学
+        //    必须与出厂参数逐位一致。
+        var ceiling = new PlaneTerrain(Vector3.Zero, Vector3.Down);
+        TentaclePlantParams extreme = TentaclePlantFactory.Lurker();
+        extreme.ProbeChargeMultiplier = 90;
+        extreme.ProbeChargeThreshold = 0.001f;
+        extreme.ProbeEngagePerTick = 1f;
+        TentaclePlantController stock = NewCeilingPlant(
+            TentaclePlantFactory.Lurker(), 0x9B0BE0UL);
+        TentaclePlantController tweaked = NewCeilingPlant(extreme, 0x9B0BE0UL);
+        Vector3 inertPrey = stock.Root.Pos +
+            stock.Outward * 2.2f + stock.Tangent * 0.5f;
+        bool parameterInert = true;
+        long inertTickA = 0;
+        long inertTickB = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            stock.Target = NewTarget(7UL, inertPrey, Vector3.Zero,
+                visible: true, grabbable: false);
+            tweaked.Target = NewTarget(7UL, inertPrey, Vector3.Zero,
+                visible: true, grabbable: false);
+            Tick(stock, ceiling, ref inertTickA);
+            Tick(tweaked, ceiling, ref inertTickB);
+            parameterInert &= SameKinematics(stock, tweaked) &&
+                stock.AttackSerial == tweaked.AttackSerial;
+        }
+
+        ProbeResult a = RunProbeScenario(0x9B0BE1UL);
+        ProbeResult b = RunProbeScenario(0x9B0BE1UL);
+        // ② 消融/反向证据：同一锁定剧本、探头永不张紧 → 出手延迟回落到满额充能。
+        int normalDelay = RunLockDelay(probe: true);
+        int ablatedDelay = RunLockDelay(probe: false);
+
+        TentaclePlantParams lurker = TentaclePlantFactory.Lurker();
+        int probeEngageTicks = (int)MathF.Ceiling(1f / lurker.ProbeEngagePerTick);
+        int probeReleaseTicks = (int)MathF.Ceiling(1f / lurker.ProbeReleasePerTick);
+        int disguiseReleaseTicks = (int)MathF.Ceiling(1f / lurker.DisguiseReleasePerTick);
+        int probeGain = 2 * lurker.ProbeChargeMultiplier;
+        int expectedStrikeTicks = (lurker.ChargeTicks * 2 + probeGain - 1) / probeGain;
+        int expectedAblatedTicks = lurker.ChargeTicks;
+
+        bool ok = parameterInert &&
+                  a.Hash == b.Hash &&
+                  a.Hash == ProbeExpectedHash &&
+                  a.Finite &&
+                  a.PeakQueries <= 96 &&
+                  a.MaxPenetration <= 0.002f &&
+                  a.ProbeFullTick > 0 &&
+                  Math.Abs(a.ProbeFullTick - probeEngageTicks) <= 2 &&
+                  a.DisguiseZeroDelay >= 0 &&
+                  a.DisguiseZeroDelay <= disguiseReleaseTicks + 1 &&
+                  a.TrackingAll && a.StatusHiddenAll && a.ChargeZeroAll &&
+                  a.SerialZeroBeforeLock && a.EffectZeroBeforeLock &&
+                  // 合成隐藏目标只转向不攻击：头端伺服趋近探测点。
+                  a.HandEndDistance < a.HandStartDistance &&
+                  a.HandEndDistance < 1.0f &&
+                  // 优先级：双 intent 同真时探头快衰、伪装上升；撤回后回满。
+                  a.ConflictProbeZeroDelay > 0 &&
+                  a.ConflictProbeZeroDelay <= probeReleaseTicks + 1 &&
+                  a.ConflictDisguiseRose &&
+                  a.ProbeRefullDelay > 0 &&
+                  a.ProbeRefullDelay <= probeEngageTicks + probeReleaseTicks + 10 &&
+                  // 预张紧核心断言：锁定（喂真目标）→ ceil(200/20)=10 tick 出手。
+                  a.StrikeDelay == expectedStrikeTicks &&
+                  a.PreStrikeChargeable &&
+                  a.CaptureDelay >= a.StrikeDelay &&
+                  a.CaptureDelay <= a.StrikeDelay +
+                      lurker.LungeTicks + lurker.GrabWindowTicks &&
+                  a.ProbeZeroAfterStrike >= 0 &&
+                  a.ProbeZeroAfterStrike <= probeReleaseTicks + 1 &&
+                  // 释放后 intent 仍真：回满，且 probe>0 单独冻结游走（新分支直接证据）。
+                  a.PostReleaseRefullDelay > 0 &&
+                  a.PostReleaseRefullDelay <= probeEngageTicks + probeReleaseTicks + 10 &&
+                  a.WanderFrozenWhileProbe &&
+                  a.IntentOffZeroDelay > 0 &&
+                  a.IntentOffZeroDelay <= probeReleaseTicks &&
+                  a.WanderResumed &&
+                  normalDelay == expectedStrikeTicks &&
+                  ablatedDelay == expectedAblatedTicks &&
+                  normalDelay < ablatedDelay;
+        return (
+            ok,
+            $"inert={parameterInert} hash={a.Hash:X16}/{b.Hash:X16} " +
+            $"expected={ProbeExpectedHash:X16} finite={a.Finite} " +
+            $"peakQueries={a.PeakQueries} maxPen={a.MaxPenetration:F6}m " +
+            $"full={a.ProbeFullTick}/{probeEngageTicks} " +
+            $"handoff={a.DisguiseZeroDelay} tracking={a.TrackingAll} " +
+            $"hidden={a.StatusHiddenAll} chargeZero={a.ChargeZeroAll} " +
+            $"serialZero={a.SerialZeroBeforeLock} effectZero={a.EffectZeroBeforeLock} " +
+            $"hand={a.HandStartDistance:F2}->{a.HandEndDistance:F2} " +
+            $"conflictZero={a.ConflictProbeZeroDelay}/{probeReleaseTicks} " +
+            $"conflictDisguise={a.ConflictDisguiseRose} refull={a.ProbeRefullDelay} " +
+            $"strike={a.StrikeDelay}/{expectedStrikeTicks} " +
+            $"chargeable={a.PreStrikeChargeable} capture={a.CaptureDelay} " +
+            $"probeZero={a.ProbeZeroAfterStrike} " +
+            $"postRefull={a.PostReleaseRefullDelay} " +
+            $"probeWanderFrozen={a.WanderFrozenWhileProbe} " +
+            $"intentOff={a.IntentOffZeroDelay}/{probeReleaseTicks} " +
+            $"wanderResumed={a.WanderResumed} " +
+            $"lockDelay={normalDelay}/{expectedStrikeTicks} " +
+            $"ablated={ablatedDelay}/{expectedAblatedTicks}");
+    }
+
+    private readonly record struct ProbeResult(
+        ulong Hash,
+        bool Finite,
+        int PeakQueries,
+        float MaxPenetration,
+        int ProbeFullTick,
+        int DisguiseZeroDelay,
+        bool TrackingAll,
+        bool StatusHiddenAll,
+        bool ChargeZeroAll,
+        bool SerialZeroBeforeLock,
+        bool EffectZeroBeforeLock,
+        float HandStartDistance,
+        float HandEndDistance,
+        int ConflictProbeZeroDelay,
+        bool ConflictDisguiseRose,
+        int ProbeRefullDelay,
+        int StrikeDelay,
+        bool PreStrikeChargeable,
+        int CaptureDelay,
+        int ProbeZeroAfterStrike,
+        int PostReleaseRefullDelay,
+        bool WanderFrozenWhileProbe,
+        int IntentOffZeroDelay,
+        bool WanderResumed);
+
+    private static ProbeResult RunProbeScenario(ulong seed)
+    {
+        var terrain = new PlaneTerrain(Vector3.Zero, Vector3.Down);
+        TentaclePlantParams lurker = TentaclePlantFactory.Lurker();
+        TentaclePlantController plant = NewCeilingPlant(lurker, seed);
+        var hasher = new DeterminismHasher();
+        long tick = 0;
+        float maxPenetration = 0f;
+        const ulong probeId = 0x9B0BE9UL;
+        const ulong preyId = 0x9B0BEFUL;
+        Vector3 probePoint = plant.Root.Pos +
+            plant.Outward * (0.75f * lurker.Length) +
+            plant.Tangent * (0.25f * lurker.Length);
+
+        void Step()
+        {
+            Tick(plant, terrain, ref tick);
+            FoldPlant(hasher, plant);
+            hasher.Fold(plant.DisguiseAmount);
+            hasher.Fold(plant.ProbeAmount);
+            foreach (TentacleSegmentState segment in plant.Segments)
+            {
+                maxPenetration = Math.Max(
+                    maxPenetration,
+                    terrain.PenetrationDepth(segment.Pos, segment.Radius));
+            }
+        }
+
+        void FeedProbePoint() => plant.Target = NewTarget(
+            probeId, probePoint, Vector3.Zero,
+            visible: false, grabbable: false, radius: 0.05f);
+
+        // A. 入伪装：与 DISGUISE 场景同构，150 tick 收拢成吸顶灯。
+        plant.DisguiseIntent = true;
+        for (int i = 0; i < 150; i++)
+        {
+            Step();
+        }
+
+        // B. 交接探头：伪装撤、探头起，喂 HostVisible=false 的合成探测点——
+        //    goal 转向该点但不充能、不做视线射线、不进攻击面。
+        plant.DisguiseIntent = false;
+        plant.ProbeIntent = true;
+        float handStart = plant.Hand.Pos.DistanceTo(probePoint);
+        int probeFullTick = -1;
+        int disguiseZeroDelay = -1;
+        bool trackingAll = true;
+        bool statusHiddenAll = true;
+        bool chargeZeroAll = true;
+        bool serialZero = true;
+        bool effectZero = true;
+        for (int i = 1; i <= 150; i++)
+        {
+            FeedProbePoint();
+            Step();
+            if (probeFullTick < 0 && plant.ProbeAmount == 1f)
+            {
+                probeFullTick = i;
+            }
+            if (disguiseZeroDelay < 0 && plant.DisguiseAmount == 0f)
+            {
+                disguiseZeroDelay = i;
+            }
+            trackingAll &= plant.Phase == TentaclePlantPhase.Tracking;
+            statusHiddenAll &= plant.TargetStatus == TentaclePlantTargetStatus.HostHidden;
+            chargeZeroAll &= plant.AttackCharge == 0f;
+            serialZero &= plant.AttackSerial == 0;
+            effectZero &= plant.TargetEffect.TargetId == 0UL;
+        }
+        float handEnd = plant.Hand.Pos.DistanceTo(probePoint);
+
+        // C. 优先级冲突窗：双 intent 同真 → 探头快衰、伪装上升；撤回后探头回满。
+        plant.DisguiseIntent = true;
+        int conflictProbeZeroDelay = -1;
+        float conflictDisguiseStart = plant.DisguiseAmount;
+        for (int i = 1; i <= 30; i++)
+        {
+            FeedProbePoint();
+            Step();
+            if (conflictProbeZeroDelay < 0 && plant.ProbeAmount == 0f)
+            {
+                conflictProbeZeroDelay = i;
+            }
+        }
+        bool conflictDisguiseRose = plant.DisguiseAmount > conflictDisguiseStart;
+        plant.DisguiseIntent = false;
+        int probeRefullDelay = -1;
+        for (int i = 1; i <= 60; i++)
+        {
+            FeedProbePoint();
+            Step();
+            if (probeRefullDelay < 0 && plant.ProbeAmount == 1f)
+            {
+                probeRefullDelay = i;
+            }
+        }
+
+        // D. 锁定伏击：同点改喂可见可抓真目标——预张紧充能 ×Multiplier 走满即扑，
+        //    抓住后按契约闭环宿主回路，30 tick 后显式释放。
+        Vector3 preyPos = probePoint;
+        Vector3 preyVelocity = Vector3.Zero;
+        int strikeDelay = -1;
+        int captureDelay = -1;
+        int probeZeroAfterStrike = -1;
+        bool preStrikeChargeable = true;
+        int holdingTicks = 0;
+        for (int i = 1; i <= 200 && holdingTicks < 30; i++)
+        {
+            if (plant.HeldTargetId is not null)
+            {
+                preyPos += preyVelocity;
+            }
+            plant.Target = NewTarget(
+                preyId, preyPos, preyVelocity,
+                visible: true, grabbable: true, radius: 0.16f, mass: 0.25f);
+            Step();
+            if (strikeDelay < 0)
+            {
+                // 头端悬停在探测点旁 <0.5m，突刺可与抓取同 tick 完成、Phase 直接
+                // 落 Holding——用 AttackSerial 增沿而非 Phase 检测开扑。
+                if (plant.AttackSerial > 0)
+                {
+                    strikeDelay = i;
+                }
+                else if (plant.HeldTargetId is null)
+                {
+                    preStrikeChargeable &=
+                        plant.TargetStatus == TentaclePlantTargetStatus.Chargeable;
+                }
+            }
+            if (strikeDelay >= 0 && probeZeroAfterStrike < 0 &&
+                plant.ProbeAmount == 0f)
+            {
+                probeZeroAfterStrike = i - strikeDelay;
+            }
+            if (plant.HeldTargetId is not null)
+            {
+                if (captureDelay < 0)
+                {
+                    captureDelay = i;
+                }
+                holdingTicks++;
+                preyVelocity += plant.TargetEffect.VelocityDelta;
+                preyPos += plant.TargetEffect.PositionCorrection;
+            }
+        }
+        plant.ReleaseHeldTarget();
+        plant.Target = null;
+
+        // E. 释放后 intent 仍真：探头回满，且 probe>0 单独冻结游走目标
+        //    （Target=null、无伪装——正是 C:382 新分支的直接证据）。
+        Vector3 frozenWanderGoal = plant.WanderGoal;
+        bool wanderFrozenWhileProbe = true;
+        int postReleaseRefullDelay = -1;
+        for (int i = 1; i <= 60; i++)
+        {
+            Step();
+            wanderFrozenWhileProbe &= plant.WanderGoal == frozenWanderGoal;
+            if (postReleaseRefullDelay < 0 && plant.ProbeAmount == 1f)
+            {
+                postReleaseRefullDelay = i;
+            }
+        }
+
+        // F. intent 撤销：快速归零后游走恢复演化。
+        plant.ProbeIntent = false;
+        int intentOffZeroDelay = -1;
+        for (int i = 1; i <= 12 && intentOffZeroDelay < 0; i++)
+        {
+            Step();
+            if (plant.ProbeAmount == 0f)
+            {
+                intentOffZeroDelay = i;
+            }
+        }
+        Vector3 wanderBefore = plant.WanderGoal;
+        bool wanderResumed = false;
+        for (int i = 0; i < 40; i++)
+        {
+            Step();
+            wanderResumed |= plant.WanderGoal != wanderBefore;
+        }
+
+        return new ProbeResult(
+            hasher.Value,
+            IsFinite(plant),
+            plant.PeakQueryCount,
+            maxPenetration,
+            probeFullTick,
+            disguiseZeroDelay,
+            trackingAll,
+            statusHiddenAll,
+            chargeZeroAll,
+            serialZero,
+            effectZero,
+            handStart,
+            handEnd,
+            conflictProbeZeroDelay,
+            conflictDisguiseRose,
+            probeRefullDelay,
+            strikeDelay,
+            preStrikeChargeable,
+            captureDelay,
+            probeZeroAfterStrike,
+            postReleaseRefullDelay,
+            wanderFrozenWhileProbe,
+            intentOffZeroDelay,
+            wanderResumed);
+    }
+
+    /// <summary>
+    /// 消融孪生：同一"预置 40 tick → 喂真目标测出手延迟"剧本，probe 开/关
+    /// 各跑一遍。开 = 预张紧 10 tick 出手；关 = 满额充能 100 tick。
+    /// </summary>
+    private static int RunLockDelay(bool probe)
+    {
+        var terrain = new PlaneTerrain(Vector3.Zero, Vector3.Down);
+        TentaclePlantParams lurker = TentaclePlantFactory.Lurker();
+        TentaclePlantController plant = NewCeilingPlant(lurker, 0x9B0BEAUL);
+        long tick = 0;
+        Vector3 point = plant.Root.Pos +
+            plant.Outward * (0.75f * lurker.Length) +
+            plant.Tangent * (0.25f * lurker.Length);
+        for (int i = 0; i < 40; i++)
+        {
+            if (probe)
+            {
+                plant.ProbeIntent = true;
+                plant.Target = NewTarget(11UL, point, Vector3.Zero,
+                    visible: false, grabbable: false, radius: 0.05f);
+            }
+            else
+            {
+                plant.Target = null;
+            }
+            Tick(plant, terrain, ref tick);
+        }
+        for (int i = 1; i <= 150; i++)
+        {
+            plant.Target = NewTarget(11UL, point, Vector3.Zero,
+                visible: true, grabbable: false, radius: 0.16f);
+            Tick(plant, terrain, ref tick);
+            if (plant.Phase == TentaclePlantPhase.Striking)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static (bool, string) CheckStrikeStretch()
+    {
+        // ① 参数惰性：factor=1（恒等元）+ 回卷速率拧极端，跑完整 hit 场景
+        //    （刻意加热扑击窗——lengthScale 分支就在那条路径里），300 tick
+        //    运动学必须与出厂参数逐位一致。
+        var floor = new PlaneTerrain(Vector3.Zero, Vector3.Up);
+        TentaclePlantParams extreme = TentaclePlantFactory.Original();
+        extreme.StrikeStretchRecoverPerTick = 1f;
+        TentaclePlantController stock = NewPlant(
+            TentaclePlantFactory.Original(), 0x57E7C0UL);
+        TentaclePlantController tweaked = NewPlant(extreme, 0x57E7C0UL);
+        Vector3 inertPrey = stock.Root.Pos +
+            stock.Outward * 5.2f + stock.Tangent * 1.0f;
+        bool parameterInert = true;
+        long inertTickA = 0;
+        long inertTickB = 0;
+        for (int i = 0; i < 300; i++)
+        {
+            stock.Target = NewTarget(7UL, inertPrey, Vector3.Zero,
+                visible: true, grabbable: false);
+            tweaked.Target = NewTarget(7UL, inertPrey, Vector3.Zero,
+                visible: true, grabbable: false);
+            Tick(stock, floor, ref inertTickA);
+            Tick(tweaked, floor, ref inertTickB);
+            parameterInert &= SameKinematics(stock, tweaked) &&
+                stock.AttackSerial == tweaked.AttackSerial;
+        }
+
+        const float factor = 1.5f;
+        StretchResult a = RunStretchScenario(factor);
+        StretchResult b = RunStretchScenario(factor);
+        // ② 消融孪生：同一剧本 factor=1 —— 1.2L 处的目标恒 OutOfRange，首扑
+        //    根本不发生（比"够不到"更强的红灯）。
+        StretchResult ablated = RunStretchScenario(1f);
+
+        TentaclePlantParams original = TentaclePlantFactory.Original();
+        float length = original.Length;
+        int stretchZeroBound = original.ChargeTicks + original.LungeTicks + 1 +
+            (int)MathF.Ceiling(1f / original.StrikeStretchRecoverPerTick) + 2;
+        float rampBound = original.SegmentVelocityCap +
+            length * 2f * (factor - 1f) * original.StrikeStretchRecoverPerTick + 0.05f;
+
+        bool ok = parameterInert &&
+                  a.Hash == b.Hash &&
+                  a.Hash == StretchExpectedHash &&
+                  a.Finite &&
+                  a.PeakQueries <= 96 &&
+                  a.MaxPenetration <= 0.002f &&
+                  // 包络放大证据：1.2L 目标从 tick 1 起即 Chargeable。
+                  a.PreStrikeChargeable &&
+                  a.FirstStrikeTick == original.ChargeTicks &&
+                  // lengthScale 生效的直接观测：tip 越过 PullOnly 链的名义上限 L。
+                  // 上界只是"未失控"的 sanity：鞭击过冲期 rope 松弛未收敛，tip 可
+                  // 瞬时越过 effectiveLength 一段（观测 ~1.7m），留 2m 余量。
+                  a.MaxTipFromRoot >= length + 0.30f &&
+                  a.MaxTipFromRoot <= length * factor + 2f &&
+                  a.StretchFullSeen && a.StretchZeroDuringCharge &&
+                  a.StretchZeroTick > 0 && a.StretchZeroTick <= stretchZeroBound &&
+                  // 咬空回卷：定速斜坡无瞬移回抽，静置后收回名义包络（回收僵直闭环）。
+                  a.MaxRampStep <= rampBound &&
+                  a.MaxSettledTip <= length + 0.15f &&
+                  // 原包络外完成抓取 → 吞入 → 释放，全序有效。
+                  a.SecondStrikeTick > 0 &&
+                  a.CaptureTick >= a.SecondStrikeTick &&
+                  a.CaptureTick <= a.SecondStrikeTick +
+                      original.LungeTicks + original.GrabWindowTicks &&
+                  a.CaptureBeyond >= length + 0.30f &&
+                  a.ConsumeSeen && a.ReleasedSeen &&
+                  a.FinalSerial == 2 &&
+                  ablated.FirstStrikeTick == -1 &&
+                  !ablated.EverChargeable &&
+                  ablated.MaxTipFromRoot <= length + 0.25f &&
+                  ablated.FinalSerial == 0;
+        return (
+            ok,
+            $"inert={parameterInert} hash={a.Hash:X16}/{b.Hash:X16} " +
+            $"expected={StretchExpectedHash:X16} finite={a.Finite} " +
+            $"peakQueries={a.PeakQueries} maxPen={a.MaxPenetration:F6}m " +
+            $"chargeable={a.PreStrikeChargeable} " +
+            $"strike={a.FirstStrikeTick}/{original.ChargeTicks} " +
+            $"tip={a.MaxTipFromRoot:F3}∈[{length + 0.30f:F2},{length * factor + 2f:F2}] " +
+            $"full={a.StretchFullSeen} chargeZero={a.StretchZeroDuringCharge} " +
+            $"zero={a.StretchZeroTick}<={stretchZeroBound} " +
+            $"ramp={a.MaxRampStep:F3}<={rampBound:F3} " +
+            $"settled={a.MaxSettledTip:F3}<={length + 0.15f:F3} " +
+            $"strike2={a.SecondStrikeTick} capture={a.CaptureTick} " +
+            $"beyond={a.CaptureBeyond:F2} consume={a.ConsumeSeen} " +
+            $"released={a.ReleasedSeen} serial={a.FinalSerial} " +
+            $"ablStrike={ablated.FirstStrikeTick} ablCharge={ablated.EverChargeable} " +
+            $"ablTip={ablated.MaxTipFromRoot:F3} ablSerial={ablated.FinalSerial}");
+    }
+
+    private readonly record struct StretchResult(
+        ulong Hash,
+        bool Finite,
+        int PeakQueries,
+        float MaxPenetration,
+        bool PreStrikeChargeable,
+        bool EverChargeable,
+        int FirstStrikeTick,
+        float MaxTipFromRoot,
+        bool StretchFullSeen,
+        bool StretchZeroDuringCharge,
+        int StretchZeroTick,
+        float MaxRampStep,
+        float MaxSettledTip,
+        int SecondStrikeTick,
+        int CaptureTick,
+        float CaptureBeyond,
+        bool ConsumeSeen,
+        bool ReleasedSeen,
+        long FinalSerial);
+
+    private static StretchResult RunStretchScenario(float factor)
+    {
+        var terrain = new PlaneTerrain(Vector3.Zero, Vector3.Up);
+        TentaclePlantParams parameters = TentaclePlantFactory.Original();
+        parameters.StrikeStretchFactor = factor;
+        TentaclePlantController plant = NewPlant(parameters, 0x57E7C4UL);
+        var hasher = new DeterminismHasher();
+        long tick = 0;
+        int globalTick = 0;
+        float maxPenetration = 0f;
+        const ulong preyId = 0x57E7CFUL;
+        // 距根恰 1.2L：原包络外（> L + r）、1.5 倍拉伸包络内（< 1.5L + r）。
+        Vector3 preyHome = plant.Root.Pos +
+            plant.Outward * (plant.Params.Length * 0.96f) +
+            plant.Tangent * (plant.Params.Length * 0.72f);
+
+        void Step()
+        {
+            Tick(plant, terrain, ref tick);
+            globalTick++;
+            FoldPlant(hasher, plant);
+            hasher.Fold(plant.StretchAmount);
+            foreach (TentacleSegmentState segment in plant.Segments)
+            {
+                maxPenetration = Math.Max(
+                    maxPenetration,
+                    terrain.PenetrationDepth(segment.Pos, segment.Radius));
+            }
+        }
+
+        float TipFromRoot() => plant.Chain.Tip.Pos.DistanceTo(plant.Root.Pos);
+
+        // A. 首扑（不可抓，隔离几何）：从 tick 1 起喂可见目标，走满常规充能。
+        bool preStrikeChargeable = true;
+        bool everChargeable = false;
+        bool stretchZeroDuringCharge = true;
+        bool stretchFullSeen = false;
+        int firstStrikeTick = -1;
+        int stretchZeroTick = -1;
+        float maxTip = 0f;
+        for (int i = 1; i <= 140; i++)
+        {
+            plant.Target = NewTarget(
+                preyId, preyHome, Vector3.Zero,
+                visible: true, grabbable: false, radius: 0.16f, mass: 0.25f);
+            Step();
+            maxTip = Math.Max(maxTip, TipFromRoot());
+            everChargeable |=
+                plant.TargetStatus == TentaclePlantTargetStatus.Chargeable;
+            if (firstStrikeTick < 0)
+            {
+                if (plant.Phase == TentaclePlantPhase.Striking)
+                {
+                    firstStrikeTick = i;
+                }
+                else
+                {
+                    preStrikeChargeable &=
+                        plant.TargetStatus == TentaclePlantTargetStatus.Chargeable;
+                    stretchZeroDuringCharge &= plant.StretchAmount == 0f;
+                }
+            }
+            else
+            {
+                // 开扑首 tick lengthScale=1 是有意一拍延迟；其后窗内应满拉伸。
+                stretchFullSeen |= plant.StretchAmount == 1f;
+            }
+            // 只认"满拉伸之后"的归零（开扑首拍的一拍延迟本来就是 0，不算回卷）。
+            if (stretchFullSeen && stretchZeroTick < 0 &&
+                plant.StretchAmount == 0f)
+            {
+                stretchZeroTick = globalTick;
+            }
+        }
+
+        // B. 咬空回卷：目标撤走，观测定速斜坡与静置包络。
+        plant.Target = null;
+        float maxRampStep = 0f;
+        float maxSettledTip = 0f;
+        float previousTip = TipFromRoot();
+        for (int i = 1; i <= 110; i++)
+        {
+            Step();
+            float tip = TipFromRoot();
+            if (i <= 40)
+            {
+                maxRampStep = Math.Max(maxRampStep, Math.Abs(tip - previousTip));
+            }
+            previousTip = tip;
+            maxTip = Math.Max(maxTip, tip);
+            if (stretchZeroTick < 0 && plant.StretchAmount == 0f)
+            {
+                stretchZeroTick = globalTick;
+            }
+            if (i > 70)
+            {
+                maxSettledTip = Math.Max(maxSettledTip, tip);
+            }
+        }
+
+        // C. 再扑抓取：目标回到原位、首扑后可抓——在原包络外完成抓取并闭环
+        //    宿主回路直到吞入请求。
+        Vector3 preyPos = preyHome;
+        Vector3 preyVelocity = Vector3.Zero;
+        int secondStrikeTick = -1;
+        int captureTick = -1;
+        float captureBeyond = 0f;
+        bool consumeSeen = false;
+        for (int i = 1; i <= 260 && !consumeSeen; i++)
+        {
+            if (plant.HeldTargetId is not null)
+            {
+                preyPos += preyVelocity;
+            }
+            plant.Target = NewTarget(
+                preyId, preyPos, preyVelocity,
+                visible: true, grabbable: plant.AttackSerial > 0,
+                radius: 0.16f, mass: 0.25f);
+            Step();
+            if (secondStrikeTick < 0 && plant.Phase == TentaclePlantPhase.Striking)
+            {
+                secondStrikeTick = i;
+            }
+            if (plant.HeldTargetId is not null)
+            {
+                if (captureTick < 0)
+                {
+                    captureTick = i;
+                    captureBeyond = preyPos.DistanceTo(plant.Root.Pos);
+                }
+                consumeSeen |= plant.TargetEffect.ConsumeRequested;
+                preyVelocity += plant.TargetEffect.VelocityDelta;
+                preyPos += plant.TargetEffect.PositionCorrection;
+            }
+        }
+        plant.ReleaseHeldTarget();
+        Step();
+        bool releasedSeen = plant.TargetEffect.Released;
+        plant.Target = null;
+
+        return new StretchResult(
+            hasher.Value,
+            IsFinite(plant),
+            plant.PeakQueryCount,
+            maxPenetration,
+            preStrikeChargeable,
+            everChargeable,
+            firstStrikeTick,
+            maxTip,
+            stretchFullSeen,
+            stretchZeroDuringCharge,
+            stretchZeroTick,
+            maxRampStep,
+            maxSettledTip,
+            secondStrikeTick,
+            captureTick,
+            captureBeyond,
+            consumeSeen,
+            releasedSeen,
+            plant.AttackSerial);
     }
 
     private static TentaclePlantController NewCeilingPlant(

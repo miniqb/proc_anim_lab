@@ -4,15 +4,17 @@
 > 系统；等它在这里成熟后，整体移植回 [`random-room-runtime`](../random_room/random-room-runtime/)
 > 的怪物系统。**
 >
-> **当前状态（2026-08-27）**：`ProcAnim.Core` 含 **11 个平行物种控制器**
+> **当前状态（2026-08-30）**：`ProcAnim.Core` 含 **11 个平行物种控制器**
 > （Lizard / Humanoid / Spider / Centipede / Cicada / Vulture / TentaclePlant / Deer /
-> DaddyLongLegs / DropBug / RatFiend），各有独立回归；八套 Godot 矩阵合计 **195 项**。
+> DaddyLongLegs / DropBug / RatFiend），各有独立回归；八套 Godot 矩阵合计 **199 项**。
 > M5 内核抽离与回迁契约完成；正式渲染层已有 **8 个渲染件**（Lizard / Centipede / Vulture /
 > DaddyLongLegs / Spider / Humanoid / RatFiend——首个可动颌 / TentaclePlant）。
-> 最近一轮：TentaclePlant 拟态草改造成**肉质触手怪**——去植物修饰、末端蛇式双颌大嘴
-> （张近 172°、喉心灯泡）、内核 opt-in 伪装/伏击标量（缩到挂点伪装成吸顶灯、伪装态
-> 加速充能突袭）、lurker 预设与吊顶伏击竞技场
-> （见 [tentacle_plant](docs/tentacle_plant_controller.md) §4.1/§7）。**RatFiend 已于
+> 最近一轮：TentaclePlant 落地**光感知系统**——设定：无眼，喉部灯泡发光并检测反射
+> 变化（静止=隐身）；内核加两个 opt-in 动词（探头张紧 ProbeIntent/预张紧充能、攻击
+> 弹性拉伸 StrikeStretchFactor——变色龙舌头式，攻距与探测半径解耦），竞技场宿主实现
+> 双区累计/敏化/探头搜索（路点+聆听+包络扩张+回头杀+预算）三相闭环，渲染件挂
+> SpotLight3D 探照灯（锁定锥可视化）；突刺瞄"最后感知点"、极限咬空
+> （见 [tentacle_plant](docs/tentacle_plant_controller.md) §4.1–4.3/§7）。**RatFiend 已于
 > 2026-08-23 回迁主仓替换 Shambler**（姿态 2 第二例，共享层提升为
 > `scripts/enemies/kernel/`，两仓内核需手动同步——见契约 §8.3 注与主仓
 > `docs/ratfiend_port.md`）；姿态 1（tether）的闭环仍无人验证（契约 §4.1 / §8.3）。
@@ -118,7 +120,7 @@
 | **Centipede** | 双端表面轨迹；任意 ≥2 节装配、真实抓足、确定性行波 | short / long / armored / ribbon | [centipede](docs/centipede_controller.md) |
 | **Cicada** | 双 chunk 差分飞行 + 显式三面停驻 + Charge | light / dark | [cicada](docs/cicada_controller.md) |
 | **Vulture** | **重力常开** + 拍翅同步 sin² 升力脉冲；起降由翅膀模式涌现 | vulture / king / swift / quad | [vulture](docs/vulture_controller.md) |
-| **TentaclePlant** | 固定锚定 + 独立触手链；伏击—突刺—抓取—回收；opt-in 伪装标量（缩到挂点伪装成吸顶灯、伪装态加速充能突袭），渲染为末端长蛇式双颌大嘴的肉质触手怪 | original / short / hunter / lurker | [tentacle_plant](docs/tentacle_plant_controller.md) |
+| **TentaclePlant** | 固定锚定 + 独立触手链；伏击—突刺—抓取—回收；opt-in 伪装/探头张紧/攻击弹性拉伸三标量（缩到挂点伪装成吸顶灯、察觉后张嘴探头搜索、突刺链长 ×1.5 拉伸），宿主侧光感知（灯泡=发光+检测反射变化，静止即隐身），渲染为末端长蛇式双颌大嘴 + 探照灯的肉质触手怪 | original / short / hunter / lurker | [tentacle_plant](docs/tentacle_plant_controller.md) |
 | **Deer** | 常开重力下的连续支撑；粗重叠躯干 + 四条独立多节腿 | original / compact / strider | [deer](docs/deer_controller.md) |
 | **DaddyLongLegs** | **无前向轴**：seed 冻结的完整图球团 + 整链贴面连续抵消重力 | brother / daddy / terror | [daddy_long_legs](docs/daddy_long_legs_controller.md) |
 | **DropBug** | **伏击者**：三节短链、前后不对称重力、运行时收放静息长度的悬挂态、弹道俯冲 | original / nimble / bulky | [dropbug](docs/dropbug_controller.md) |
@@ -204,7 +206,7 @@ dotnet run --project core/smoke
 # ③ 七个独立物种的专项（各自 smoke + 矩阵）：
 dotnet run --project core/spider_smoke          && ./tools/run_spider_matrix.sh            # 16 项
 dotnet run --project core/cicada_smoke          && ./tools/run_cicada_matrix.sh            #  9 项
-dotnet run --project core/tentacle_plant_smoke  && ./tools/run_tentacle_plant_matrix.sh    # 19 项
+dotnet run --project core/tentacle_plant_smoke  && ./tools/run_tentacle_plant_matrix.sh    # 23 项
 dotnet run --project core/deer_smoke            && ./tools/run_deer_matrix.sh              # 18 项
 dotnet run --project core/daddy_long_legs_smoke && ./tools/run_daddy_long_legs_matrix.sh   # 40 项
 dotnet run --project core/dropbug_smoke         && ./tools/run_dropbug_matrix.sh           # 25 项
@@ -213,7 +215,7 @@ dotnet run --project core/ratfiend_smoke        && ./tools/run_ratfiend_matrix.s
 # ④ 抽离/移植类改动的金标准：改动前后各捕获一次全矩阵输出，逐字节 diff 为空（M5 即以此验收）。
 ```
 
-八套 Godot 矩阵合计 **195 项**（45 + 16 + 9 + 19 + 18 + 40 + 25 + 23）。各矩阵覆盖什么、哪些机制
+八套 Godot 矩阵合计 **199 项**（45 + 16 + 9 + 23 + 18 + 40 + 25 + 23）。各矩阵覆盖什么、哪些机制
 有消融红灯，见对应物种文档与脚本本身。
 
 **单配置手跑**：

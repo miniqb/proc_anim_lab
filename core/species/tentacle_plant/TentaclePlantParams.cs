@@ -84,6 +84,23 @@ public sealed class TentaclePlantParams
 	public float DisguiseChargeThreshold = 0.75f;
 	public int DisguiseChargeMultiplier = 6;
 
+	// —— 探头张紧（opt-in：门在宿主输入 ProbeIntent，默认 false；
+	//    关闭时 ProbeAmount 恒 0、下列参数只参与恒 false 的比较，既有品种基线零漂移）——
+	public float ProbeEngagePerTick = 0.05f;
+	public float ProbeReleasePerTick = 0.125f;
+	public float ProbeChargeThreshold = 0.75f;
+	public int ProbeChargeMultiplier = 6;
+
+	// —— 攻击弹性拉伸（opt-in：默认 1.0 = 恒等元，运行期状态机整体被
+	//    StrikeStretchFactor > 1 单分支门控；仅突刺运动窗口把有效链长放大到
+	//    Length × factor。上界 2.0：(a) 拉伸后的 goal 钳制 k·L ≤ 2L 永不超过
+	//    历史 tip 拴绳语义 Length*2，调用点间的单 tick 尺度错拍造不出拴绳外
+	//    goal；(b) 直线净空采样次数 ∝ goal 距离，k ≤ 2 保住 RoutingQueryBudget
+	//    预算；(c) 语义上攻距 A ≈ k·L 应略小于探测半径+锁定锥长，宿主推导
+	//    k ≈ 1.5 已够用。要 k > 2 必须重审钳制与拴绳语义。——
+	public float StrikeStretchFactor = 1f;
+	public float StrikeStretchRecoverPerTick = 0.05f;
+
 	/// <summary>完整校验；无效出生配置快速失败，不静默夹值。</summary>
 	public TentaclePlantParams Validate()
 	{
@@ -214,6 +231,36 @@ public sealed class TentaclePlantParams
 				DisguiseChargeMultiplier,
 				$"{nameof(DisguiseChargeMultiplier)} must not exceed {nameof(ChargeTicks)}.");
 		}
+
+		// 阈值必须为正：ProbeAmount==0（默认关闭）永不过阈，预张紧充能不可达。
+		UnitPositive(ProbeEngagePerTick, nameof(ProbeEngagePerTick));
+		UnitPositive(ProbeReleasePerTick, nameof(ProbeReleasePerTick));
+		UnitPositive(ProbeChargeThreshold, nameof(ProbeChargeThreshold));
+		Positive(ProbeChargeMultiplier, nameof(ProbeChargeMultiplier));
+		if (ProbeChargeMultiplier > ChargeTicks)
+		{
+			// 与 DisguiseChargeMultiplier 同款封顶：语义饱和 + 整型回绕。
+			throw new ArgumentOutOfRangeException(
+				nameof(ProbeChargeMultiplier),
+				ProbeChargeMultiplier,
+				$"{nameof(ProbeChargeMultiplier)} must not exceed {nameof(ChargeTicks)}.");
+		}
+
+		InRange(StrikeStretchFactor, 1f, 2f, nameof(StrikeStretchFactor));
+		// =0 会让拉伸永不回卷、感知包络永久越界。
+		UnitPositive(StrikeStretchRecoverPerTick, nameof(StrikeStretchRecoverPerTick));
+		float stretchRetractPerTick =
+			Length * 2f * (StrikeStretchFactor - 1f) * StrikeStretchRecoverPerTick;
+		if (stretchRetractPerTick > SegmentVelocityCap)
+		{
+			// 回卷斜坡每 tick 的 tip 硬投影收缩量上界（Δ maximumTipReach/tick）
+			// 不得超过一个段速上限，否则出窗那几拍会出现"瞬移回抽"。
+			throw new ArgumentOutOfRangeException(
+				nameof(StrikeStretchRecoverPerTick),
+				StrikeStretchRecoverPerTick,
+				$"Stretch recovery must retract at most {nameof(SegmentVelocityCap)} per tick " +
+				$"(Length * 2 * (factor - 1) * recover = {stretchRetractPerTick}).");
+		}
 		return this;
 	}
 
@@ -266,6 +313,15 @@ public sealed class TentaclePlantParams
 		{
 			throw new ArgumentOutOfRangeException(name, value,
 				$"{name} must be finite and in [0, 1].");
+		}
+	}
+
+	private static void InRange(float value, float minimum, float maximum, string name)
+	{
+		if (!float.IsFinite(value) || value < minimum || value > maximum)
+		{
+			throw new ArgumentOutOfRangeException(name, value,
+				$"{name} must be finite and in [{minimum}, {maximum}].");
 		}
 	}
 }

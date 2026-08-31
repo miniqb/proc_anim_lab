@@ -85,6 +85,9 @@ public static class TentaclePlantFactory
         DisguiseReleasePerTick = 0.25f,
         DisguiseChargeThreshold = 0.75f,
         DisguiseChargeMultiplier = 10,
+        // 探头张紧与伪装对齐：锁定后 ceil(100/10) = 10 tick 出手。拉伸不在任何
+        // 预设开启（StrikeStretchFactor 保持 1），由宿主/CLI 按场景 opt-in。
+        ProbeChargeMultiplier = 10,
     };
 
     public static TentaclePlantParams[] AllPresets() =>

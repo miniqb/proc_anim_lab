@@ -22,6 +22,8 @@ HASH_HUNTER_FLOOR_OBLIQUE_HIT=B56CEEF8E9104E48
 HASH_SHORT_FLOOR_IDLE=6E0302451CA7AA76
 HASH_HUNTER_FLOOR_IDLE=DCBDE94A15C958B3
 HASH_LURKER_CEILING_AMBUSH=78CA64B85AB6F858
+HASH_LURKER_CEILING_PROBE=639AD714BFE52F13
+HASH_ORIGINAL_FLOOR_STRETCH=4A130E8F6F8FF0DC
 
 mkdir -p "$OUT"
 if ! dotnet build proc_anim_lab.csproj > "$OUT/build.txt" 2>&1; then
@@ -129,6 +131,22 @@ run lurker-ceiling-ambush    tentacle-plant/lurker ceiling ambush 900 400 \
 run lurker-ceiling-ambush-40 tentacle-plant/lurker ceiling ambush 900 40 \
     --plant-expect-hash="$HASH_LURKER_CEILING_AMBUSH"
 
+# opt-in 探头张紧全弧线（lurker 吊天花板）：伪装 150 tick → 探头 + 隐藏探测点
+# 转向悬停（零充能零扑击）→ tick 400 转真目标 → 预张紧 10 tick 出手 →
+# 抓取/吞入 → intent 持续回张紧；40/400 Hz 时基不变。
+run lurker-ceiling-probe    tentacle-plant/lurker ceiling probe 700 400 \
+    --plant-expect-hash="$HASH_LURKER_CEILING_PROBE"
+run lurker-ceiling-probe-40 tentacle-plant/lurker ceiling probe 700 40 \
+    --plant-expect-hash="$HASH_LURKER_CEILING_PROBE"
+
+# opt-in 攻击弹性拉伸（original 落地）：目标钉在 ≈1.2L（原包络外），放大包络
+# tick 1 即 Chargeable，90 tick 充能后首扑靠 lengthScale 冲出名义链长完成
+# 抓取/吞入；40/400 Hz 时基不变。
+run original-floor-stretch    tentacle-plant/original floor stretch 400 400 \
+    --plant-stretch=1.5 --plant-expect-hash="$HASH_ORIGINAL_FLOOR_STRETCH"
+run original-floor-stretch-40 tentacle-plant/original floor stretch 400 40 \
+    --plant-stretch=1.5 --plant-expect-hash="$HASH_ORIGINAL_FLOOR_STRETCH"
+
 if diff <(det_stream original-idle-a) \
         <(det_stream original-idle-b) > /dev/null; then
     echo "[double-run] PASS"
@@ -158,6 +176,22 @@ if diff <(det_stream lurker-ceiling-ambush) \
     echo "[ambush-40-vs-400] PASS"
 else
     echo "[ambush-40-vs-400] FAIL: 伪装标量/伏击轨迹受宿主执行频率影响"
+    fail=1
+fi
+
+if diff <(det_stream lurker-ceiling-probe) \
+        <(det_stream lurker-ceiling-probe-40) > /dev/null; then
+    echo "[probe-40-vs-400] PASS"
+else
+    echo "[probe-40-vs-400] FAIL: 探头标量/悬停轨迹受宿主执行频率影响"
+    fail=1
+fi
+
+if diff <(det_stream original-floor-stretch) \
+        <(det_stream original-floor-stretch-40) > /dev/null; then
+    echo "[stretch-40-vs-400] PASS"
+else
+    echo "[stretch-40-vs-400] FAIL: 拉伸标量/扑击轨迹受宿主执行频率影响"
     fail=1
 fi
 

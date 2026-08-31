@@ -377,6 +377,22 @@ TentaclePlantController plant =
   ×`DisguiseChargeMultiplier`（"突然咬"）；Holding 与突刺运动窗口忽略 intent、强制快衰
   且 cap 整体旁路（蜷缩链被扑击冲量完整甩出）；`Remount` 连同 `Target` 一起复位。
   默认关闭时全路径 bit-exact——smoke `ExpectedHash` 与全部既有矩阵基线零编辑验收。
+- **opt-in 探头张紧**（本项目扩展，同上守则）：第三个宿主可写输入 `ProbeIntent`
+  （持久 bool，默认 false）+ 只读 `ProbeAmount∈[0,1]`（20 tick 满 / 8 tick 归零）。
+  过阈（`ProbeChargeThreshold`）时充能增量取 `Max(既有值, 2×ProbeChargeMultiplier)`
+  （预张紧——锁定后 ~ceil(ChargeTicks/倍率) tick 出手）；wander 冻结条件扩为
+  `disguise≤0 && probe≤0`；Holding/突刺窗强制快衰，**DisguiseIntent 优先**（双真时
+  探头快衰）。探测悬停本身不需要新输入：宿主喂 `HostVisible=false` 合成 Target 即
+  转向悬停（不充能、零射线、RNG 冻结）——探测点是宿主给出的世界系点，内核不搜索
+  场景。默认关闭时全路径 bit-exact——smoke `ExpectedHash` 与全部既有矩阵基线零编辑
+  验收。
+- **opt-in 攻击弹性拉伸**（本项目扩展，同上守则）：`StrikeStretchFactor∈[1,2]`
+  （默认 **1.0=恒等元**）+ `StrikeStretchRecoverPerTick`（出窗定速回卷，跨字段约束
+  防瞬移回抽）。突刺运动窗口 `lengthScale = Lerp(1, factor, StretchAmount)` 经尾部
+  默认参数放大链的 `effectiveLength/maximumTipReach/ClampGoalToReach` 与根部拴绳；
+  攻击资格包络用构造期预计算的 `_strikeReach = Length×factor`。只读 `StretchAmount`
+  供渲染/回归。不给任何预设开启（宿主/CLI 按场景 opt-in）。默认 1.0 时 ×1f 逐位
+  恒等——smoke `ExpectedHash` 与全部既有矩阵基线零编辑验收。
 
 ### 2.7 鹿装配契约（DeerLocomotionController）
 
@@ -925,8 +941,11 @@ snapshot→内核映射层。两个**接线时必须调的已知张力**（终�
 拟态草不接受 `MoveDir`、`RunSpeed` 或 `MoveTarget`。AI/宿主每 tick 选择至多一个猎物，
 把其稳定 ID、位置、速度、半径和有效/可见信息复制进 nullable
 `TentaclePlantController.Target`。核心不枚举场景对象，也不经 `ITerrainQuery` 查询生物。
-第二个宿主可写输入是持久 bool `DisguiseIntent`（opt-in 伪装请求，见 §2.6；
-"范围内无存活猎物才回伪装"之类的策略在宿主侧实现，内核只提供机制）。
+另有两个持久 bool 宿主可写输入：`DisguiseIntent`（opt-in 伪装请求）与 `ProbeIntent`
+（opt-in 探头张紧请求），均见 §2.6。探测悬停复用 Target 接缝：宿主喂
+`HostVisible=false` 的合成快照（位置 = 宿主策略给出的邻近探测点），goal 即转向该点
+而不进攻击面——感知（察觉区/锁定锥/累计器）与搜索策略（路点/聆听/预算）全部在
+宿主侧实现，内核只提供机制。
 
 `Tick` 返回 `void`，并覆盖只读 `TargetEffect`：
 
@@ -1025,9 +1044,10 @@ AI / 游戏逻辑：`Uprightness`（躯干轴·up ∈[-1,1]，摔倒检测/爬�
 
 AI、gameplay 与诊断可读 `Phase`、`AttackCharge`、`CanGrab`、`Extension`、
 `AttackSerial`、`HeldTargetId`、`DisguiseAmount`（渲染层伪装视觉——灯泡/下沉——的
-驱动标量）、`WanderGoal`、`GuidePoints`、`BacktrackFrom` 和地形查询计数。
-`TargetEffect` 是唯一 gameplay 目标效果出口（§4.3）。除 nullable `Target` 与
-`DisguiseIntent` 输入外，上述状态均只读；沙盒调试线不能反向驱动核心。
+驱动标量）、`ProbeAmount`（渲染层张嘴/探照灯的驱动标量）、`StretchAmount`
+（当前攻击拉伸程度）、`WanderGoal`、`GuidePoints`、`BacktrackFrom` 和地形查询计数。
+`TargetEffect` 是唯一 gameplay 目标效果出口（§4.3）。除 nullable `Target`、
+`DisguiseIntent` 与 `ProbeIntent` 输入外，上述状态均只读；沙盒调试线不能反向驱动核心。
 
 ## 6. ITerrainQuery 契约（唯一接缝的全部语义）
 
@@ -1154,7 +1174,11 @@ dotnet run --project core/cicada_smoke
 # ④ 拟态草无引擎冒烟：四预设（含 lurker）、三向安装、游荡/绕障/回卷、攻击时序、
 #    TargetEffect、Shift/Remount/释放目标、opt-in 伪装/伏击（DISGUISE 检查：参数惰性、
 #    入伪装/静置/加速充能突袭/抓持快衰/恢复，独立 DisguiseExpectedHash 基线）、
-#    同 seed 双跑/不同 seed 与 8/16 段查询增长。
+#    opt-in 探头张紧（PROBE 检查：参数惰性、悬停转向零攻击面、双 intent 优先级、
+#    预张紧 10 tick 出手 + 消融孪生 100 tick、probe 冻结游走，独立 ProbeExpectedHash
+#    基线）、opt-in 攻击拉伸（STRETCH 检查：参数惰性、1.2L 包络放大、tip 冲出名义
+#    链长、定速回卷、原包络外抓取 + factor=1 消融恒 OutOfRange，独立
+#    StretchExpectedHash 基线）、同 seed 双跑/不同 seed 与 8/16 段查询增长。
 dotnet run --project core/tentacle_plant_smoke
 
 # ⑤ 鹿无引擎冒烟：三预设拓扑、恒重力支撑与不均匀力、四条多节腿完整步态、
@@ -1195,7 +1219,9 @@ dotnet run --project core/daddy_long_legs_smoke
 ./tools/run_cicada_matrix.sh
 
 # ⑩ 拟态草 Godot 矩阵：floor/wall/ceiling idle、hit、miss、occluded、
-#    lurker 吊顶 ambush（伪装→加速充能突袭→吞入→回伪装全弧线，40/400Hz 同 tick）、
+#    lurker 吊顶 ambush（伪装→加速充能突袭→吞入→回伪装全弧线）、lurker 吊顶 probe
+#    （伪装→探头悬停→锁定预张紧出手→吞入→回张紧全弧线）、original 落地 stretch
+#    （--plant-stretch=1.5 原包络外抓取），ambush/probe/stretch 均 40/400Hz 同 tick、
 #    双跑/40vs400/1mm 微扰与四预设；哈希由脚本当前基线判定。
 ./tools/run_tentacle_plant_matrix.sh
 

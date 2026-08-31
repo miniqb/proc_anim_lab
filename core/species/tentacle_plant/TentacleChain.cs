@@ -107,9 +107,10 @@ public sealed class TentacleChain
         Vector3 goal,
         Vector3 outward,
         Vector3 tangent,
-        float extension)
+        float extension,
+        float lengthScale = 1f)
     {
-        goal = ClampGoalToReach(goal);
+        goal = ClampGoalToReach(goal, lengthScale);
         _routingQueries = 0;
         bool rebuildingAtTickStart = _rebuildTicks > 0;
         _guideAge++;
@@ -128,9 +129,11 @@ public sealed class TentacleChain
         }
 
         extension = Mathf.Clamp(extension, 0f, 1f);
+        // 拉伸走独立乘子而不放开 extension 的 [0,1] 语义（extension 仍是回收档位）；
+        // 默认 lengthScale=1f 时 ×1f 为 IEEE 逐位恒等（同款先例：linkStretchLimit）。
         float effectiveLength = _parameters.Length *
-            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
-        float maximumTipReach = _parameters.Length * 2f * extension;
+            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension) * lengthScale;
+        float maximumTipReach = _parameters.Length * 2f * extension * lengthScale;
 
         DampSegments();
         ApplySelfAvoidance(outward, tangent);
@@ -178,12 +181,13 @@ public sealed class TentacleChain
         float extension,
         float windupAmount,
         Vector3 strikeImpulse,
-        float calmAmount = 0f)
+        float calmAmount = 0f,
+        float lengthScale = 1f)
     {
-        goal = ClampGoalToReach(goal);
+        goal = ClampGoalToReach(goal, lengthScale);
         extension = Mathf.Clamp(extension, 0f, 1f);
         float effectiveLength = _parameters.Length *
-            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
+            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension) * lengthScale;
         ApplyServoForces(goal, outward, effectiveLength, windupAmount, calmAmount);
         for (int i = 0; i < Segments.Length; i++)
         {
@@ -204,13 +208,14 @@ public sealed class TentacleChain
         float extension,
         Vector3 safeTipPosition,
         float velocityCap,
-        float linkStretchLimit)
+        float linkStretchLimit,
+        float lengthScale = 1f)
     {
         extension = Mathf.Clamp(extension, 0f, 1f);
         float effectiveLength = _parameters.Length *
-            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension);
+            Mathf.Lerp(_parameters.RetractedLengthFraction, 1f, extension) * lengthScale;
         float linkLength = effectiveLength / Segments.Length * linkStretchLimit;
-        float maximumTipReach = _parameters.Length * 2f * extension;
+        float maximumTipReach = _parameters.Length * 2f * extension * lengthScale;
         TentacleSegmentState previous = Segments[^2];
         for (int i = 0; i < _parameters.ConstraintIterations; i++)
         {
@@ -1019,11 +1024,11 @@ public sealed class TentacleChain
         return total;
     }
 
-    private Vector3 ClampGoalToReach(Vector3 goal)
+    private Vector3 ClampGoalToReach(Vector3 goal, float lengthScale)
     {
         Vector3 offset = goal - Anchor.Pos;
         float lengthSquared = offset.LengthSquared();
-        float maximum = _parameters.Length;
+        float maximum = _parameters.Length * lengthScale;
         if (lengthSquared <= maximum * maximum || lengthSquared <= 1e-10f)
         {
             return goal;
