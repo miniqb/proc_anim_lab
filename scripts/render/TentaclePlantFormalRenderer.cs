@@ -15,13 +15,19 @@ namespace ProcAnimLab.Render;
 /// RatFiend R18b 教训；咬合延到窗末，嘴到猎物前绝不先闭）→ 伪装态张到最大。
 /// 伪装（DisguiseAmount）额外做纯化妆下沉：头组件缩进安装面内（允许穿模），
 /// 几乎只露灯泡——吊在天花板上读成一盏吸顶灯。
-/// 朝向：forward = 末端多段混合方向的低通（Striking 混突刺速度、伪装混 Outward
-/// 兜底缩链退化帧），up 逐帧平行传输自由跟随触手 roll，**不做世界竖直对齐**——
-/// 张嘴平面顺着触手自身的自然扭转走（用户明确要求）。
+/// 朝向：forward = 末端多段混合 → 宿主光束覆写（SetBeamAim，权重 ease 淡入淡出；
+/// 探头/交战期链末段上翘、不代表"照哪"）→ Striking 混突刺速度、伪装混 Outward
+/// 兜底缩链退化帧 → 低通；up 逐帧平行传输自由跟随触手 roll，**不做世界竖直对齐**
+/// ——张嘴平面顺着触手自身的自然扭转走（用户明确要求）。
+/// 颈部姿态：嘴 forward 被光束覆写后与物理链末段解耦，嘴会张向自己的脖子；
+/// <see cref="TentaclePlantNeckPose"/> 按"头颈关节有限转角 + 颈椎吸收其余"重画最后
+/// 三节的走向（枕点/前枕点/肘替换 s[n−1..n−3] 三个控制点），嘴 forward 分毫不动、
+/// 权重 0 逐位回落物理链——见文档 §7.1。
 /// 化妆状态（全渲染侧私有，不进物理与哈希）：_bodyUp/_mouthFwd/_mouthUp 低通帧、
 /// _mouthOpen 非对称低通（开慢合快——咬合要"啪"地咬死）、_snapDelay 飞行保持、
-/// _snapTimer 咬合顿挫、
-/// _disguiseEase 伪装缓动、_time 蠕动相位。形状基因 seed（FNV-1a(预设名)）出生冻结。
+/// _snapTimer 咬合顿挫、_disguiseEase 伪装缓动、_probeEase 探头缓动、
+/// _beamAimDir/_beamAimWeight/_beamEase 宿主光束覆写、_chainDir/_neckState 颈部
+/// 姿态、_spot 探照灯、_time 蠕动相位。形状基因 seed（FNV-1a(预设名)）出生冻结。
 /// </summary>
 internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
 {
@@ -45,6 +51,8 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
     private Vector3 _beamAimDir = Vector3.Down;
     private float _beamAimWeight;
     private float _beamEase;
+    private float _neckAtlasDegrees = 45f;
+    private float _neckStretchMax = 1f;
 
     // —— seed 冻结的形状基因 ——
     private float _headSize;
@@ -59,6 +67,9 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
     private Vector3 _bodyUp;
     private Vector3 _mouthFwd;
     private Vector3 _mouthUp;
+    private Vector3 _chainDir = Vector3.Down;
+    private TentaclePlantNeckPose.State _neckState;
+    private TentaclePlantNeckPose.Output _neck;
     private bool _frameInitialized;
     private float _mouthOpen;
     private float _disguiseEase;
@@ -186,15 +197,13 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
 
         SeedGenes();
         _frameInitialized = false;
+        _neckState = default;
+        _neck = default;
         _prevAttackSerial = _c.AttackSerial;
         _snapDelay = 0f;
         _snapTimer = 0f;
     }
 
-    /// <summary>
-    /// 宿主化妆配置面：让探照灯锥角/射程与宿主感知锁定锥对齐（可视化=设定本身）。
-    /// 不调用则用默认值（沙盒即如此）。SpotAngle 语义 = 轴到边的半角。
-    /// </summary>
     /// <summary>
     /// 宿主喂的光束朝向（化妆覆写）：探头/交战期链身有余量、末段在重力下上翘，
     /// 链末段推导的嘴 forward 不再代表"照哪"——按宿主权威方向（= 感知锁定锥轴）
@@ -209,6 +218,10 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         _beamAimWeight = Mathf.Clamp(weight, 0f, 1f);
     }
 
+    /// <summary>
+    /// 宿主化妆配置面：让探照灯锥角/射程与宿主感知锁定锥对齐（可视化=设定本身）。
+    /// 不调用则用默认值（沙盒即如此）。SpotAngle 语义 = 轴到边的半角。
+    /// </summary>
     public void ConfigureSearchlight(float coneHalfAngleDegrees, float rangeMeters)
     {
         _spotAngleDeg = coneHalfAngleDegrees;
@@ -219,6 +232,26 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
             _spot.SpotRange = _spotRange;
         }
     }
+
+    /// <summary>
+    /// 宿主化妆配置面：头颈关节极限转角（度；180 = 不限制，颈部只做进枕对齐）与
+    /// "够不着"时允许的颈骨化妆拉伸倍率（≥1；1 = 绝不拉伸，改由头颈角放开）。
+    /// 不调用则用默认 45°/1.0（沙盒从不喂光束，权重恒 0，本机制不生效）。
+    /// </summary>
+    public void ConfigureNeck(float atlasDegrees, float stretchMax)
+    {
+        _neckAtlasDegrees = Mathf.Clamp(atlasDegrees, 0f, 180f);
+        _neckStretchMax = MathF.Max(1f, stretchMax);
+    }
+
+    /// <summary>重画后的头颈角（度）：枕点←前枕点 与嘴 forward 的夹角；HUD 读数用。</summary>
+    public float NeckHeadAngleDegrees => _neck.HeadNeckDeg;
+
+    /// <summary>物理链末方向与嘴 forward 的夹角（度）：未重画时的头颈角。</summary>
+    public float NeckOmegaDegrees => _neck.OmegaDeg;
+
+    /// <summary>颈骨当前化妆拉伸倍率（1 = 无）。</summary>
+    public float NeckStretch => _neck.Stretch;
 
     /// <summary>形状基因一次抽签（seed 冻结）：头径/颌长/张角档/牙排。运行时抖动只用
     /// 相位与时间，绝不再抽随机。</summary>
@@ -271,6 +304,7 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         _bulb = null;
         _spot = null;
         _frameInitialized = false;
+        _neckState = default;
     }
 
     public void SetVisible(bool visible)
@@ -331,10 +365,58 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
             mouthPos += _mouthFwd * (0.07f * env);
         }
 
+        // 下沉深度必须盖住全伪装的蜷缩包络（tip 硬拴 2L×fraction + 视觉半径），
+        // 管体才能连续沉进安装面消失——旧版 sink>0.9 一刀切停画会让收链过程中
+        // 仍悬在面外 ~1m 的残段单帧消失（评审实测），揭露方向有扑击爆发掩护、
+        // 收拢方向没有。
+        float sinkDepth = _c.Params.Length * 2f * _c.Params.DisguiseExtensionFraction +
+            headR * 1.2f;
+        Vector3 sinkOffset = -_c.Outward * (sinkDepth * sink);
+        UpdateNeckPose(alpha, dt, sinkOffset, handDraw, mouthPos, headR);
+
         _tube.BeginFrame();
-        DrawBody(alpha, sink, mouthPos, headR);
+        DrawBody(alpha, sinkOffset, mouthPos, headR);
         DrawMouth(mouthPos, headR, sink);
         _tube.EndFrame();
+    }
+
+    /// <summary>颈部姿态（见 <see cref="TentaclePlantNeckPose"/>）：输入全取绘制空间
+    /// （插值 + 下沉偏移后的物理点；枕点按旧式表达式 mouthPos − fwd×0.35headR 在这里算好
+    /// 喂入，权重 0 时管体末点逐位等于改动前）。接管权重 = 光束权重 ease ×
+    /// (1 − 伪装缓动×1.25) × 蜷缩门（平均链节 ≤ 2 倍枕点后退量时为 0、≥ 4 倍时为 1——
+    /// 蜷缩链上没有"颈"可言，出伪装首帧不许从它起算）。n&lt;4 的预设（现无）不重画。</summary>
+    private void UpdateNeckPose(
+        float alpha, float dt, Vector3 sinkOffset, Vector3 handDraw, Vector3 mouthPos, float headR)
+    {
+        IReadOnlyList<TentacleSegmentState> segments = _c.Segments;
+        int n = segments.Count;
+        Vector3 physHead = handDraw + sinkOffset;
+        if (n < 4)
+        {
+            _neck = new TentaclePlantNeckPose.Output
+            {
+                Elbow = segments[Math.Max(0, n - 3)].LerpPos(alpha) + sinkOffset,
+                PreOcciput = segments[Math.Max(0, n - 2)].LerpPos(alpha) + sinkOffset,
+                Occiput = mouthPos - _mouthFwd * (headR * TentaclePlantNeckPose.OcciputHeadR),
+                Stretch = 1f,
+                Feasible = true,
+            };
+            return;
+        }
+        Vector3 anchor = segments[n - 4].LerpPos(alpha) + sinkOffset;
+        Vector3 physMid = segments[n - 3].LerpPos(alpha) + sinkOffset;
+        Vector3 physPre = segments[n - 2].LerpPos(alpha) + sinkOffset;
+        float meanLink = (physMid.DistanceTo(anchor) + physPre.DistanceTo(physMid) +
+            physHead.DistanceTo(physPre)) / 3f;
+        float occiput = headR * TentaclePlantNeckPose.OcciputHeadR;
+        float coilGate = Mathf.Clamp((meanLink - 2f * occiput) / (2f * occiput), 0f, 1f);
+        float weight = _beamEase * (1f - Mathf.Min(1f, _disguiseEase * 1.25f)) * coilGate;
+        Vector3 occiputPoint = mouthPos - _mouthFwd * (headR * TentaclePlantNeckPose.OcciputHeadR);
+        var input = new TentaclePlantNeckPose.Input(
+            anchor, physMid, physPre, physHead, occiputPoint, _mouthFwd, _chainDir,
+            _c.Outward, _c.Mount.Point, headR, weight, dt);
+        _neck = TentaclePlantNeckPose.Solve(in input, _neckAtlasDegrees, _neckStretchMax,
+            ref _neckState);
     }
 
     /// <summary>嘴开度合成：出手沿 → 飞行保持窗全张扑脸 → 到时/抓到才咬合（快合）；
@@ -408,6 +490,8 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
             ? segments[n - 2].LerpPos(alpha) - segments[n - 3].LerpPos(alpha)
             : a;
         Vector3 fwdRaw = SafeDirection(a * 0.6f + b * 0.4f, _c.Outward);
+        // 光束覆写前的链末方向：颈部姿态的 Ω 基准（重画绝不比它更差）。
+        _chainDir = fwdRaw;
         // 宿主光束覆写：探头/交战期悬停的链身有余量、末段上翘，链推导的 fwd
         // 不代表"照哪"；权重经 ease 淡入淡出，突刺速度混合与伪装 lerp 仍在其上。
         _beamEase += (_beamAimWeight - _beamEase) * (1f - Mathf.Exp(-6f * dt));
@@ -456,19 +540,13 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         }
     }
 
-    /// <summary>肉质管体：埋墙根喇叭 → 根 → 各段 → 颈末（头组件接管）。反锥度视觉剖面 +
-    /// 双频行波蠕动（突刺抑制、伪装归零）。sink 高时整链埋进安装面并停画（只剩灯泡）。</summary>
-    private void DrawBody(float alpha, float sink, Vector3 mouthPos, float headR)
+    /// <summary>肉质管体：埋墙根喇叭 → 根 → 各段 → 颈（肘/前枕点，颈部姿态重画）→ 枕点
+    /// （头组件接管）。反锥度视觉剖面 + 双频行波蠕动（突刺抑制、伪装归零）。sink 高时整链
+    /// 埋进安装面（只剩灯泡）。控制点总数与物理段数同（n+2），剖面/蠕动的索引参数不变。</summary>
+    private void DrawBody(float alpha, Vector3 sinkOffset, Vector3 mouthPos, float headR)
     {
         IReadOnlyList<TentacleSegmentState> segments = _c.Segments;
         Vector3 rootPos = _c.Root.LerpPos(alpha);
-        // 下沉深度必须盖住全伪装的蜷缩包络（tip 硬拴 2L×fraction + 视觉半径），
-        // 管体才能连续沉进安装面消失——旧版 sink>0.9 一刀切停画会让收链过程中
-        // 仍悬在面外 ~1m 的残段单帧消失（评审实测），揭露方向有扑击爆发掩护、
-        // 收拢方向没有。
-        float sinkDepth = _c.Params.Length * 2f * _c.Params.DisguiseExtensionFraction +
-            headR * 1.2f;
-        Vector3 sinkOffset = -_c.Outward * (sinkDepth * sink);
 
         _pts.Clear();
         _radii.Clear();
@@ -476,12 +554,18 @@ internal sealed class TentaclePlantFormalRenderer : IFormalRenderer
         int count = segments.Count + 2;
         _pts.Add(rootPos - _c.Outward * 0.06f + sinkOffset);
         _pts.Add(rootPos + sinkOffset);
+        int neckStart = segments.Count - 3;
         for (int i = 0; i < segments.Count; i++)
         {
-            // 末点用头画位（含下沉/前突偏移）：管头同步，不与嘴拉丝。
-            Vector3 p = i == segments.Count - 1
-                ? mouthPos - _mouthFwd * (headR * 0.35f)
-                : segments[i].LerpPos(alpha) + sinkOffset;
+            // 最后三点由颈部姿态给出（末点 = 枕点：头画位后退 0.35 headR，含下沉/
+            // 前突偏移——管头同步，不与嘴拉丝；权重 0 时肘/前枕点逐位等于物理点）。
+            Vector3 p = i < neckStart
+                ? segments[i].LerpPos(alpha) + sinkOffset
+                : i == segments.Count - 1
+                    ? _neck.Occiput
+                    : i == segments.Count - 2
+                        ? _neck.PreOcciput
+                        : _neck.Elbow;
             _pts.Add(p);
         }
 

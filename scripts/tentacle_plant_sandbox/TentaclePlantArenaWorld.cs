@@ -18,7 +18,9 @@ namespace ProcAnimLab.TentaclePlantSandbox;
 /// <see cref="TentaclePlantPerception"/> 实现：锁定锥（窄角短长，锥内移动累计到
 /// 短阈值即锁定）+ 察觉区（宽角远半径，移动累计到长阈值触发探头搜索）；敏化随
 /// 刺激抬升。突刺瞄"最后感知点"（非实时眼位）；攻击拉伸（内核 opt-in
-/// StrikeStretchFactor）让攻距 ≈ 探测半径 + 锁定锥长、极限距离会咬空。
+/// StrikeStretchFactor）让攻距 ≈ 探测半径 + 锁定锥长。**锁定即出手**：最后感知点
+/// 越出内核攻击包络时把瞄点钳到包络边缘（根→感知点射线上），内核照常充能、朝猎物
+/// 方向全力扑出——够不够得着由拉伸物理与 BiteRadius 决定，极限距离咬空。
 ///
 /// 宿主三相：Ambush（伪装吸顶灯，锁定 → 伪装态 ×10 充能突袭）→ Probe（察觉
 /// 累计过阈：放弃伪装，<see cref="TentaclePlantProbePlanner"/> 动画探测点、头端
@@ -28,8 +30,13 @@ namespace ProcAnimLab.TentaclePlantSandbox;
 ///
 /// 攻击本身是内核涌现的（充能满自动突刺），宿主只用 Target 快照的 HostVisible
 /// 开关充能门。玩家恒 HostGrabbable=false，咬中判定宿主自做（Striking 期 Hand
-/// 距玩家眼位 ≤ BiteRadius，每 AttackSerial 只结算一次）；探头期嘴撞到玩家走
-/// 反射性咬合（脊髓反射，不经感知系统）。
+/// 距玩家眼位 ≤ BiteRadius，每 AttackSerial 只结算一次）；探头/交战期嘴碰到玩家
+/// 走**触觉锁定**（不经光感知累计：感知点钉到"眼位 + 穿过猎物的引导量"、续新鲜期），
+/// 随后按正常的"锁定→预张紧充能→突刺"出手，冷却是唯一攻击门；触觉门避开
+/// Striking/Holding/Recovering 与失聪期。三道防"咬完再咬"的自激：咬中后感知**失聪**
+/// BiteDeafSeconds（推离是它自己造成的位移，不算猎物移动——否则追着推离连咬到够不着
+/// 为止，无引擎复现连咬 6 次）、冷却中头退到瞄点前 CooldownStandoff 处悬停（不压在脸上
+/// 等冷却）、推离背离挂点而非背离头（不把人推回停头位）。回伪装时敏化/累计全部重置。
 /// </summary>
 public partial class TentaclePlantArenaWorld : Node3D
 {
@@ -51,8 +58,13 @@ public partial class TentaclePlantArenaWorld : Node3D
 	[ExportGroup("Behavior")]
 	/// <summary>每次突刺后的攻击冷却（时间戳制，冷却中不充能但仍盯人）。</summary>
 	[Export(PropertyHint.Range, "0.5,10,0.1")] public float AttackCooldownSeconds = 2.5f;
-	/// <summary>攻击弹性拉伸（内核 opt-in）：突刺窗口有效链长 ×系数，攻距 ≈ ×Length。</summary>
-	[Export(PropertyHint.Range, "1,1.6,0.05")] public float StrikeStretchFactor = 1.5f;
+	/// <summary>攻击弹性拉伸（内核 opt-in）：突刺窗口有效链长 ×系数，充能门 = ×Length + 玩家半径；
+	/// 上界 2 是内核 Validate 的拴绳/查询预算上限。实测头端极限距根 ≈ ×Length + 0.4~0.8m（链节
+	/// 1.25× 拉伸余量），lurker 3.2m 链在 2.0 时已盖过 H+L=6.5m 的整个锁定范围。</summary>
+	[Export(PropertyHint.Range, "1,2,0.05")] public float StrikeStretchFactor = 1.5f;
+	/// <summary>锁定即出手：最后感知点越出攻击包络时仍朝猎物方向全力扑出（瞄点钳到包络边缘，
+	/// 极限咬空）；关闭则沿用内核 OutOfRange 门——越界只盯不打。</summary>
+	[Export] public bool StrikeBeyondReach = true;
 	/// <summary>预张紧充能倍率（内核 opt-in）：锁定后 ceil(ChargeTicks/倍率) tick 出手。</summary>
 	[Export(PropertyHint.Range, "1,20,1")] public int ProbeChargeMultiplier = 10;
 
@@ -89,6 +101,12 @@ public partial class TentaclePlantArenaWorld : Node3D
 	[Export(PropertyHint.Range, "0.5,10,0.1")] public float LockHoldSeconds = 2.5f;
 	/// <summary>光束回转速度：感知锥轴（=渲染嘴朝向）转向新目标方向的角速度上限。</summary>
 	[Export(PropertyHint.Range, "30,720,10")] public float BeamTurnDegreesPerSecond = 240f;
+	/// <summary>回收期光束跟链：内核 Recovering（突刺后回收）期间光束/嘴改沿链末方向甩回，
+	/// 不再盯最后感知点——过冲后猎物在脑后，任何颈部姿态都救不回"回头咬"；代价是这
+	/// GrabWindowTicks/40 s（lurker 1s）内锁定锥离开猎物，猎物在此期间的移动不续锁定新鲜期
+	/// （LockHoldSeconds 须盖过它，ValidateExports 有 note）。默认关：感知可见的行为改动，
+	/// 由用户按手感开。</summary>
+	[Export] public bool RecoilBeamFollowsHead = false;
 	/// <summary>察觉区粗方位噪声（±度）。</summary>
 	[Export(PropertyHint.Range, "0,60,1")] public float BearingErrorDegrees = 18f;
 	/// <summary>察觉区幅度测距噪声（±比例）。</summary>
@@ -121,13 +139,38 @@ public partial class TentaclePlantArenaWorld : Node3D
 	[Export(PropertyHint.Range, "0.1,5,0.1")] public float HypoPreySpeedMps = 1.5f;
 	/// <summary>搜索包络半径上限。</summary>
 	[Export(PropertyHint.Range, "1,12,0.5")] public float SearchRadiusMax = 5.0f;
-	/// <summary>探头结束（预算尽/反射咬合）后再次允许探头的冷却。</summary>
+	/// <summary>探头结束（预算尽）后再次允许探头的冷却。</summary>
 	[Export(PropertyHint.Range, "0,10,0.1")] public float ProbeCooldownSeconds = 2.0f;
+	/// <summary>探头凝视最小前瞻：**只对假想凝视点**（路点采样/回头杀）生效——转场里假想点
+	/// 可能落在头旁甚至脑后，光束会打回自己脖子，于是把光束目标至少推到探测点前方（沿
+	/// 根→凝视点方向）这么远；聆听重瞄的真实猎物估计不推（光要落在猎物身上锁定才涨，
+	/// 推开会把锁定拖到探测点转过去之后）。0 关闭；须 ≤ LockConeLength。</summary>
+	[Export(PropertyHint.Range, "0,4,0.1")] public float GazeMinAheadMeters = 1.2f;
+
+	[ExportGroup("Neck")]
+	/// <summary>头颈关节极限转角（渲染化妆，见文档 §7.1）：嘴 forward 与颈入方向的夹角上限，
+	/// 超出部分由重画的最后三节颈吸收；颈够不着时才放开（永不超过物理链原状）。180 = 只做
+	/// 进枕对齐、不限角。</summary>
+	[Export(PropertyHint.Range, "10,180,1")] public float NeckAtlasDegrees = 45f;
+	/// <summary>颈骨化妆拉伸上限（≥1）："够不着"的帧允许前两节颈骨等比拉长到此倍率来守住
+	/// 头颈角；1 = 绝不拉伸（改由头颈角放开）。拉伸可见为颈部"呼吸式"伸缩。</summary>
+	[Export(PropertyHint.Range, "1,1.6,0.05")] public float NeckStretchMax = 1.0f;
 
 	[ExportGroup("Bite")]
-	/// <summary>咬合半径：Striking 期 Hand 到玩家胸心的判距（≈ 嘴 + 玩家胶囊）。</summary>
+	/// <summary>咬合/触觉半径：Hand 到玩家眼位的判距（≈ 嘴 + 玩家胶囊）——Striking 期判咬中，
+	/// 其余相位判触觉锁定。</summary>
 	[Export(PropertyHint.Range, "0.2,2,0.05")] public float BiteRadius = 0.55f;
 	[Export(PropertyHint.Range, "0,8,0.1")] public float BiteShoveSpeed = 2.5f;
+	/// <summary>咬中后感知失聪时长：期内一切眼位位移不计入感知（推离是它自己造成的，
+	/// 否则追着推离连咬）；须盖过推离衰减到移动死区以下的时间，ValidateExports 有 note。</summary>
+	[Export(PropertyHint.Range, "0,3,0.05")] public float BiteDeafSeconds = 1.0f;
+	/// <summary>触觉锁定的瞄点引导量：接触瞄点 = 眼位 + 根→眼方向 × 引导量（被地形挡住改朝下，
+	/// 再挡住取 0）。头已贴在猎物上，直喂眼位会让内核突刺方向退化成伺服残差、乱冲地板/天花板；
+	/// 引导量给它一根穿过猎物的稳定方向。</summary>
+	[Export(PropertyHint.Range, "0,2,0.05")] public float TouchStrikeLead = 1.0f;
+	/// <summary>冷却中盯人的退距：头退到瞄点前方这么远处悬停（沿根→瞄点方向），不压在脸上等冷却；
+	/// 也切断"咬完贴着 → 触觉再锁 → 冷却一过再咬"。须 > BiteRadius + 推离净位移（ValidateExports 有 note）。</summary>
+	[Export(PropertyHint.Range, "0,3,0.05")] public float CooldownStandoff = 1.2f;
 	[Export(PropertyHint.Range, "0.2,5,0.1")] public float BittenPromptSeconds = 1.2f;
 
 	[ExportGroup("Debug")]
@@ -159,9 +202,12 @@ public partial class TentaclePlantArenaWorld : Node3D
 	}
 
 	// 聆听节拍常量（刻意不导出：旋钮宁少勿多，敏化/累计已够调）。
-	private const int ListenStillTicks = 20;   // 静止 0.5s 后的首个移动算"触发性聆听"
-	private const float ListenGain = 0.05f;    // 那一下的累计折扣（灯照到=免费警告）
+	private const int ListenStillTicks = 20;   // 静止 0.5s 后的移动开启新"移动回合"
+	private const int ListenGraceTicks = 12;   // 回合开头 0.3s 的移动算 twitch
+	private const float ListenGain = 0.05f;    // twitch 的察觉累计折扣（灯照到=免费警告；锁定累计不打折）
 	private const float ProbeMinDrop = 0.8f;   // 停头距挂点的最小下探
+	private const float AimClampMargin = 0.02f; // 钳到包络边缘时内缩，避开内核长度球判定的浮点沿
+	private const float LeadClearance = 0.3f;  // 触觉引导点与地形的最小净空
 
 	private readonly RaycastTerrainQuery _terrain = new();
 	private BoxRoomArenaBuilder _arena = null!;
@@ -188,9 +234,15 @@ public partial class TentaclePlantArenaWorld : Node3D
 	private long _lastBiteSerial;
 	private int _biteCount;
 	private long _bittenPromptUntilTick = -1;
+	/// <summary>咬中失聪截止 tick（不含）：期内 moveAmount 喂 0。</summary>
+	private long _deafUntilTick;
 	private Vector3 _playerAim;
 	private Vector3 _prevPlayerAim;
 	private bool _playerAimInitialized;
+	/// <summary>本 tick 喂给内核的瞄点被钳回包络边缘的距离（米）；0 = 直喂最后感知点。</summary>
+	private float _aimOverreach;
+	/// <summary>HUD 用：本 tick 真目标的喂法（direct / clamped+x / standoff）。</summary>
+	private string _aimMode = "direct";
 
 	// 权威光束朝向（tick 域，限速回转）：探头时链身有余量、末段在重力下上翘，
 	// 链末段推导的 forward 不再代表"照哪"。感知锥轴、调试锥、渲染嘴/探照灯
@@ -285,9 +337,15 @@ public partial class TentaclePlantArenaWorld : Node3D
 				 $"{LockThresholdMeters:F1}wm aware={AwareHalfAngleDegrees:F0}°x" +
 				 $"{AwareRadius:F1}m/{AwareThresholdMeters:F1}wm " +
 				 $"probe={ProbeBudgetSeconds:F0}s H={ProbeHeadRadius:F1}m " +
-				 $"stretch={StrikeStretchFactor:F2} chargeX={ProbeChargeMultiplier} " +
+				 $"beam={BeamTurnDegreesPerSecond:F0}°/s " +
+				 $"stretch={StrikeStretchFactor:F2} beyond={(StrikeBeyondReach ? 1 : 0)} " +
+				 $"chargeX={ProbeChargeMultiplier} " +
 				 $"cooldown={AttackCooldownSeconds:F1}s bite={BiteRadius:F2}m " +
-				 $"shove={BiteShoveSpeed:F1}mps dbg={(DebugOverlay ? 1 : 0)}");
+				 $"shove={BiteShoveSpeed:F1}mps deaf={BiteDeafSeconds:F1}s " +
+				 $"lead={TouchStrikeLead:F1}m standoff={CooldownStandoff:F1}m " +
+				 $"neck={NeckAtlasDegrees:F0}°/{NeckStretchMax:F2}x " +
+				 $"gazeAhead={GazeMinAheadMeters:F1}m recoilBeam={(RecoilBeamFollowsHead ? 1 : 0)} " +
+				 $"dbg={(DebugOverlay ? 1 : 0)}");
 	}
 
 	/// <summary>（重）建感知器与探头规划器：固定 seed，R 重开可复现。</summary>
@@ -314,6 +372,7 @@ public partial class TentaclePlantArenaWorld : Node3D
 			SensitizeRecovery = DecayFromHalfLife(SensitizeHalfLifeSeconds),
 			LockHoldTicks = (int)MathF.Ceiling(LockHoldSeconds * TicksPerSecond),
 			ListenStillTicks = ListenStillTicks,
+			ListenGraceTicks = ListenGraceTicks,
 			ListenGain = ListenGain,
 			BearingErrorRadians = Mathf.DegToRad(BearingErrorDegrees),
 			RangeErrorFraction = RangeErrorFraction,
@@ -410,6 +469,9 @@ public partial class TentaclePlantArenaWorld : Node3D
 		if (!FinitePositive(ProbeHeadRadius) || ProbeHeadRadius >= _preset.Length)
 			return Fail($"ProbeHeadRadius must stay below preset length " +
 						$"({ProbeHeadRadius} vs {_preset.Length})");
+		if (ProbeHeadRadius < ProbeMinDrop)
+			return Fail($"ProbeHeadRadius must be >= minimum drop {ProbeMinDrop} " +
+						$"(stop clamp would invert), got {ProbeHeadRadius}");
 		if (!float.IsFinite(StopBackoffRatio) || StopBackoffRatio is <= 0f or >= 1f)
 			return Fail($"StopBackoffRatio must be in (0,1), got {StopBackoffRatio}");
 		if (!FinitePositive(ProbeSpeedMps) || !FinitePositive(ProbeTurnBoost))
@@ -423,7 +485,27 @@ public partial class TentaclePlantArenaWorld : Node3D
 			return Fail("search envelope params must be finite and positive");
 		if (!float.IsFinite(ProbeCooldownSeconds) || ProbeCooldownSeconds < 0f)
 			return Fail($"ProbeCooldownSeconds must be finite and >= 0, got {ProbeCooldownSeconds}");
-		// 咬空带提示：攻距 A = 拉伸×链长 应略小于 H + L，否则锁得到就必咬中。
+		if (!float.IsFinite(GazeMinAheadMeters) || GazeMinAheadMeters < 0f ||
+			GazeMinAheadMeters > LockConeLength)
+			return Fail($"GazeMinAheadMeters must be in [0, LockConeLength={LockConeLength}], " +
+						$"got {GazeMinAheadMeters}");
+		if (!float.IsFinite(NeckAtlasDegrees) || NeckAtlasDegrees is < 10f or > 180f)
+			return Fail($"NeckAtlasDegrees must be in [10,180], got {NeckAtlasDegrees}");
+		if (!float.IsFinite(NeckStretchMax) || NeckStretchMax < 1f)
+			return Fail($"NeckStretchMax must be finite and >= 1, got {NeckStretchMax}");
+		if (RecoilBeamFollowsHead)
+		{
+			// 回收期光束离开猎物：锁定新鲜期若盖不过回收窗（Recovering = 出手后的抓取窗，
+			// CanGrab 归零即转 Tracking），持续移动的猎物会在回收结束前丢锁（Engage→Probe 提前）。
+			float recoilSeconds = _preset.GrabWindowTicks / TicksPerSecond;
+			if (LockHoldSeconds < recoilSeconds)
+			{
+				GD.Print($"[PLANT-ARENA] note: LockHoldSeconds {LockHoldSeconds:F2}s < recoil window " +
+						 $"{recoilSeconds:F2}s; a moving prey can lose lock while the beam follows the recoil");
+			}
+		}
+		// 咬空带提示：攻距 A = 拉伸×链长 应略小于 H + L，否则锁得到就必咬中
+		//（StrikeBeyondReach 下越界照样出手，咬空带 = 锁得到但头端伸不到的那一圈）。
 		if (StrikeStretchFactor * _preset.Length >= ProbeHeadRadius + LockConeLength)
 		{
 			GD.Print($"[PLANT-ARENA] note: strike reach " +
@@ -434,6 +516,35 @@ public partial class TentaclePlantArenaWorld : Node3D
 			return Fail($"BiteRadius must be finite and positive, got {BiteRadius}");
 		if (!float.IsFinite(BiteShoveSpeed) || BiteShoveSpeed < 0f)
 			return Fail($"BiteShoveSpeed must be finite and >= 0, got {BiteShoveSpeed}");
+		if (!float.IsFinite(BiteDeafSeconds) || BiteDeafSeconds < 0f)
+			return Fail($"BiteDeafSeconds must be finite and >= 0, got {BiteDeafSeconds}");
+		if (!float.IsFinite(TouchStrikeLead) || TouchStrikeLead < 0f)
+			return Fail($"TouchStrikeLead must be finite and >= 0, got {TouchStrikeLead}");
+		if (!float.IsFinite(CooldownStandoff) || CooldownStandoff < 0f)
+			return Fail($"CooldownStandoff must be finite and >= 0, got {CooldownStandoff}");
+		{
+			// 推离净位移 = v·dt/(1−decay)；退距盖不过"咬合半径 + 净位移"，被推离后仍站在原地的
+			// 猎物会在头回到退距点时被触觉再锁。
+			float shoveNet = BiteShoveSpeed / TicksPerSecond /
+				(1f - ArenaFirstPersonPlayer.ExternalVelocityDecay);
+			if (CooldownStandoff < BiteRadius + shoveNet)
+			{
+				GD.Print($"[PLANT-ARENA] note: CooldownStandoff {CooldownStandoff:F2}m < BiteRadius + shove net " +
+						 $"{BiteRadius + shoveNet:F2}m; a shoved-but-still player can be touch-locked again");
+			}
+		}
+		if (BiteShoveSpeed > MoveDeadzoneMps && MoveDeadzoneMps > 0f)
+		{
+			// 推离按玩家的 ExternalVelocityDecay 每 40Hz 步几何衰减；失聪窗盖不过它降到
+			// 移动死区以下的步数，尾巴就会被当成猎物移动 → 自激连咬回来。
+			float settleTicks = MathF.Log(MoveDeadzoneMps / BiteShoveSpeed) /
+				MathF.Log(ArenaFirstPersonPlayer.ExternalVelocityDecay);
+			if (BiteDeafSeconds * TicksPerSecond < settleTicks)
+			{
+				GD.Print($"[PLANT-ARENA] note: BiteDeafSeconds {BiteDeafSeconds:F2}s < shove settle " +
+						 $"{settleTicks / TicksPerSecond:F2}s; shove tail will be perceived as prey movement");
+			}
+		}
 		if (!FinitePositive(BittenPromptSeconds))
 			return Fail($"BittenPromptSeconds must be finite and positive, got {BittenPromptSeconds}");
 		if (!float.IsFinite(KickDegrees) || KickDegrees < 0f
@@ -479,6 +590,7 @@ public partial class TentaclePlantArenaWorld : Node3D
 		_formal.SetVisible(true);
 		// 探照灯锥角 = 感知锁定锥角（可视化即设定本身）；射程盖过锥长即可。
 		_formal.ConfigureSearchlight(LockConeHalfAngleDegrees, LockConeLength + 1.0f);
+		_formal.ConfigureNeck(NeckAtlasDegrees, NeckStretchMax);
 	}
 
 	// ---- 固定步长循环（RatArena 同款累加器）----
@@ -526,6 +638,12 @@ public partial class TentaclePlantArenaWorld : Node3D
 		}
 		float moveAmount = (_playerAim - _prevPlayerAim).Length();
 		_prevPlayerAim = _playerAim;
+		if (_tick < _deafUntilTick)
+		{
+			// 咬中失聪：推离是它自己造成的位移，不算猎物移动。差分基准照常推进，
+			// 失聪结束那一 tick 不会把整段推离一次性算成一大步。
+			moveAmount = 0f;
+		}
 
 		// 光束朝向先于感知：按上一 tick 的相位/规划器状态选目标方向（1 tick
 		// 滞后无妨），限速回转出"扫过去"的过程——触发性聆听的"急转"就是
@@ -586,7 +704,8 @@ public partial class TentaclePlantArenaWorld : Node3D
 				{
 					if (events.ListenTwitch)
 					{
-						// 触发性聆听：光束急转照向新方位 + 长凝视，包络坍缩重铺。
+						// 触发性聆听（区内每个移动 tick 都来）：光束立即照过去并
+						// 持续重瞄，猎物一停就长凝视；包络坍缩重铺。
 						_planner.OnListen(
 							_perception.BestEstimate(FallbackEstimate()), _tick);
 					}
@@ -626,10 +745,12 @@ public partial class TentaclePlantArenaWorld : Node3D
 		}
 	}
 
-	/// <summary>探头收场：回伪装 + 压探头冷却（防边界横跳反复弹出）。</summary>
+	/// <summary>探头收场：回伪装 + 压探头冷却（防边界横跳反复弹出）+ 清醒度重置
+	/// （敏化回 1、累计清零——不带着这一轮的火气慢慢消）。</summary>
 	private void EndProbe(string reason)
 	{
 		_phase = HostPhase.Ambush;
+		_perception.ResetAlertness();
 		_probeReadyTick = _tick + (long)MathF.Ceiling(
 			ProbeCooldownSeconds * TicksPerSecond);
 		_plant.ProbeIntent = false;
@@ -641,14 +762,49 @@ public partial class TentaclePlantArenaWorld : Node3D
 	/// <summary>
 	/// 喂真目标：位置 = 最后感知点（非实时眼位）、速度 0——内核预测退化为
 	/// 定点瞄准，"突刺瞄最后感知点"由此天然成立；极限拉扯下会咬空。
+	/// <see cref="StrikeBeyondReach"/> 时感知点越出内核攻击包络（以根为心、半径
+	/// Length×StrikeStretchFactor + 玩家半径的长度球）就把瞄点钳到根→感知点射线上的
+	/// 包络边缘：内核照常充能、朝猎物方向全力扑出，头端实际能伸到哪由拉伸物理决定
+	/// （链节 1.25× 余量让它越过长度球 0.4~0.8m），咬不咬得到看 BiteRadius。
+	/// 射线上的钳点仍在挂点前半空间（凸集）且径向超出 = r − margin ＜ r，
+	/// 内核三道几何门必过，剩下只有视线。
+	/// 冷却中（hostVisible=false）不喂瞄点而喂猎物位置（不含触觉引导量）前方的
+	/// <see cref="StandoffPoint"/>：内核对 HostHidden 目标仍把 goal 设到该点，直喂就是
+	/// 嘴压在脸上等冷却——咬完贴着又触觉锁定，静止猎物每个冷却周期挨一下；退开悬停
+	/// 则再咬要么猎物再动、要么再撞嘴。
 	/// </summary>
 	private void FeedAimTarget(bool hostVisible)
 	{
+		Vector3 aim;
+		_aimOverreach = 0f;
+		if (hostVisible)
+		{
+			aim = _perception.AimPoint;
+			if (StrikeBeyondReach)
+			{
+				Vector3 fromRoot = aim - _plant.Root.Pos;
+				float distance = fromRoot.Length();
+				// 与内核 _strikeReach = Length × StrikeStretchFactor 同一对操作数（_preset 上
+				// 的系数就是本 Export），逐位一致；再减 margin 稳稳落在长度球内。
+				float reach = _preset.Length * StrikeStretchFactor + PlayerChunkRadius - AimClampMargin;
+				if (distance > reach && distance > 1e-6f)
+				{
+					_aimOverreach = distance - reach;
+					aim = _plant.Root.Pos + fromRoot * (reach / distance);
+				}
+			}
+			_aimMode = _aimOverreach > 0f ? $"clamped+{_aimOverreach:F2}m" : "direct";
+		}
+		else
+		{
+			aim = StandoffPoint(_perception.PreyPoint);
+			_aimMode = "standoff";
+		}
 		// 恒 HostGrabbable=false：快咬弹开制——内核绝不建立抓持，
 		// PositionCorrection 永远不会与玩家自驱打架；咬中判定见 AdvancePhase。
 		_plant.Target = new TentaclePlantTargetSnapshot(
 			PlayerStableId,
-			_perception.AimPoint,
+			aim,
 			Vector3.Zero,
 			PlayerChunkRadius,
 			1f,
@@ -682,21 +838,81 @@ public partial class TentaclePlantArenaWorld : Node3D
 	private Vector3 FallbackEstimate() =>
 		new(_mountPoint.X, _playerAim.Y, _mountPoint.Z);
 
+	/// <summary>冷却中的盯人悬停点：猎物位置沿根→猎物方向退 <see cref="CooldownStandoff"/>，
+	/// 距根不低于 ProbeMinDrop（且不越过猎物本身）。</summary>
+	private Vector3 StandoffPoint(Vector3 prey)
+	{
+		Vector3 fromRoot = prey - _plant.Root.Pos;
+		float distance = fromRoot.Length();
+		if (distance <= 1e-6f)
+		{
+			return prey;
+		}
+		float hover = Mathf.Max(Mathf.Min(ProbeMinDrop, distance), distance - CooldownStandoff);
+		return _plant.Root.Pos + fromRoot * (hover / distance);
+	}
+
 	/// <summary>
-	/// 光束目标方向：锁定新鲜期照最后感知点（任何主动相位）、探头照规划器的
-	/// 当前凝视点（假想猎物位置，非探测点——停头刻意停在它前方一截锥长处）、
-	/// 伏击回落链末段推导（伪装 lerp 已把它对齐 Outward = 吸顶灯朝下）。
+	/// 触觉锁定的瞄点引导量（瞄点 = 眼位 + 引导量）。头已贴在猎物上，瞄眼位本身会让
+	/// 内核的突刺方向（target − Hand）退化成厘米级伺服残差、方向随机（评审无引擎
+	/// 复现：冲地板、冲天花板、倒飞穿挂点）。引导方向取根→眼（从挂点穿过猎物向外，
+	/// 与远距突刺同一几何），前方 LeadClearance 内有地形就改朝 Outward（穿过猎物压向
+	/// 地面），再挡住退回零引导。每个接触 tick 至多两条射线，只在接触时花。
+	/// </summary>
+	private Vector3 TouchLead()
+	{
+		Vector3 eye = _playerAim;
+		if (TouchStrikeLead <= 0f)
+		{
+			return Vector3.Zero;
+		}
+		Vector3 dir = SafeDirection(eye - _plant.Root.Pos, _plant.Outward);
+		if (LeadClear(eye, dir))
+		{
+			return dir * TouchStrikeLead;
+		}
+		if (LeadClear(eye, _plant.Outward))
+		{
+			return _plant.Outward * TouchStrikeLead;
+		}
+		return Vector3.Zero;
+	}
+
+	private bool LeadClear(Vector3 from, Vector3 dir) =>
+		!_terrain.Raycast(from, from + dir * (TouchStrikeLead + LeadClearance), out _);
+
+	/// <summary>
+	/// 光束目标方向：回收期可选跟链（RecoilBeamFollowsHead）；锁定新鲜期照最后感知点
+	/// （任何主动相位）；探头照规划器的当前凝视点（假想猎物位置，非探测点——停头刻意
+	/// 停在它前方一截锥长处），假想凝视点落在探测点前方不足 GazeMinAheadMeters 时沿根→凝视
+	/// 方向推到该距离（转场里的假想点可能在头旁/脑后；真实猎物估计不推）；伏击回落链末段
+	/// 推导（伪装 lerp 已把它对齐 Outward = 吸顶灯朝下）。
 	/// </summary>
 	private Vector3 DesiredBeamDirection()
 	{
 		Vector3 head = _plant.Hand.Pos;
+		if (RecoilBeamFollowsHead && _phase != HostPhase.Ambush &&
+			_plant.Phase == TentaclePlantPhase.Recovering)
+		{
+			return ComputeHeadForward();
+		}
 		if (_phase != HostPhase.Ambush && _perception.LockFresh)
 		{
 			return SafeDirection(_perception.AimPoint - head, _beamDir);
 		}
 		if (_phase == HostPhase.Probe)
 		{
-			return SafeDirection(_planner.GazePoint - head, _beamDir);
+			Vector3 gaze = _planner.GazePoint;
+			if (GazeMinAheadMeters > 0f && !_planner.GazeIsEstimate)
+			{
+				Vector3 outwardDir = SafeDirection(gaze - _plant.Root.Pos, _plant.Outward);
+				float ahead = (gaze - _planner.ProbePoint).Dot(outwardDir);
+				if (ahead < GazeMinAheadMeters)
+				{
+					gaze = _planner.ProbePoint + outwardDir * GazeMinAheadMeters;
+				}
+			}
+			return SafeDirection(gaze - head, _beamDir);
 		}
 		return ComputeHeadForward();
 	}
@@ -776,17 +992,23 @@ public partial class TentaclePlantArenaWorld : Node3D
 			LandBite();
 		}
 
-		// 反射性咬合（脊髓反射，不经感知系统）：探头/交战期嘴撞到玩家直接咬，
-		// 咬完立即回伪装——张开的颌内不该是安全屋。
+		// 触觉锁定：探头/交战期嘴碰到玩家，感知点钉到"眼位 + 引导量"、新鲜期续期；
+		// 下一 tick 相位分支照常喂真目标，内核预张紧 ×10 充能 ~10 tick 后正常突刺
+		//（冷却仍是唯一攻击门）。门：内核不在 Striking/Holding/Recovering（回收尾巴
+		// 里头自己在猛动，扫过猎物不算"碰到"，否则回收时擦一下就把新鲜期续过冷却）、
+		// 不在咬中失聪期（失聪 = 所有感官）。不再"碰到即咬 + 回伪装"——咬要经过一次
+		// 看得见的突刺。
 		if (_phase != HostPhase.Ambush &&
-			_plant.Phase is not (TentaclePlantPhase.Striking or TentaclePlantPhase.Holding) &&
-			_tick >= _attackReadyTick &&
+			_plant.Phase is not (TentaclePlantPhase.Striking or TentaclePlantPhase.Holding
+				or TentaclePlantPhase.Recovering) &&
+			_tick >= _deafUntilTick &&
 			_plant.Hand.Pos.DistanceTo(_playerAim) <= BiteRadius)
 		{
-			_attackReadyTick = _tick + Math.Max(1,
-				(long)MathF.Ceiling(AttackCooldownSeconds * TicksPerSecond));
-			LandBite();
-			EndProbe("reflex bite");
+			if (!_perception.LockFresh)
+			{
+				GD.Print($"[PLANT-ARENA] touch lock t={_tick} phase={_phase}");
+			}
+			_perception.TouchLock(_playerAim, TouchLead());
 		}
 
 		// 防御断言：HostGrabbable=false 下内核不应建立任何抓持关系。
@@ -802,14 +1024,22 @@ public partial class TentaclePlantArenaWorld : Node3D
 	private void LandBite()
 	{
 		_biteCount++;
+		_deafUntilTick = _tick + (long)MathF.Ceiling(BiteDeafSeconds * TicksPerSecond);
 		_bittenPromptUntilTick = _tick
 			+ (long)MathF.Ceiling(BittenPromptSeconds * TicksPerSecond);
 		ShowToast($"BITTEN x{_biteCount}");
 		_kick = 1f;
 		if (BiteShoveSpeed > 0f)
 		{
-			Vector3 away = _playerAim - _plant.Hand.Pos;
+			// 背离挂点（水平）而不是背离头：咬中时头常已越过猎物，背离头会把人推向
+			// 挂点/根下，探头回来重新停头时正好又碰到。挂点正下方退化时沿用头→猎物。
+			Vector3 away = _playerAim - _mountPoint;
 			away.Y = 0f;
+			if (away.LengthSquared() < 1e-8f)
+			{
+				away = _playerAim - _plant.Hand.Pos;
+				away.Y = 0f;
+			}
 			if (away.LengthSquared() > 1e-8f)
 			{
 				// 必须走外部冲量通道：直写 Velocity 会被玩家「无输入即刻停」
@@ -841,12 +1071,15 @@ public partial class TentaclePlantArenaWorld : Node3D
 		RebuildPerception();
 		_biteCount = 0;
 		_bittenPromptUntilTick = -1;
+		_deafUntilTick = 0;
 		_toastTtl = 0f;
 		_kick = 0f;
 		_kickTime = 0f;
 		_player.SetCameraShake(Vector3.Zero, Vector3.Zero);
 		_kickApplied = false;
 		_playerAimInitialized = false;
+		_aimOverreach = 0f;
+		_aimMode = "direct";
 		_probeTargetActive = false;
 		_probeTargetPrevActive = false;
 		_beamDir = Vector3.Down;
@@ -925,14 +1158,23 @@ public partial class TentaclePlantArenaWorld : Node3D
 		_hud.SetToast(_toastTtl > 0f ? _toastText : "");
 
 		float cooldown = MathF.Max(0f, (_attackReadyTick - _tick) / TicksPerSecond);
+		float rootDistance = _plant.Root.Pos.DistanceTo(_playerAim);
+		float attackReach = _preset.Length * StrikeStretchFactor;
+		float attackTargetMaxDistance = attackReach + PlayerChunkRadius;
+		float biteDistance = _plant.Hand.Pos.DistanceTo(_playerAim);
 		_hud.SetStatus(
 			$"PLANT AMBUSH ARENA — host={_phase} plant={_plant.Phase} " +
 			$"disguise={_plant.DisguiseAmount:F2} charge={_plant.AttackCharge:F2} " +
 			$"cooldown={cooldown:F1}s " +
 			$"dist={HorizontalDistanceToMount(_playerAim):F1}m bites={_biteCount}\n" +
+			$"target={_plant.TargetStatus} rootDist={rootDistance:F2}m " +
+			$"attackReach={attackReach:F2}m targetMax={attackTargetMaxDistance:F2}m " +
+			$"biteDist={biteDistance:F2}/{BiteRadius:F2}m " +
+			$"aim={_aimMode}\n" +
 			$"aware={_perception.Aware:F1}/{AwareThresholdMeters:F0} " +
 			$"lock={_perception.Lock:F1}/{LockThresholdMeters:F0} " +
 			$"sens={_perception.Sensitize:F2} fresh={(_perception.LockFresh ? 1 : 0)} " +
+			$"deaf={MathF.Max(0f, (_deafUntilTick - _tick) / TicksPerSecond):F1}s " +
 			$"budget={MathF.Max(0f, _planner.Budget) / TicksPerSecond:F1}s " +
 			$"pa={_plant.ProbeAmount:F2} stretch={_plant.StretchAmount:F2}\n" +
 			DebugReadoutLine() +
@@ -955,7 +1197,9 @@ public partial class TentaclePlantArenaWorld : Node3D
 			return "";
 		}
 		string cones = $"dbg cone lock={LockConeHalfAngleDegrees:F0}°x{LockConeLength:F1}m " +
-					   $"aware={AwareHalfAngleDegrees:F0}°x{AwareRadius:F1}m";
+					   $"aware={AwareHalfAngleDegrees:F0}°x{AwareRadius:F1}m " +
+					   $"neck={_formal?.NeckHeadAngleDegrees ?? 0f:F0}°" +
+					   $"(chain {_formal?.NeckOmegaDegrees ?? 0f:F0}° x{_formal?.NeckStretch ?? 1f:F2})";
 		if (!_probeTargetActive)
 		{
 			return $"{cones} probe=inactive (not probing)\n";

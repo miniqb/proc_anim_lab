@@ -12,13 +12,14 @@ tonemap_mode = 2
 
 [node name="TentaclePlantArenaWorld" type="Node3D" unique_id=292971000]
 script = ExtResource("1_world")
+StrikeStretchFactor = 1.7
 LockConeHalfAngleDegrees = 18.0
 LockConeLength = 4.2
-AwareHalfAngleDegrees = 80.0
+AwareHalfAngleDegrees = 89.0
 AwareRadius = 8.0
 MoveDeadzoneMps = 0.05
 LockThresholdMeters = 0.6
-AwareThresholdMeters = 2.0
+AwareThresholdMeters = 6.0
 SensitizeGainPerMeter = 0.3
 ProbeBudgetSeconds = 36.0
 StopBackoffRatio = 0.15000000000000002

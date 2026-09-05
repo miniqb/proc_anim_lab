@@ -6,7 +6,8 @@ namespace ProcAnimLab.TentaclePlantSandbox;
 /// 竞技场调试覆盖层（纯观测）。两组信息：
 ///
 /// ① **感知两锥**（覆盖层开着就一直画，感知本来每相位都在跑）：以头端为顶点、
-///    以感知用的 tick 域头 forward 为轴，画锁定锥（青）与察觉锥（紫、更淡）。
+///    以感知用的 tick 域光束方向（宿主权威 _beamDir，非链末段推导的头 forward）
+///    为轴，画锁定锥（青）与察觉锥（紫、更淡）。
 ///    两者都是**球扇形**（判定 = 距离 ≤ 半径 且 cos ≥ cos半角），所以边界圆环画在
 ///    球冠上（深 = R·cos半角、半径 = R·sin半角），不是平底盖——16° 的锁定锥两者
 ///    几乎一样，75° 的察觉锥差得很远，画平底会严重虚报覆盖范围。
@@ -92,8 +93,8 @@ public sealed class TentaclePlantDebugDraw
 	/// <paramref name="probeActive"/>（宿主本 tick 喂了探测点）时画——画面不会留下
 	/// 上一轮的鬼影。<paramref name="head"/> 与 <paramref name="probePoint"/> 传插值
 	/// 后的位置（与正式渲染件同一 alpha），不让 40Hz 逻辑抖画面；
-	/// <paramref name="headForward"/> 传**感知用的 tick 域 forward**（无渲染低通），
-	/// 画出来的锥才是判定真正用的那个。
+	/// <paramref name="headForward"/> 传**感知用的 tick 域光束方向**（限速回转后、
+	/// 无渲染低通），画出来的锥才是判定真正用的那个。
 	/// </summary>
 	public void Draw(bool probeActive, Vector3 head, Vector3 headForward,
 		Vector3 probePoint, Vector3 camPos)

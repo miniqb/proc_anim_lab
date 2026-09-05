@@ -53,8 +53,9 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
     private Vector3 _externalVelocity;
 
     /// <summary>外部冲量衰减（每物理步保留系数）：0.85^n 几何衰减，40Hz 下 ≈0.5s 耗尽，
-    /// 3m/s 冲量净位移 ≈ 3×dt/(1−0.85) ≈ 0.5m。</summary>
-    private const float ExternalVelocityDecay = 0.85f;
+    /// 3m/s 冲量净位移 ≈ 3×dt/(1−0.85) ≈ 0.5m。internal 只为让宿主校验自己的
+    /// "咬中失聪"窗口是否盖得过推离衰减（拟态草竞技场），运动规格不变。</summary>
+    internal const float ExternalVelocityDecay = 0.85f;
 
     /// <summary>
     /// 外部冲量通道（鼠煞竞技场放人推离用，opt-in——默认零、不叠加时行为逐帧不变）：
