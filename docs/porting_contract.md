@@ -1475,6 +1475,23 @@ gameplay 对目标的实际修正、伤害与吞入不进入视觉 tether 层。
 > 尸体冻结判据肢端阈值放宽（断臂残肢贴地 dangle 的地形推挤微振 ~0.006 m/tick）；
 > 渲染件眼球几何修正（lab 的眼窝球把眼球整个球含——lab 同 bug 待回同步）。
 
+> **2026-09-06 TentaclePlant（固定生物，第三例）**：路线 A，内核四文件零改动镜像到主仓
+> `scripts/enemies/kernel/species/tentacle_plant/`（共享 physics/terrain/host 镜像逐字节同 lab，直接可编）。
+> 主仓新怪 `TentaclePlantEnemy`（中文「灯魇」，调试短号 LMP，species id `tentacle-plant`——主仓已有
+> `lurker` 物种，预设名 lurker 只留在内核 ID 里）**替换房间吊灯**：`RoomLightPlacer` 出计划时按
+> run 种子稳定哈希取覆盖率份额（默认 25%，起点房与起点 2 步内 intro 房豁免）标为 `LampMimic`，
+> 该灯常亮、按无开关灯参与 1:1 配平、开关实体保留但失效（拨片翻转不断电）；世界建完后
+> `TentaclePlantSpawner` 逐灯位挂怪，挂点 = 天花板灯锚点、Outward 朝下、collider ID 0（内核只存不用）。
+> 竞技场宿主逻辑（`TentaclePlantArenaWorld` 三相 + 光感知 + 咬合/失聪/退距/触觉锁定）与
+> `TentaclePlantPerception`、`TentaclePlantNeckPose`、正式渲染件逐字搬入；配置载体
+> `TentaclePlantProfile`（`[GlobalClass] Resource`，一个 .tres = 一种灯魇；代码默认 = 竞技场代码默认，
+> 竞技场 .tscn 的 14 项手调值落在 `resources/enemies/tentacle_plant_lurker.tres`——与本仓 .tscn 覆盖
+> 一一对应）。主仓侧偏差：视线/地形统一走 `ProceduralTerrainMask`（墙、家具、闭门板都遮挡检测与
+> 攻击，高家具后能躲）；咬中加一条嘴→眼位射线封薄墙贴脸；咬中 = `Health.ApplyDamage(50)` +
+> 推离 + 镜头 kick，不抓握；渲染用主仓受光 `TubeMeshBuilder`（lab 的 Unshaded 版不迁）；
+> 推离衰减是线性（v²/2a）而非几何，Profile 的 note 换算随之改。主仓记录 `docs/tentacle_plant_port.md`，
+> 回归 `scenes/debug/TentaclePlantSmoke.tscn`（`TENTACLE_PLANT_SMOKE_PASS`）。
+
 **固定生物例外：拟态草不走两种移动姿态的 tether。**
 宿主安装根始终是位置/导航/伤害权威；出生时把地形点、洞外法线、切向提示和 collider ID
 写入 `TentaclePlantMount`，核心只模拟根外的手和段链。世界原点重置调用 `Shift`；

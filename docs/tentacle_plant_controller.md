@@ -709,6 +709,12 @@ Striking→Recovering 的**根链节**（`Anchor→Segments[0]`）——扑击�
 
 ## 8. 回迁边界与已知问题
 
+- **已于 2026-09-06 回迁主仓**（`random-room-runtime`，新怪「灯魇」`TentaclePlantEnemy`，替换房间
+  吊灯；路线 A 内核零改动镜像，竞技场宿主逻辑 + 感知 + 颈部姿态 + 渲染件逐字搬入，配置载体
+  `TentaclePlantProfile` Resource，竞技场 .tscn 的 14 项手调值落在 `tentacle_plant_lurker.tres`）。
+  记录见主仓 `docs/tentacle_plant_port.md`；契约注见 `porting_contract.md` §8.3。**本仓改内核或
+  竞技场宿主逻辑后须手动同步主仓镜像**（两仓不联动）。竞技场专属不迁：HUD、F3 锥体覆盖层、
+  R 重开、`BoxRoomArenaBuilder`、`ArenaFirstPersonPlayer`。
 - 回迁到 `random-room-runtime` 时，gameplay 根/安装点仍是权威；内核只模拟根外触手，
   不使用移动生物的 tether 配方，也不移动 `CharacterBody3D`。
 - `ITerrainQuery` 查询与段链碰撞、绕障和遮挡相关的静态地形，包含墙与顶面；“可支撑/可安装”

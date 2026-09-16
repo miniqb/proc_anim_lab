@@ -17,7 +17,8 @@
 > （见 [tentacle_plant](docs/tentacle_plant_controller.md) §4.1–4.3/§7）。**RatFiend 已于
 > 2026-08-23 回迁主仓替换 Shambler**（姿态 2 第二例，共享层提升为
 > `scripts/enemies/kernel/`，两仓内核需手动同步——见契约 §8.3 注与主仓
-> `docs/ratfiend_port.md`）；姿态 1（tether）的闭环仍无人验证（契约 §4.1 / §8.3）。
+> `docs/ratfiend_port.md`）；**TentaclePlant 已于 2026-09-06 回迁主仓替换部分房间吊灯**（「灯魇」，
+> 固定生物第三例，主仓 `docs/tentacle_plant_port.md`）；姿态 1（tether）的闭环仍无人验证（契约 §4.1 / §8.3）。
 
 ---
 
