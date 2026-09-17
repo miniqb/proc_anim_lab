@@ -115,7 +115,7 @@ core/
 | `terrain/PlaneTerrainQuery.cs` | ITerrainQuery 纯解析实现（无限平面），测试用 | — |
 | `godot/RaycastTerrainQuery.cs` | **引擎适配器**（PhysicsDirectSpaceState3D 包装），归宿主程序集编译 | — |
 | `smoke/` | 蜥蜴 / 蜈蚣 / 秃鹫 / 人形的无引擎冒烟回归 console 工程（§7.2） | — |
-| `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK、生命周期与跳跃攻击/飞行态/昏迷（`LeapSmoke.cs`：到点误差、俯冲离面、扫掠拒绝、打断、昏迷）无引擎回归 | — |
+| `spider_smoke/` | 蜘蛛确定性、拓扑、两段 IK、生命周期与跳跃攻击/飞行态/昏迷（`LeapSmoke.cs`：到点误差、俯冲离面 + 滚转、飞行对准、墙/顶击落、扫掠拒绝、打断、昏迷、翻身）无引擎回归 | — |
 | `cicada_smoke/` | Cicada 独立无引擎回归（飞行/停驻/Charge/3D 姿态） | — |
 | `tentacle_plant_smoke/` | 拟态草独立无引擎回归（装配、三面游荡、攻击时序、目标效果、生命周期与确定性） | — |
 | `deer_smoke/` | 鹿独立无引擎回归（装配、恒重力支撑、多节腿步态、地形、生命周期、确定性与机制消融） | — |
@@ -280,14 +280,21 @@ SpiderLocomotionController spider = SpiderFactory.CreateSpiderController(origin,
   抓点和步态状态。地面、墙、斜坡、角落、天花板没有模式字段。
 - **跳跃攻击（opt-in）**：`SpiderLeapPlanner.TryPlan(request, terrain?, out plan)` 把宿主裁决好的
   瞄准点（+ 每 tick 提前量）反解成起跳速度与飞行 tick 数，`BeginLeap(plan.LaunchVelocity,
-  plan.FlightTicks)` 起跳。请求里的 `AirFriction` 必须传控制器的 `AirborneAirFriction`、
+  plan.FlightTicks, facing)` 起跳（`facing` = 到点时要正面朝向的水平方向，飞行中可改写
+  `LeapFacing` 跟踪猎物；身体轴/支撑法线在 `N × LeapAlignFraction` tick 前等角速度摆正，
+  `LeapAlignMaxRadPerTick` 封顶）。请求里的 `AirFriction` 必须传控制器的 `AirborneAirFriction`、
   `GravityPerTick` 与 tick 同口径、`SurfaceNormal` 传 `SupportNormal`；`ClearanceRadius`
   传主节半径并给 terrain 才做地形扫掠。飞行期（`Leaping == true`）内核忽略 `MoveDir` /
   `RunSpeed` / `MoveTarget`，宿主按 `LeapTicks` / `LeapFlightTicks` / `LeapEndedByContact`
   观测命中与落地；命中反弹 = 再次 `BeginLeap`（重置弹道）。`Launch` 打断飞行。攻击距离、
   视线、冷却、命中判定全部归宿主（竞技场是参考实现）。
+- **击落（opt-in）**：`Launch(v, noGripTicks)` 第二参数 &gt; 0 时保持期内腿不找抓点、自由落体、
+  支撑法线从原面等角速度翻正（`KnockOffRightingRadPerTick`）；墙上被击中若不给保持期且冲量
+  打进墙，腿会在下滑半米内把身体抓回墙面。宿主自行决定离面反弹（竞技场：打进表面的分量
+  按 `KnockOffBounce` 反射）。默认 0 = 既有 `Launch` 语义逐位不变。
 - **昏迷（opt-in）**：`Conscious = false` 后腿蜷缩不抓地、重力常开、无推进；置回 true 复活。
-  这两组状态刻意不进 `FoldSpiderControllerState`——不调用时既有基线哈希逐位不变。
+  `LimpBellyUp = true` 时落地后绕身体轴滚到背朝地（`LimpFlipRadPerTick`），腿蜷向天。
+  这几组状态刻意不进 `FoldSpiderControllerState`——不调用时既有基线哈希逐位不变。
 
 ### 2.4 Cicada 装配契约
 
@@ -639,9 +646,10 @@ float t = (float)(_acc / 0.025);     // 渲染插值分数（60Hz 下每帧 0~1 
   Shift 则全部保留。若宿主以后做可回滚完整快照，这些动态恢复状态必须与 Pos/Vel 一起序列化。
 - 想「删掉重来」（长途瞬移后不在乎连续性）：整体重建仍然最简单。
 
-蜘蛛另有 **`BeginLeap(velPerTick, flightTicks)`**（跳跃攻击专用，与 `Launch` 的区别：**置**速而非
-叠加、腿进入飞行姿态且**不找抓点**直到触地/超时——`Launch` 从天花板起跳会被腿在 2~3 tick 内
-重新抓回顶面）。`Launch` 仍是「被击飞/受击」语义，并会打断进行中的飞行。
+蜘蛛另有 **`BeginLeap(velPerTick, flightTicks, facing)`**（跳跃攻击专用，与 `Launch` 的区别：**置**速而非
+叠加、腿进入飞行姿态且**不找抓点**直到触地/超时、姿态按截止式对准——`Launch` 从天花板起跳会被
+腿在 2~3 tick 内重新抓回顶面）。`Launch(v, noGripTicks)` 仍是「被击飞/受击」语义，并会打断进行中
+的飞行；第二参数给保持期（腿不抓、离面下落）才是「击落」。
 
 蜈蚣暴露同名 `Shift`/`Teleport`/`Launch`：`Shift` 连同 `SurfaceTrail`、逐节目标与脚的
 当前/预定抓点整体平移；`Teleport` 另外作废轨迹、抓握、支撑和 `MoveTarget`；`Launch`

@@ -146,8 +146,8 @@ gait-large 逐位不变）+ lean 后两对 lead 提到 0.45/0.48。
   猎物提前量 `TargetVelocity × N` 逐候选代入。纯静态数学，无状态无随机。
 - `SpiderLocomotionController.BeginLeap(v, N)`：全部身体节与足端**置**同速（置而非叠加——
   规划弹道要逐 tick 成立），腿 `ForceRelease` 进飞行姿态；`Leaping` 期间重力常开、无推进无
-  拖尾（两节同速出发 → 实飞与规划逐 tick 一致，smoke 实测到点误差 0.000m），支撑法线保留
-  起跳面并按 `LeapSupportBlend` 缓慢翻正（空中翻身、落地脚朝下）。`LeapMinContactTicks` 之后
+  拖尾（两节同速出发 → 实飞与规划逐 tick 一致，smoke 实测到点误差 0.000m），姿态按截止式
+  对准摆正（见下「受击与姿态第二轮」）。`LeapMinContactTicks` 之后
   任一身体节触地、或超过 `N + LeapGraceTicks` 即结束（`LeapEndedByContact` 可读），腿走
   `ResumeGripSearch` 当 tick 找抓点（不再等最短摆动期）。`Launch`（被击中）打断飞行。
 - 飞行腿姿 `SpiderLeg.TickAirborne`：前对腿沿起跳方向张开、后对腿反向拖尾（≙ RW 腿速度
@@ -170,21 +170,54 @@ gait-large 逐位不变）+ lean 后两对 lead 提到 0.45/0.48。
   （Inspector 可调）；蓄势 0.3s 后按此刻猎物位置 + 速度重规划起跳，猎物跑出攻距/视线则放弃。
 - 命中 = 任一身体节球与玩家胶囊相交 → 玩家走外部冲量通道击退 + 蜘蛛朝「猎物→自己」略向上
   `BeginLeap` 反弹（新弹道，落地才压冷却）；扑空 = 触地/宽限结束，短冷却。
-- 手枪命中 = 扣血 + `Launch(枪向 + 向上分量)`：全腿松手 + 重力回归——墙/顶上必掉、地面上
-  被推退再抓地；硬直封攻击门并抢占蓄势/飞行；3 枪 `Conscious = false`，静止后尸体冻结。
+- 手枪命中 = 扣血 + 冲量：地面上 `Launch(枪向 + 向上分量)` 被推退再抓地；墙/顶上打进表面的
+  分量按 `KnockOffBounce` 反射成离面反弹再 `Launch(v, KnockOffHoldTicks)`——腿不抓、离面下落、
+  落地才站稳；硬直封攻击门 + 停潜行并抢占蓄势/飞行；3 枪 `Conscious = false`，落地翻身
+  （`LimpBellyUp`）后静止冻结。
 - 潜行接近走 `SpiderStalkPlanner`（宿主 AI，不进内核）：切平面 12 向投影 / 水平扫墙 8 向给
   「爬上去」候选 / 已在墙顶时向上探顶面候选，打分 = 水平推进 + 表面加成（墙 0.5 &lt; 顶 0.8）
   + 之字项（期望侧逐点交替）− 直线惩罚 + xorshift 抖动；猎物 3m 内改绕行（推进权重 0.15、
   之字 ×2）。驱动只喂 `MoveDir` = 路径点方向在当前支撑切平面的投影——跨面时先水平撞向
   墙脚、抓上墙后投影自然变成沿墙向上，不引入任何模式。
 
-**验证边界**：`[SPIDER-LEAP]` smoke 五项——地面扑击到点 ≤5cm（小/大）+ 触地结束 + 再抓稳、
-天花板俯冲 v0·n ≥ 0.02 到点 + 宽限超时结束、路径被墙挡规划失败（同请求去掉扫掠可解）、
-飞行中 `Launch` 打断 + 再抓稳、昏迷不抓地/落地静止/复活；全部双跑 bit-exact；16 项矩阵
-哈希不变。竞技场无头自检：`--bot=still --ticks=4000`（小蜘蛛 19 次扑击，含墙面/天花板
-起跳与零抬升俯冲）；`--bot=strafe`（突进-停顿玩家：大蜘蛛 12 次命中 1 次扑空、小蜘蛛
-带提前量命中移动目标）；`--shoot-every=300`（3 枪死 + 尸体冻结）。**未验证**：多蜘蛛、
-猎物在斜坡/楼梯上、房高 &gt; 9m 的顶面攻距外推。
+**受击与姿态第二轮（2026-09-17，用户试玩四项反馈）**：
+
+- **墙上打不掉（bug）**：用户反馈墙上的蜘蛛被击中只短暂脱面随即回抓，顶上的才正常掉。
+  根因两条：① 枪向冲量是**打进墙**的，`Launch` 后身体被墙顶住原地下滑，腿在 `LastGripNormal`
+  候选里一伸就把墙抓回来（smoke 消融：旧路径下滑 0.54m、第 7 tick 回到墙上）；顶面则重力
+  把身体拉离顶面才掉得下来。② 无任何「先离面再谈抓握」的保持期。修法：`Launch(v, noGripTicks)`
+  opt-in 第二参数——保持期内腿走 `TickAirborne` 不找抓点、自由落体、支撑法线以
+  `KnockOffRightingRadPerTick`（0.12 rad/tick）等角速度翻正而**不再瞬切成世界上**（旧 `Launch`
+  的 `ResetSupportState` 仍瞬切，默认路径不变）；宿主把打进表面的冲量分量按 `KnockOffBounce`
+  （0.35）反射成离面反弹再传 `KnockOffHoldTicks`（12）。smoke：墙/顶都掉到 5m 下的地板再站稳。
+- **飞行中歪着/侧着到达**：渲染件的身体朝向取 `Primary − Rear` 链方向、up 取 `SupportNormal`，
+  旧飞行态只低通 `_forward`（渲染不读）和以 0.06 权重 nlerp 法线——从墙起跳 20 tick 到点时
+  法线才翻 70%，身体侧着撞人。改 `AlignFlightPose`：截止 tick = `N × LeapAlignFraction`（0.6），
+  每 tick 转角 = 剩余角 / 剩余 tick（等角速度、到期精确对准，`LeapAlignMaxRadPerTick` 0.45 封顶
+  防极短飞行瞬切）；身体轴朝 `LeapFacing`（宿主每 tick 喂猎物水平方向；零向量 = 飞行方向
+  投影，竖直俯冲保持现有朝向）做**绕主节的刚体旋转**（链长不变、主节弹道逐 tick 不受扰——
+  smoke 到点误差仍 0.002m），法线朝世界上、反向时绕身体轴滚转（顶面俯冲 = 180° 翻滚，7 tick
+  完成）。新增 `RotateToward`（Rodrigues）替代 nlerp：nlerp 在小权重 + 近反向时几乎不动、
+  权重过半时又跳 90°，不适合「到期必须摆正且不瞬切」。
+- **死相翻身**：`LimpBellyUp`（宿主 opt-in）——昏迷且任一身体节触地后，支撑法线以
+  `LimpFlipRadPerTick`（0.14）绕身体轴滚到世界下方向（背朝地、腹朝天），既有蜷腿目标
+  `fan×0.5 − FrameUp×0.9` 随帧翻成指向天（膝 pole 侧向，腿蜷在体上方）；之后只剩约束与碰撞，
+  被碰翻允许。竞技场在翻身完成（法线·下 &gt; 0.98）后才冻结尸体。
+- **后退幅度**：`HitImpulseMps` 4 → 6.5、`HitImpulseUpMps` 1.5 → 2.2（小蜘蛛地面命中 60 tick
+  水平后退 bot 实测均值 1.3m，旧值约 0.6m）；命中硬直期潜行也停（原只封攻击门）。
+- 渲染件 `_bodyUp` 低通在飞行/击落/昏迷期从 6/s 提到 16/s——内核已在等角速度转法线，
+  低通只需跟得上不拖尾。
+
+**验证边界**：`[SPIDER-LEAP]` smoke 八项——地面扑击到点 ≤5cm（小/大）+ 触地结束 + 再抓稳、
+天花板俯冲 v0·n ≥ 0.02 到点 + 宽限超时结束 + 180° 滚转到点前完成且单 tick ≤ 封顶角、
+身后侧方目标（141°）截止 tick 对准 + 等角速度 + 主节弹道不受扰、墙/顶击落掉到地板再站稳
+（旧路径消融钉住「墙上打不掉」）、路径被墙挡规划失败（同请求去掉扫掠可解）、飞行中
+`Launch` 打断 + 再抓稳、昏迷不抓地/落地静止/复活、昏迷翻身腹朝天 + 8 脚高于腿根；全部双跑
+bit-exact；16 项矩阵哈希不变。竞技场无头自检：`--bot=still --ticks=4000`（小蜘蛛扑击含
+墙面/天花板起跳与零抬升俯冲）；`--bot=strafe`（突进-停顿玩家）；`--shoot-every=300`
+（3 枪死 + 翻身 + 尸体冻结）；`--shoot-every=20 --shoot-on=wall|ceiling --hp=40`（每次
+墙/顶命中 60 tick 内下落 ≥0.8m 才 PASS，`[SPIDER-ARENA-HIT]` 逐次打下落/后退/回抓）。
+**未验证**：多蜘蛛、猎物在斜坡/楼梯上、房高 &gt; 9m 的顶面攻距外推。
 
 ## 3. 正式渲染
 
@@ -205,7 +238,8 @@ verlet 密细腹毛（黑根亮尖线性渐变）+ 贴体四件套（锥台链�
 - `scenes/spider_arena.tscn`（`SpiderArenaWorld` / `SpiderArenaHud` / `SpiderStalkPlanner`）：
   跳跃攻击竞技场（探索场景，不进矩阵）——第一人称玩家、手枪、三预设切换（1/2/3）、
   Inspector 全参数；无头自检 `--bot=still|strafe --ticks=N [--tps=400] [--preset=…]
-  [--shoot-every=N] [--screenshot-dir=…]`，结尾 `[SPIDER-ARENA-RESULT]`。见 §2.5。
+  [--shoot-every=N] [--shoot-on=ground|wall|ceiling] [--hp=N] [--screenshot-dir=…]`，
+  每次命中后打 `[SPIDER-ARENA-HIT]`，结尾 `[SPIDER-ARENA-RESULT]`。见 §2.5。
 - `core/spider_smoke/`：确定性、拓扑、两段 IK、步态、生命周期与跳跃攻击/飞行态/昏迷
   （`LeapSmoke.cs`）无引擎回归。
 - `tools/run_spider_matrix.sh`：16 项 Godot 配置，覆盖两预设、完整步态 / 急转 / 窄墙 / 换面。

@@ -79,11 +79,31 @@ public sealed class SpiderLocomotionController
     /// <summary>规划的飞行 tick 数（到达瞄准点的 tick）。</summary>
     public int LeapFlightTicks { get; private set; }
 
-    /// <summary>起跳速度方向（飞行腿姿：前对腿沿它张开、后对腿反向拖尾）。</summary>
+    /// <summary>起跳（或击落保持期的击打）速度方向（飞行腿姿：前对腿沿它张开、后对腿反向拖尾）。</summary>
     public Vector3 LeapDirection { get; private set; } = Vector3.Forward;
 
     /// <summary>最近一次飞行是否因触地结束（false = 超时或被 Launch/EndLeap 打断）。</summary>
     public bool LeapEndedByContact { get; private set; }
+
+    /// <summary><see cref="Launch"/> 保持期剩余 tick（腿不找抓点、自由落体）；0 = 常规路径。</summary>
+    public int LaunchNoGripTicks { get; private set; }
+
+    /// <summary>击落保持期内支撑法线朝世界上方向的等角速度翻正（弧度/tick）。</summary>
+    public float KnockOffRightingRadPerTick = 0.12f;
+
+    /// <summary>飞行中身体要对准的朝向（世界系；通常 = 目标的水平方向，宿主可在飞行中改写以
+    /// 追踪移动目标）。零向量 = 用飞行方向的水平投影。对准过程见 <see cref="LeapAlignFraction"/>。</summary>
+    public Vector3 LeapFacing { get; set; }
+
+    /// <summary>飞行期姿态对准截止（占规划飞行 tick 的比例）：身体轴转向 <see cref="LeapFacing"/>、
+    /// 支撑法线转向世界上方向，每 tick 转角 = 剩余角 / 剩余 tick（等角速度，短飞行也不瞬切），
+    /// 截止 tick 起完全对准——到点前已摆正、正面朝目标。身体轴的旋转是绕主身体节的刚体旋转
+    /// （链长不变，主节弹道不受扰）；支撑法线反向（顶面俯冲）时绕身体轴滚转。</summary>
+    public float LeapAlignFraction = 0.6f;
+
+    /// <summary>飞行期对准的单 tick 转角上限（弧度）：极短飞行或宿主临时改写朝向时宁可晚几个
+    /// tick 对准也不瞬切。</summary>
+    public float LeapAlignMaxRadPerTick = 0.45f;
 
     /// <summary>起跳后前这么多 tick 忽略触地（身体离面瞬间仍可能贴着起跳面）。</summary>
     public int LeapMinContactTicks = 3;
@@ -92,7 +112,8 @@ public sealed class SpiderLocomotionController
     /// 的悬空扑空——之后回到常规失抓重力路径）。</summary>
     public int LeapGraceTicks = 24;
 
-    /// <summary>飞行期支撑法线朝世界上方向的低通权重（空中缓慢翻正，落地前脚朝下）。</summary>
+    /// <summary>昏迷期（及未翻身时）支撑法线朝世界上方向的低通权重（空中缓慢翻正）。
+    /// 飞行期不用它——飞行姿态按 <see cref="LeapAlignFraction"/> 的截止式对准。</summary>
     public float LeapSupportBlend = 0.06f;
 
     /// <summary>飞行腿姿的伸展比例（占 MaxReach）。</summary>
@@ -106,10 +127,19 @@ public sealed class SpiderLocomotionController
     /// <summary>昏迷腿姿的蜷缩比例（占 MaxReach）。</summary>
     public float LimpLegCurl = 0.55f;
 
+    /// <summary>true = 昏迷落地后主动翻身：支撑法线以 <see cref="LimpFlipRadPerTick"/> 的等角速度
+    /// 绕身体轴滚到世界下方向（背朝地、腹朝天，蜷缩的腿指向天——昆虫死相）；之后身体只剩
+    /// 约束与碰撞，被碰翻是允许的。false = 既有缓慢翻正（背朝天）。落地前两者都按
+    /// <see cref="LeapSupportBlend"/> 翻正。</summary>
+    public bool LimpBellyUp = false;
+
+    public float LimpFlipRadPerTick = 0.14f;
+
     private readonly float[] _linkLengths;
     private readonly int[] _gripsPerSegment;
     private bool[] _stepPermits = System.Array.Empty<bool>();
     private Vector3 _forward = Vector3.Forward;
+    private bool _limpLanded;
 
     private const float HardStepUrgency = 1.05f;
 
@@ -183,8 +213,11 @@ public sealed class SpiderLocomotionController
     }
 
     /// <summary>统一冲量注入：所有身体节获得同一速度，腿松手，重力立即恢复。
-    /// 飞行中被击中同样走这里：弹道作废（Leaping 清零），之后按常规失抓重力路径下落。</summary>
-    public void Launch(Vector3 velocityPerTick)
+    /// 飞行中被击中同样走这里：弹道作废（Leaping 清零），之后按常规失抓重力路径下落。
+    /// <paramref name="noGripTicks"/>（opt-in，默认 0 = 既有行为）：之后这么多 tick 腿**不找抓点**、
+    /// 身体自由落体、支撑法线按 <see cref="KnockOffRightingRadPerTick"/> 缓慢翻正——被击落的
+    /// 蜘蛛先离开原面再谈抓握；否则墙上被击中时腿会在下滑半米内把身体抓回墙面，掉不下来。</summary>
+    public void Launch(Vector3 velocityPerTick, int noGripTicks = 0)
     {
         if (Leaping)
         {
@@ -198,19 +231,32 @@ public sealed class SpiderLocomotionController
         {
             leg.ForceRelease();
         }
+        Vector3 keptNormal = SupportNormal;
         ResetSupportState();
+        LaunchNoGripTicks = System.Math.Max(0, noGripTicks);
+        if (LaunchNoGripTicks > 0)
+        {
+            SupportNormal = keptNormal; // 保持期内从原面法线连续翻正，不瞬切
+            if (velocityPerTick.LengthSquared() > 1e-12f)
+            {
+                LeapDirection = velocityPerTick.Normalized();
+            }
+        }
     }
 
     /// <summary>
     /// 发起跳跃攻击（≙ RW BigSpider.Jump 的 3D 精确版）：全部身体节与足端**直接置**为同一
     /// 起跳速度（置而非叠加——规划弹道要逐 tick 成立），腿松手进入飞行姿态，重力常开；
-    /// 支撑法线保留起跳面（空中按 <see cref="LeapSupportBlend"/> 缓慢翻正），推进/拖尾
-    /// 全停。飞行在 <see cref="LeapMinContactTicks"/> 之后任一身体节触地、或超过
+    /// 推进/拖尾全停。姿态按 <see cref="LeapAlignFraction"/> 的截止式对准：身体轴转向
+    /// <paramref name="facing"/>（零向量 = 飞行方向的水平投影）、支撑法线转向世界上方向，到点前
+    /// 摆正。飞行在 <see cref="LeapMinContactTicks"/> 之后任一身体节触地、或超过
     /// <c>flightTicks + LeapGraceTicks</c> 时结束，腿立即恢复找抓点。飞行中再次调用
     /// （命中后反弹）会重置弹道。速度来源通常是 <see cref="SpiderLeapPlanner"/>。
     /// </summary>
-    public void BeginLeap(Vector3 velocityPerTick, int flightTicks)
+    public void BeginLeap(Vector3 velocityPerTick, int flightTicks, Vector3 facing = default)
     {
+        LeapFacing = facing;
+        LaunchNoGripTicks = 0;
         foreach (BodyChunk chunk in Body.Chunks)
         {
             chunk.Vel = velocityPerTick;
@@ -278,9 +324,15 @@ public sealed class SpiderLocomotionController
             TickLimp(ctx, worldUp);
             return;
         }
+        _limpLanded = false;
         if (Leaping)
         {
             TickLeap(ctx, worldUp);
+            return;
+        }
+        if (LaunchNoGripTicks > 0)
+        {
+            TickKnockedOff(ctx, worldUp);
             return;
         }
 
@@ -320,7 +372,8 @@ public sealed class SpiderLocomotionController
     }
 
     /// <summary>飞行 tick：重力常开的纯弹道（无推进、无拖尾——两节同速出发，实飞与规划
-    /// 逐 tick 一致），朝向缓慢转向飞行方向，支撑法线缓慢翻正，腿摆飞行姿态；触地/超时结束。</summary>
+    /// 逐 tick 一致），姿态按截止式对准（<see cref="AlignFlightPose"/>），腿摆飞行姿态；
+    /// 触地/超时结束。</summary>
     private void TickLeap(in TickContext ctx, Vector3 worldUp)
     {
         LeapTicks++;
@@ -328,8 +381,7 @@ public sealed class SpiderLocomotionController
         EnterAirborneFooting();
         Body.Tick(ctx);
 
-        UpdateForward(LeapDirection, worldUp, 0.12f);
-        SupportNormal = BlendDirection(SupportNormal, worldUp, LeapSupportBlend, _forward);
+        AlignFlightPose(worldUp);
         TickLegsAirborne(ctx, limp: false);
 
         bool contact = false;
@@ -349,19 +401,108 @@ public sealed class SpiderLocomotionController
 
     /// <summary>昏迷 tick：重力常开、无推进无拖尾，腿蜷缩不抓地；身体只剩约束 + 碰撞。
     /// 支撑法线缓慢翻正，让蜷缩方向最终朝向世界下方。</summary>
+    /// <summary>击落保持 tick（<see cref="Launch"/> 的 noGripTicks）：重力常开的自由落体，腿摆飞行
+    /// 姿态不找抓点，支撑法线等角速度翻正；期满腿恢复找抓点，回到常规失抓重力路径。</summary>
+    private void TickKnockedOff(in TickContext ctx, Vector3 worldUp)
+    {
+        LaunchNoGripTicks--;
+        AtMoveTarget = false;
+        EnterAirborneFooting();
+        Body.Tick(ctx);
+        UpdateForward(Vector3.Zero, worldUp, 0.08f);
+        SupportNormal = RotateToward(SupportNormal, worldUp, 1f,
+            Mathf.Max(0f, KnockOffRightingRadPerTick), Segments[0].Pos - Segments[^1].Pos);
+        TickLegsAirborne(ctx, limp: false);
+        if (LaunchNoGripTicks == 0)
+        {
+            foreach (SpiderLeg leg in Legs)
+            {
+                leg.ResumeGripSearch();
+            }
+        }
+    }
+
     private void TickLimp(in TickContext ctx, Vector3 worldUp)
     {
         if (Leaping)
         {
             EndLeap(endedByContact: false);
         }
+        LaunchNoGripTicks = 0;
         AtMoveTarget = false;
         EnterAirborneFooting();
         Body.SurfaceFriction = FootedSurfaceFriction; // 尸体贴地即停，不滑
         Body.Tick(ctx);
+        foreach (BodyChunk chunk in Body.Chunks)
+        {
+            _limpLanded |= chunk.TerrainContact;
+        }
         UpdateForward(Vector3.Zero, worldUp, 0.08f);
-        SupportNormal = BlendDirection(SupportNormal, worldUp, LeapSupportBlend, _forward);
+        if (LimpBellyUp && _limpLanded)
+        {
+            // 落地后主动翻身：绕身体轴等角速度滚到背朝地（腹朝天），腿随帧翻上去蜷着。
+            SupportNormal = RotateToward(SupportNormal, -worldUp, 1f,
+                Mathf.Max(0f, LimpFlipRadPerTick), Segments[0].Pos - Segments[^1].Pos);
+        }
+        else
+        {
+            SupportNormal = BlendDirection(SupportNormal, worldUp, LeapSupportBlend, _forward);
+        }
         TickLegsAirborne(ctx, limp: true);
+    }
+
+    /// <summary>飞行姿态对准：截止 tick = 规划飞行 tick × <see cref="LeapAlignFraction"/>；
+    /// 每 tick 把身体轴朝 <see cref="LeapFacing"/> 的水平投影、支撑法线朝世界上方向各转过
+    /// 「剩余角 / 剩余 tick」（受 <see cref="LeapAlignMaxRadPerTick"/> 封顶），截止后每 tick
+    /// 钉住（宿主改写 LeapFacing 时仍按封顶角速度跟随）。身体轴的旋转刚体地带动主节之外的
+    /// 全部身体节（绕主节转，链长不变），主节弹道逐 tick 不受扰。</summary>
+    private void AlignFlightPose(Vector3 worldUp)
+    {
+        int deadline = Mathf.Max(1,
+            Mathf.RoundToInt(LeapFlightTicks * Mathf.Clamp(LeapAlignFraction, 0f, 1f)));
+        int remaining = deadline - LeapTicks;
+        float fraction = remaining <= 0 ? 1f : 1f / (remaining + 1);
+        float maxStep = Mathf.Max(1e-3f, LeapAlignMaxRadPerTick);
+
+        Vector3 axisNow = Segments[0].Pos - Segments[^1].Pos;
+        Vector3 desired = LeapFacing.LengthSquared() > 1e-12f ? LeapFacing : LeapDirection;
+        desired -= worldUp * desired.Dot(worldUp);
+        if (desired.LengthSquared() < 1e-8f)
+        {
+            desired = axisNow - worldUp * axisNow.Dot(worldUp); // 竖直俯冲：保持现有水平朝向
+        }
+        if (axisNow.LengthSquared() > 1e-10f && desired.LengthSquared() > 1e-8f)
+        {
+            axisNow = axisNow.Normalized();
+            Vector3 rotated = RotateToward(axisNow, desired.Normalized(), fraction, maxStep, worldUp);
+            RotateChainAboutPrimary(axisNow, rotated);
+            _forward = rotated;
+        }
+        SupportNormal = RotateToward(SupportNormal, worldUp, fraction, maxStep,
+            Segments[0].Pos - Segments[^1].Pos);
+    }
+
+    /// <summary>把主节之外的全部身体节绕主节做刚体旋转（from → to 的最短旋转）；两两距离不变，
+    /// 约束无需再松弛，速度不动（下一 tick 仍与主节同速平移）。</summary>
+    private void RotateChainAboutPrimary(Vector3 from, Vector3 to)
+    {
+        Vector3 axis = from.Cross(to);
+        float sin = axis.Length();
+        if (sin < 1e-6f)
+        {
+            return;
+        }
+        float angle = Mathf.Atan2(sin, from.Dot(to));
+        axis /= sin;
+        Vector3 pivot = Primary.Pos;
+        foreach (BodyChunk chunk in Body.Chunks)
+        {
+            if (chunk == Primary)
+            {
+                continue;
+            }
+            chunk.Pos = pivot + (chunk.Pos - pivot).Rotated(axis, angle);
+        }
     }
 
     /// <summary>空中/昏迷腿 tick：腿根随身体节更新，足端追逐姿态目标（飞行：前对腿沿起跳
@@ -836,6 +977,49 @@ public sealed class SpiderLocomotionController
     {
         Vector3 delta = to - from;
         return delta.LengthSquared() < 1e-12f ? Vector3.Forward : delta.Normalized();
+    }
+
+    /// <summary>
+    /// 等角速度转向：把 current 绕两者公共法线朝 target 转过「夹角 × fraction」（再按 maxStep 封顶；
+    /// 转完即精确等于 target）。反向（近 180°）时绕 relayAxis（去掉 current 分量后归一，退化再选
+    /// 任意垂直轴）转——确定且不会在零向量两侧锁死。输入输出均为单位向量。与
+    /// <see cref="BlendDirection"/> 的区别：nlerp 在小权重 + 近反向时几乎不动、权重过半时又跳
+    /// 90°，不适合「到期必须摆正且不瞬切」。
+    /// </summary>
+    private static Vector3 RotateToward(Vector3 current, Vector3 target, float fraction,
+        float maxStep, Vector3 relayAxis)
+    {
+        current = current.LengthSquared() < 1e-12f ? target : current.Normalized();
+        target = target.LengthSquared() < 1e-12f ? current : target.Normalized();
+        float cos = Mathf.Clamp(current.Dot(target), -1f, 1f);
+        Vector3 axis = current.Cross(target);
+        float sin = axis.Length();
+        if (sin < 1e-4f)
+        {
+            if (cos > 0f)
+            {
+                return target;
+            }
+            axis = relayAxis - current * relayAxis.Dot(current);
+            if (axis.LengthSquared() < 1e-10f)
+            {
+                Vector3 seed = Mathf.Abs(current.Dot(Vector3.Up)) < 0.9f ? Vector3.Up : Vector3.Right;
+                axis = seed - current * seed.Dot(current);
+            }
+            axis = axis.Normalized();
+        }
+        else
+        {
+            axis /= sin;
+        }
+        float angle = Mathf.Atan2(sin, cos);
+        float step = Mathf.Min(angle * Mathf.Clamp(fraction, 0f, 1f), Mathf.Max(0f, maxStep));
+        if (step >= angle - 1e-6f)
+        {
+            return target;
+        }
+        Vector3 rotated = current.Rotated(axis, step);
+        return rotated.LengthSquared() < 1e-12f ? target : rotated.Normalized();
     }
 
     /// <summary>

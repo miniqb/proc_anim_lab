@@ -215,7 +215,9 @@ internal sealed class SpiderFormalRenderer : IFormalRenderer
         fwd = fwd.LengthSquared() > 1e-8f ? fwd.Normalized() : Vector3.Right;
 
         // 稳定 up：SupportNormal 低通再去前向分量（≙ CLAUDE.md 3D 朝向边界）。
-        float k = 1f - Mathf.Exp(-6f * dt);
+        // 飞行/击落/昏迷时内核已在等角速度地转法线（对准、翻正、翻身），低通只需跟得上不拖尾。
+        bool kernelTurning = _c.Leaping || !_c.Conscious || _c.LaunchNoGripTicks > 0;
+        float k = 1f - Mathf.Exp(-(kernelTurning ? 16f : 6f) * dt);
         _bodyUp = _bodyUp.Lerp(_c.SupportNormal, k);
         Vector3 up = _bodyUp - fwd * _bodyUp.Dot(fwd);
         up = up.LengthSquared() > 1e-6f ? up.Normalized() : fwd.Cross(Vector3.Right).Normalized();

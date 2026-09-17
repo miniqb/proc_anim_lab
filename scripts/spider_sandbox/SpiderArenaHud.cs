@@ -104,6 +104,13 @@ public sealed class SpiderArenaHud
 
     public void SetStatus(string text) => _status.Text = text;
 
+    /// <summary>整层显隐（事件截图时隐藏，免得文字压住主体）。</summary>
+    public bool Visible
+    {
+        get => _layer.Visible;
+        set => _layer.Visible = value;
+    }
+
     /// <summary>中央提示：主行 + 小字副行；传空串隐藏对应行。</summary>
     public void SetPrompt(string main, string detail = "")
     {
