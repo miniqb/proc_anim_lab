@@ -19,7 +19,7 @@
 
 | 文档 | 后端 |
 |------|------|
-| [spider_controller.md](spider_controller.md) | **Spider**：足端粒子 + 渲染期两骨 IK 分层、窄墙抱边、完整迈步（PEP→AEP 事务）、急转腿槽镜像与同面站距回收、spider-lean 场景门。 |
+| [spider_controller.md](spider_controller.md) | **Spider**：足端粒子 + 渲染期两骨 IK 分层、窄墙抱边、完整迈步（PEP→AEP 事务）、急转腿槽镜像与同面站距回收、spider-lean 场景门；跳跃攻击（攻距与跳速解耦的精确弹道反解、飞行腿姿、命中反弹）、昏迷与跳跃攻击竞技场。 |
 | [humanoid_controller.md](humanoid_controller.md) | **Humanoid（拾荒者）**：清醒近地失重伺服木偶、站立力偶零 knockdown 状态机、手臂两条独立通道与优先级链、WalkLean / HandSpread / HeadTurn / LegGait 四轮实测修复。 |
 | [vulture_controller.md](vulture_controller.md) | **Vulture**：重力常开 + 拍翅同步 sin² 升力脉冲、K4 风筝刚架、翅膀模式涌现的起降、四预设与落地即修的对抗性评审轮。 |
 | [centipede_controller.md](centipede_controller.md) | **Centipede**：任意节出生配置与逐节覆写、质量加权装配、双端表面轨迹、有限实体前视、真实抓足与跨墙复位、确定性行波/自避、四个稳定预设。 |

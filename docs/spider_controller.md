@@ -126,6 +126,66 @@ gait-large 逐位不变）+ lean 后两对 lead 提到 0.45/0.48。
 **遗留**：lean 仍不进矩阵（矩阵化留待下一轮），七路线复现命令见 `SpiderFactory.LeanSpider()`
 的文档注释。
 
+### 2.5 跳跃攻击、飞行态与昏迷（2026-09-17）
+
+**需求**：蜘蛛类怪物的两大特征——跳跃攻击与任意表面附着。攻击距离必须与跳跃物理**解耦**：
+设计侧给定「在墙上能打到 N 米内」这种攻距，跳速按目标现算（1m 与 9m 都要命中）；
+天花板上的蜘蛛必须知道正下方的人可以直接掉下去咬，而不是「攻距够不到地面」的愚蠢。
+
+**机制来源**：RW `BigSpider.Attack/Jump`（`charging` 预兆 → `mainBodyChunk.vel += jumpDir×16`、
+后节 ×11、图形腿 `vel += jumpDir·30·(j<2 ? 1 : −1)`、`footingCounter = 0`）与 `Collide` 里撞上
+猎物即朝「猎物→自己 + (0,10px)」再 `Jump` 的反弹。原作是**固定跳速只调方向**（攻距由跳速隐式
+决定，AI 另有 `LerpMap(dot, −1, 1, 0, 500px)` 门）；3D 版反过来：攻距是设计量，跳速精确反解。
+
+**内核（全部 opt-in，既有基线哈希逐位不变——新状态刻意不进 `FoldSpiderControllerState`）**：
+
+- `SpiderLeapPlanner.TryPlan`：内核积分是 `Vel += g; Pos += Vel; Vel *= f`（`Body.Tick` 固定序），
+  N 固定时位移 = v0·A(N) + g·C(N) 对 v0 线性，A/C 用同序累加得到（f=1 退化为 N 与 N(N+1)/2）。
+  N 在 `距离 ÷ PreferredSpeed` 附近交替搜索（center, +1, −1, +2, …），取第一个满足
+  「离面 v0·n ≥ MinOutward / 限速 / 抬升 ≤ MaxRise / 可选地形扫掠（逐段射线 + 球体重叠）」的解；
+  猎物提前量 `TargetVelocity × N` 逐候选代入。纯静态数学，无状态无随机。
+- `SpiderLocomotionController.BeginLeap(v, N)`：全部身体节与足端**置**同速（置而非叠加——
+  规划弹道要逐 tick 成立），腿 `ForceRelease` 进飞行姿态；`Leaping` 期间重力常开、无推进无
+  拖尾（两节同速出发 → 实飞与规划逐 tick 一致，smoke 实测到点误差 0.000m），支撑法线保留
+  起跳面并按 `LeapSupportBlend` 缓慢翻正（空中翻身、落地脚朝下）。`LeapMinContactTicks` 之后
+  任一身体节触地、或超过 `N + LeapGraceTicks` 即结束（`LeapEndedByContact` 可读），腿走
+  `ResumeGripSearch` 当 tick 找抓点（不再等最短摆动期）。`Launch`（被击中）打断飞行。
+- 飞行腿姿 `SpiderLeg.TickAirborne`：前对腿沿起跳方向张开、后对腿反向拖尾（≙ RW 腿速度
+  ±jumpDir），走常规管线（追逐 → 根约束 → 近根钳制 → 出地形 → 可达性 → 膝解算），
+  `GripCounter` 恒零因此从不计入支撑。
+- `Conscious = false`：昏迷/死亡——腿蜷向体下（`LimpLegCurl`）、重力常开、无推进；
+  贴地摩擦取 footed 档，尸体不滑。内核允许复活（置回 true 即重新找抓点）。
+
+**被推翻的初判**：
+
+- 「用既有 `Launch` 叠加冲量就够」——`Launch` 只叠加速度且不抑制抓点：从天花板起跳后
+  腿在 2~3 tick 内重新抓回顶面并关重力，蜘蛛挂在原地不动。飞行态必须显式抑制找抓点。
+- 「按最小能量选飞行时长」——对同高目标是 45° 大抛物线，8m 墙面扑击抬升 2m 直接撞顶
+  （房高 3.2m）；改成「名义速度居中搜索 + 抬升上限 + 扫掠」后长距自动变平变快
+  （7.4m 墙面扑击 20.5m/s、抬升 0.02m），近距自动变慢（1.3m 扑击 10.7m/s）。
+
+**宿主（`scenes/spider_arena.tscn` / `scripts/spider_sandbox/SpiderArenaWorld.cs`）**：
+
+- 攻距按支撑法线与世界上方向的夹角在 地面 3.5 / 墙 6 / 天花板 9m 三档间**分段线性**插值
+  （Inspector 可调）；蓄势 0.3s 后按此刻猎物位置 + 速度重规划起跳，猎物跑出攻距/视线则放弃。
+- 命中 = 任一身体节球与玩家胶囊相交 → 玩家走外部冲量通道击退 + 蜘蛛朝「猎物→自己」略向上
+  `BeginLeap` 反弹（新弹道，落地才压冷却）；扑空 = 触地/宽限结束，短冷却。
+- 手枪命中 = 扣血 + `Launch(枪向 + 向上分量)`：全腿松手 + 重力回归——墙/顶上必掉、地面上
+  被推退再抓地；硬直封攻击门并抢占蓄势/飞行；3 枪 `Conscious = false`，静止后尸体冻结。
+- 潜行接近走 `SpiderStalkPlanner`（宿主 AI，不进内核）：切平面 12 向投影 / 水平扫墙 8 向给
+  「爬上去」候选 / 已在墙顶时向上探顶面候选，打分 = 水平推进 + 表面加成（墙 0.5 &lt; 顶 0.8）
+  + 之字项（期望侧逐点交替）− 直线惩罚 + xorshift 抖动；猎物 3m 内改绕行（推进权重 0.15、
+  之字 ×2）。驱动只喂 `MoveDir` = 路径点方向在当前支撑切平面的投影——跨面时先水平撞向
+  墙脚、抓上墙后投影自然变成沿墙向上，不引入任何模式。
+
+**验证边界**：`[SPIDER-LEAP]` smoke 五项——地面扑击到点 ≤5cm（小/大）+ 触地结束 + 再抓稳、
+天花板俯冲 v0·n ≥ 0.02 到点 + 宽限超时结束、路径被墙挡规划失败（同请求去掉扫掠可解）、
+飞行中 `Launch` 打断 + 再抓稳、昏迷不抓地/落地静止/复活；全部双跑 bit-exact；16 项矩阵
+哈希不变。竞技场无头自检：`--bot=still --ticks=4000`（小蜘蛛 19 次扑击，含墙面/天花板
+起跳与零抬升俯冲）；`--bot=strafe`（突进-停顿玩家：大蜘蛛 12 次命中 1 次扑空、小蜘蛛
+带提前量命中移动目标）；`--shoot-every=300`（3 枪死 + 尸体冻结）。**未验证**：多蜘蛛、
+猎物在斜坡/楼梯上、房高 &gt; 9m 的顶面攻距外推。
+
 ## 3. 正式渲染
 
 蜘蛛的 `IFormalRenderer` 走**专用沙盒**（不经 `FormalRendererFactory` 分派）：三点 Bezier
@@ -142,7 +202,12 @@ verlet 密细腹毛（黑根亮尖线性渐变）+ 贴体四件套（锥台链�
 
 - `scripts/spider_sandbox/`：独立白盒；正式视图下地形调试线随白盒隐藏。旗标沿**无前缀**命名
   （参数空间独立于蜥蜴沙盒）。
-- `core/spider_smoke/`：确定性、拓扑、两段 IK、步态与生命周期无引擎回归。
+- `scenes/spider_arena.tscn`（`SpiderArenaWorld` / `SpiderArenaHud` / `SpiderStalkPlanner`）：
+  跳跃攻击竞技场（探索场景，不进矩阵）——第一人称玩家、手枪、三预设切换（1/2/3）、
+  Inspector 全参数；无头自检 `--bot=still|strafe --ticks=N [--tps=400] [--preset=…]
+  [--shoot-every=N] [--screenshot-dir=…]`，结尾 `[SPIDER-ARENA-RESULT]`。见 §2.5。
+- `core/spider_smoke/`：确定性、拓扑、两段 IK、步态、生命周期与跳跃攻击/飞行态/昏迷
+  （`LeapSmoke.cs`）无引擎回归。
 - `tools/run_spider_matrix.sh`：16 项 Godot 配置，覆盖两预设、完整步态 / 急转 / 窄墙 / 换面。
 
 ```bash

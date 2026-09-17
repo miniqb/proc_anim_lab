@@ -66,6 +66,46 @@ public sealed class SpiderLocomotionController
     public Vector3 LastMoveTarget { get; private set; }
     public Vector3 Forward => _forward;
 
+    // —— 跳跃攻击 / 空中态 / 昏迷（全部 opt-in：宿主不调用 BeginLeap、不清 Conscious 时
+    //    既有品种逐位不变；这些状态刻意不进 FoldSpiderControllerState，基线哈希不动）——
+
+    /// <summary>true = 处于 <see cref="BeginLeap"/> 发起的弹道飞行：重力常开、腿不找抓点、
+    /// 不推进不拖尾，身体按规划弹道飞；触地或超时后自动结束并恢复找抓点。</summary>
+    public bool Leaping { get; private set; }
+
+    /// <summary>本次飞行已经历的 tick 数（BeginLeap 当 tick 为 0）。</summary>
+    public int LeapTicks { get; private set; }
+
+    /// <summary>规划的飞行 tick 数（到达瞄准点的 tick）。</summary>
+    public int LeapFlightTicks { get; private set; }
+
+    /// <summary>起跳速度方向（飞行腿姿：前对腿沿它张开、后对腿反向拖尾）。</summary>
+    public Vector3 LeapDirection { get; private set; } = Vector3.Forward;
+
+    /// <summary>最近一次飞行是否因触地结束（false = 超时或被 Launch/EndLeap 打断）。</summary>
+    public bool LeapEndedByContact { get; private set; }
+
+    /// <summary>起跳后前这么多 tick 忽略触地（身体离面瞬间仍可能贴着起跳面）。</summary>
+    public int LeapMinContactTicks = 3;
+
+    /// <summary>规划到达 tick 之后再宽限这么多 tick 仍未触地则强制结束（越出预计落点
+    /// 的悬空扑空——之后回到常规失抓重力路径）。</summary>
+    public int LeapGraceTicks = 24;
+
+    /// <summary>飞行期支撑法线朝世界上方向的低通权重（空中缓慢翻正，落地前脚朝下）。</summary>
+    public float LeapSupportBlend = 0.06f;
+
+    /// <summary>飞行腿姿的伸展比例（占 MaxReach）。</summary>
+    public float FlightLegSpread = 0.9f;
+
+    /// <summary>false = 昏迷/死亡：重力常开、腿蜷缩不抓地、无推进，身体只剩约束与碰撞
+    /// （≙ RW Creature.Consious=false 的运动子集）。宿主 opt-in；不可逆转回 true 的语义
+    /// 由宿主决定（本内核允许复活）。</summary>
+    public bool Conscious = true;
+
+    /// <summary>昏迷腿姿的蜷缩比例（占 MaxReach）。</summary>
+    public float LimpLegCurl = 0.55f;
+
     private readonly float[] _linkLengths;
     private readonly int[] _gripsPerSegment;
     private bool[] _stepPermits = System.Array.Empty<bool>();
@@ -142,9 +182,14 @@ public sealed class SpiderLocomotionController
         LastMoveTargetKind = MoveTargetKind.None;
     }
 
-    /// <summary>统一冲量注入：所有身体节获得同一速度，腿松手，重力立即恢复。</summary>
+    /// <summary>统一冲量注入：所有身体节获得同一速度，腿松手，重力立即恢复。
+    /// 飞行中被击中同样走这里：弹道作废（Leaping 清零），之后按常规失抓重力路径下落。</summary>
     public void Launch(Vector3 velocityPerTick)
     {
+        if (Leaping)
+        {
+            EndLeap(endedByContact: false);
+        }
         foreach (BodyChunk chunk in Body.Chunks)
         {
             chunk.Vel += velocityPerTick;
@@ -157,13 +202,87 @@ public sealed class SpiderLocomotionController
     }
 
     /// <summary>
+    /// 发起跳跃攻击（≙ RW BigSpider.Jump 的 3D 精确版）：全部身体节与足端**直接置**为同一
+    /// 起跳速度（置而非叠加——规划弹道要逐 tick 成立），腿松手进入飞行姿态，重力常开；
+    /// 支撑法线保留起跳面（空中按 <see cref="LeapSupportBlend"/> 缓慢翻正），推进/拖尾
+    /// 全停。飞行在 <see cref="LeapMinContactTicks"/> 之后任一身体节触地、或超过
+    /// <c>flightTicks + LeapGraceTicks</c> 时结束，腿立即恢复找抓点。飞行中再次调用
+    /// （命中后反弹）会重置弹道。速度来源通常是 <see cref="SpiderLeapPlanner"/>。
+    /// </summary>
+    public void BeginLeap(Vector3 velocityPerTick, int flightTicks)
+    {
+        foreach (BodyChunk chunk in Body.Chunks)
+        {
+            chunk.Vel = velocityPerTick;
+        }
+        foreach (SpiderLeg leg in Legs)
+        {
+            leg.ForceRelease();
+            leg.Vel = velocityPerTick;
+        }
+        Leaping = true;
+        LeapTicks = 0;
+        LeapFlightTicks = Mathf.Max(1, flightTicks);
+        LeapEndedByContact = false;
+        if (velocityPerTick.LengthSquared() > 1e-12f)
+        {
+            LeapDirection = velocityPerTick.Normalized();
+        }
+        AtMoveTarget = false;
+        EnterAirborneFooting();
+    }
+
+    /// <summary>提前结束飞行（宿主在命中等事件上调用；通常不需要——触地自动结束）。</summary>
+    public void EndLeap() => EndLeap(endedByContact: false);
+
+    private void EndLeap(bool endedByContact)
+    {
+        if (!Leaping)
+        {
+            return;
+        }
+        Leaping = false;
+        LeapEndedByContact = endedByContact;
+        foreach (SpiderLeg leg in Legs)
+        {
+            leg.ResumeGripSearch();
+        }
+    }
+
+    /// <summary>空中态的站稳计数：清零并标记为「已失抓」——飞行结束后走常规失抓重力路径，
+    /// 抓稳后再由 UpdateFooting 关重力。支撑法线刻意不动（与 ResetSupportState 的区别）。</summary>
+    private void EnterAirborneFooting()
+    {
+        FootingCounter = 0;
+        NoGripCounter = LoseGripTicks < int.MaxValue ? LoseGripTicks + 1 : int.MaxValue;
+        LegsGripping = 0;
+        ApplyGravity = true;
+        StallTicks = 0;
+        Body.GravityScale = 1f;
+        Body.AirFriction = AirborneAirFriction;
+        Body.SurfaceFriction = AirborneSurfaceFriction;
+    }
+
+    /// <summary>
     /// 固定 tick：读取上 tick 抓地 → 更新支撑/推进 → 身体物理 → 足端/IK → 汇总下一 tick 支撑。
+    /// 昏迷与飞行走独立分支（opt-in，见 <see cref="Conscious"/> / <see cref="BeginLeap"/>）。
     /// </summary>
     public void Tick(in TickContext ctx)
     {
         Vector3 worldUp = ctx.GravityPerTick.LengthSquared() > 1e-12f
             ? -ctx.GravityPerTick.Normalized()
             : Vector3.Up;
+
+        if (!Conscious)
+        {
+            TickLimp(ctx, worldUp);
+            return;
+        }
+        if (Leaping)
+        {
+            TickLeap(ctx, worldUp);
+            return;
+        }
 
         bool derivedMove = MoveTarget is not null;
         if (MoveTarget is { } target)
@@ -177,7 +296,7 @@ public sealed class SpiderLocomotionController
 
         UpdateFooting();
         Vector3 effectiveMove = HasMoveIntent ? RedirectMove(worldUp) : Vector3.Zero;
-        UpdateForward(effectiveMove, worldUp);
+        UpdateForward(effectiveMove, worldUp, HasMoveIntent ? 0.25f : 0.08f);
         ApplyLocomotionForce(ctx, effectiveMove);
         ApplyTrailingPose();
         Body.Tick(ctx);
@@ -198,6 +317,87 @@ public sealed class SpiderLocomotionController
         {
             MoveDir = Vector3.Zero;
         }
+    }
+
+    /// <summary>飞行 tick：重力常开的纯弹道（无推进、无拖尾——两节同速出发，实飞与规划
+    /// 逐 tick 一致），朝向缓慢转向飞行方向，支撑法线缓慢翻正，腿摆飞行姿态；触地/超时结束。</summary>
+    private void TickLeap(in TickContext ctx, Vector3 worldUp)
+    {
+        LeapTicks++;
+        AtMoveTarget = false;
+        EnterAirborneFooting();
+        Body.Tick(ctx);
+
+        UpdateForward(LeapDirection, worldUp, 0.12f);
+        SupportNormal = BlendDirection(SupportNormal, worldUp, LeapSupportBlend, _forward);
+        TickLegsAirborne(ctx, limp: false);
+
+        bool contact = false;
+        foreach (BodyChunk chunk in Body.Chunks)
+        {
+            contact |= chunk.TerrainContact;
+        }
+        if (LeapTicks >= LeapMinContactTicks && contact)
+        {
+            EndLeap(endedByContact: true);
+        }
+        else if (LeapTicks >= LeapFlightTicks + LeapGraceTicks)
+        {
+            EndLeap(endedByContact: false);
+        }
+    }
+
+    /// <summary>昏迷 tick：重力常开、无推进无拖尾，腿蜷缩不抓地；身体只剩约束 + 碰撞。
+    /// 支撑法线缓慢翻正，让蜷缩方向最终朝向世界下方。</summary>
+    private void TickLimp(in TickContext ctx, Vector3 worldUp)
+    {
+        if (Leaping)
+        {
+            EndLeap(endedByContact: false);
+        }
+        AtMoveTarget = false;
+        EnterAirborneFooting();
+        Body.SurfaceFriction = FootedSurfaceFriction; // 尸体贴地即停，不滑
+        Body.Tick(ctx);
+        UpdateForward(Vector3.Zero, worldUp, 0.08f);
+        SupportNormal = BlendDirection(SupportNormal, worldUp, LeapSupportBlend, _forward);
+        TickLegsAirborne(ctx, limp: true);
+    }
+
+    /// <summary>空中/昏迷腿 tick：腿根随身体节更新，足端追逐姿态目标（飞行：前对腿沿起跳
+    /// 方向张开、后对腿反向拖尾——≙ RW Jump 里 legs.vel += jumpDir·30·(j&lt;2 ? 1 : −1)；
+    /// 昏迷：全部蜷向身体下方），不搜索抓点。</summary>
+    private void TickLegsAirborne(in TickContext ctx, bool limp)
+    {
+        foreach (SpiderLeg leg in Legs)
+        {
+            Vector3 localForward = AnchorForward(leg.Anchor, _forward);
+            leg.PrepareTickFrame(localForward, SupportNormal);
+        }
+        foreach (SpiderLeg leg in Legs)
+        {
+            Vector3 fan = leg.NominalFanDirection();
+            Vector3 dir;
+            float reach;
+            if (limp)
+            {
+                dir = fan * 0.5f - leg.FrameUp * 0.9f;
+                reach = leg.MaxReach * Mathf.Clamp(LimpLegCurl, 0.05f, 1f);
+            }
+            else
+            {
+                float ahead = leg.FanAngle >= 0f ? 1f : -1f;
+                dir = fan * 0.7f + LeapDirection * (0.6f * ahead) - leg.FrameUp * 0.15f;
+                reach = leg.MaxReach * Mathf.Clamp(FlightLegSpread, 0.05f, 1f);
+            }
+            if (dir.LengthSquared() < 1e-10f)
+            {
+                dir = fan;
+            }
+            reach = Mathf.Max(reach, leg.MinimumReach);
+            leg.TickAirborne(ctx, leg.RootPos + dir.Normalized() * reach);
+        }
+        LegsGripping = 0;
     }
 
     private void DeriveMoveFromTarget(Vector3 target)
@@ -264,7 +464,7 @@ public sealed class SpiderLocomotionController
         return redirected.LengthSquared() < 1e-8f ? MoveDir.Normalized() : redirected.Normalized();
     }
 
-    private void UpdateForward(Vector3 effectiveMove, Vector3 worldUp)
+    private void UpdateForward(Vector3 effectiveMove, Vector3 worldUp, float blendWeight)
     {
         Vector3 desired = effectiveMove;
         if (desired.LengthSquared() < 1e-8f)
@@ -289,7 +489,7 @@ public sealed class SpiderLocomotionController
         _forward = BlendDirection(
             _forward,
             desired,
-            HasMoveIntent ? 0.25f : 0.08f,
+            blendWeight,
             SupportNormal.Cross(_forward));
     }
 

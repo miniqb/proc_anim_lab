@@ -178,6 +178,7 @@ internal static class Program
         bool acquisitionOk = CheckAcquisitionTimeout(out string acquisitionMessage);
         bool antipodalOk = CheckAntipodalDirections(out string antipodalMessage);
         bool turnOk = CheckTurnLaneRecovery(out string[] turnMessages);
+        bool leapOk = LeapSmoke.Check(out string[] leapMessages);
         GaitActivityResult smallGait = RunGaitActivity(SpiderFactory.SmallSpider());
         GaitActivityResult largeGait = RunGaitActivity(SpiderFactory.LargeSpider());
         bool smallDeterministic = smallA.Hash == smallB.Hash;
@@ -250,6 +251,10 @@ internal static class Program
         {
             Console.WriteLine($"[SPIDER-TURN] {turnMessage}");
         }
+        foreach (string leapMessage in leapMessages)
+        {
+            Console.WriteLine($"[SPIDER-LEAP] {leapMessage}");
+        }
         Console.WriteLine(
             $"[SPIDER-GAIT] small steps={smallGait.CompletedSteps}/" +
             $"{smallGait.MinStepsPerLeg}..{smallGait.MaxStepsPerLeg} " +
@@ -293,12 +298,13 @@ internal static class Program
         if (!antipodalOk) failures.Add("180° 朝向/直接天花板重抓失败");
         if (!turnOk) failures.Add("平地急转后足端/落脚目标没有回到各自身体侧");
         if (!gaitOk) failures.Add("蜘蛛 AEP/PEP 步幅、抬腿净空或紧急换点门失败");
+        if (!leapOk) failures.Add("跳跃攻击/飞行态/昏迷契约失败");
 
         if (failures.Count == 0)
         {
             Console.WriteLine(
                 "[SPIDER-SMOKE] PASS：双跑确定、拓扑通用、弯腿稳定、" +
-                "生命周期完整、急转腿槽/站距恢复");
+                "生命周期完整、急转腿槽/站距恢复、跳跃攻击精确到点");
             return 0;
         }
 

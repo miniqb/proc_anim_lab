@@ -69,6 +69,13 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
     public bool Active { get; private set; }
 
     /// <summary>
+    /// 脚本化移动输入（无头自检 opt-in）：非 null 时替代键盘 WASD（口径同
+    /// <see cref="MovementInput"/> 的局部 X/Y，模长会被归一化上限），跳跃与静步忽略。
+    /// 默认 null，交互行为逐帧不变。
+    /// </summary>
+    public Vector2? ScriptedInput { get; set; }
+
+    /// <summary>
     /// 束缚门（抓取竞技场用）：true 时吞掉全部玩家输入（鼠标视角、移动、跳跃），但**重力
     /// 自驱仍在**——空中被抓会自然落回地面，不会悬停；朝向交给世界脚本经
     /// <see cref="SetLookAngles"/> 驱动。默认 false，迷宫场景行为不变。
@@ -251,10 +258,12 @@ public partial class ArenaFirstPersonPlayer : CharacterBody3D
             return;
         }
 
-        if (Input.IsPhysicalKeyPressed(Key.Space) && IsOnFloor())
+        if (ScriptedInput is null && Input.IsPhysicalKeyPressed(Key.Space) && IsOnFloor())
             velocity.Y = JumpVelocity;
 
-        Vector2 input = MovementInput();
+        Vector2 input = ScriptedInput is { } scripted
+            ? (scripted.LengthSquared() > 1f ? scripted.Normalized() : scripted)
+            : MovementInput();
         Vector3 direction = (Transform.Basis * new Vector3(input.X, 0f, input.Y)).Normalized();
         if (direction != Vector3.Zero)
         {

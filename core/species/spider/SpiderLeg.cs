@@ -411,6 +411,59 @@ public sealed class SpiderLeg
 		SolveKneePose();
 	}
 
+	/// <summary>
+	/// 空中/昏迷 tick（控制器 BeginLeap / Conscious=false 路径专用）：不搜索抓点、不换步，
+	/// 足端只追逐控制器给的姿态目标，其余管线（追逐积分 → 根部约束 → 近根钳制 → 出地形 →
+	/// 可达性）与常规 tick 同序同实现。GripCounter 恒零，因此从不计入支撑。
+	/// </summary>
+	internal void TickAirborne(in TickContext ctx, Vector3 poseTarget)
+	{
+		ReachingForTerrain = false;
+		HasGrip = false;
+		_hasFrozenSwingTarget = false;
+		if (_swingTicks < int.MaxValue)
+		{
+			_swingTicks++;
+		}
+		HuntPos = poseTarget;
+
+		IntegrateHunt(ctx);
+		ConnectToRoot();
+		LimitNearRootWhip();
+		PushOutOfTerrain(ctx);
+		EnsureReachableAfterTerrain(ctx);
+		UpdateTargetSurfaceContact();
+		GripCounter = 0;
+		_acquisitionTicks = 0;
+		SolveKneePose();
+	}
+
+	/// <summary>
+	/// 飞行结束（触地/超时/被打断）：下一 tick 直接进入 FindGrip，不再等待最短摆动期——
+	/// 落地那一刻就该伸脚抓面。膝点/BendPole 连续性保留。
+	/// </summary>
+	internal void ResumeGripSearch()
+	{
+		ReachingForTerrain = true;
+		HasGrip = false;
+		ReachedSnapPosition = false;
+		GripCounter = 0;
+		_acquisitionTicks = 0;
+		TargetSurfaceContact = false;
+		_hasFrozenSwingTarget = false;
+		_swingLandingGoal = Pos;
+		_swingHuntTarget = Pos;
+		HuntPos = Pos;
+	}
+
+	/// <summary>本腿名义扇形方向（局部帧内、单位向量）：右 × Side · cos(FanAngle) + 前 · sin(FanAngle)。</summary>
+	internal Vector3 NominalFanDirection()
+	{
+		Vector3 surfaceDir = _frameRight * (Side * Mathf.Cos(FanAngle))
+			+ _frameForward * Mathf.Sin(FanAngle);
+		return SafeNormal(surfaceDir, _frameRight * Side);
+	}
+
 	/// <summary>整体世界平移：所有位置态与插值历史同步移动，速度、抓地和弯折方向不变。</summary>
 	public void Shift(Vector3 delta)
 	{

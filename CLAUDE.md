@@ -9,7 +9,11 @@
 > DaddyLongLegs / DropBug / RatFiend），各有独立回归；八套 Godot 矩阵合计 **199 项**。
 > M5 内核抽离与回迁契约完成；正式渲染层已有 **8 个渲染件**（Lizard / Centipede / Vulture /
 > DaddyLongLegs / Spider / Humanoid / RatFiend——首个可动颌 / TentaclePlant）。
-> 最近一轮：TentaclePlant 落地**光感知系统**——设定：无眼，喉部灯泡发光并检测反射
+> 最近一轮（2026-09-17）：**Spider 跳跃攻击**——内核 opt-in `SpiderLeapPlanner`（按积分序闭式
+> 反解「N tick 恰好到点」的起跳速度，攻距与跳速解耦）+ `BeginLeap` 飞行态（置速、腿不找抓点、
+> 触地/超时结束）+ `Conscious` 昏迷；竞技场 `spider_arena.tscn`：三档表面攻距（地 3.5 / 墙 6 /
+> 顶 9m 分段线性）、之字/爬墙/上顶潜行规划器、命中击退 + 反向反弹、手枪 3 枪击落/击杀
+> （见 [spider](docs/spider_controller.md) §2.5）。上一轮：TentaclePlant 落地**光感知系统**——设定：无眼，喉部灯泡发光并检测反射
 > 变化（静止=隐身）；内核加两个 opt-in 动词（探头张紧 ProbeIntent/预张紧充能、攻击
 > 弹性拉伸 StrikeStretchFactor——变色龙舌头式，攻距与探测半径解耦），竞技场宿主实现
 > 双区累计/敏化/探头搜索（路点+聆听+包络扩张+回头杀+预算）三相闭环，渲染件挂
@@ -117,7 +121,7 @@
 |------|---------|------|------|
 | **Lizard** | 抓地关重力；plant-and-trail 四足 + 多节脊柱。**共享物理层的来源**，M1~M5 产物档案 | default / heavy / sprinter / hexapod | [lizard](docs/lizard_controller.md) |
 | **Humanoid** | 清醒近地失重伺服木偶；双足 + 手臂两条独立通道，零 knockdown 状态机 | scavenger / brute / waif | [humanoid](docs/humanoid_controller.md) |
-| **Spider** | 抓地关重力；足端粒子 + 渲染期两骨 IK 膝，多锚点线性身体链 | small / large / lean | [spider](docs/spider_controller.md) |
+| **Spider** | 抓地关重力；足端粒子 + 渲染期两骨 IK 膝，多锚点线性身体链；opt-in 跳跃攻击（精确弹道反解 + 飞行腿姿 + 命中反弹）与昏迷 | small / large / lean | [spider](docs/spider_controller.md) |
 | **Centipede** | 双端表面轨迹；任意 ≥2 节装配、真实抓足、确定性行波 | short / long / armored / ribbon | [centipede](docs/centipede_controller.md) |
 | **Cicada** | 双 chunk 差分飞行 + 显式三面停驻 + Charge | light / dark | [cicada](docs/cicada_controller.md) |
 | **Vulture** | **重力常开** + 拍翅同步 sin² 升力脉冲；起降由翅膀模式涌现 | vulture / king / swift / quad | [vulture](docs/vulture_controller.md) |
